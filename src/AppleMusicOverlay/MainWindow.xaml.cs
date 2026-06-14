@@ -112,6 +112,16 @@ public partial class MainWindow : Window
         RegisterHotkeys();
     }
 
+    private void SettingsControl_Changed(object sender, RoutedPropertyChangedEventArgs<double> e)
+    {
+        if (_overlayWindow == null)
+        {
+            return;
+        }
+
+        _overlayWindow.ApplySettings(_viewModel.Settings);
+    }
+
     private void RegisterHotkeys()
     {
         _hotkeyService.Clear();

@@ -10,10 +10,7 @@ public static class MediaSessionSelector
         {
             MediaSessionCandidate? preferred = candidates.FirstOrDefault(candidate =>
                 candidate.SourceAppUserModelId.Equals(preferredSourceAppUserModelId, StringComparison.OrdinalIgnoreCase));
-            if (preferred != null)
-            {
-                return preferred;
-            }
+            return preferred;
         }
 
         return candidates

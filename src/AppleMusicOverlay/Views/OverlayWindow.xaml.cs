@@ -28,7 +28,7 @@ public partial class OverlayWindow : Window
         _settings = OverlaySettingsNormalizer.Normalize(settings);
         double scale = _settings.ScalePercent / 100.0;
         Width = 188 * scale;
-        Height = 232 * scale;
+        Height = 238 * scale;
         Left = Math.Max(0, SystemParameters.PrimaryScreenWidth - Width - 28) * _settings.LeftPercent + 14;
         Top = Math.Max(0, SystemParameters.PrimaryScreenHeight - Height - 28) * _settings.TopPercent + 14;
         TitleText.Visibility = _settings.ShowTitle ? Visibility.Visible : Visibility.Collapsed;

@@ -61,13 +61,13 @@ public sealed class MediaSessionSelectorTests
     }
 
     [Fact]
-    public void SelectBestFallsBackToAutomaticWhenPreferredSourceIsUnavailable()
+    public void SelectBestReturnsNullWhenPreferredSourceIsUnavailable()
     {
         var edge = new MediaSessionCandidate("MicrosoftEdge", "Song", "Artist", true, false, 0);
         var chrome = new MediaSessionCandidate("Chrome", "Video", "YouTube", true, true, 1);
 
         MediaSessionCandidate? selected = MediaSessionSelector.SelectBest([edge, chrome], "Spotify");
 
-        Assert.Equal(edge, selected);
+        Assert.Null(selected);
     }
 }

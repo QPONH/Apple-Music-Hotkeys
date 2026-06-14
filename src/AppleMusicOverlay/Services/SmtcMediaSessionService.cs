@@ -81,6 +81,11 @@ public sealed class SmtcMediaSessionService : IMediaSessionService, IMediaSessio
             return selectedSession;
         }
 
+        if (!string.IsNullOrWhiteSpace(PreferredSourceAppUserModelId))
+        {
+            return null;
+        }
+
         return snapshot.Current ?? snapshot.Sessions.Values.FirstOrDefault();
     }
 

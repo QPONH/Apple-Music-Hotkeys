@@ -151,25 +151,41 @@
                         </Grid.ColumnDefinitions>
 
                         <StackPanel>
-                            <TextBlock Text="显示秒数"
-                                       Foreground="#9DA6B6"
-                                       FontSize="12" />
-                            <Slider Minimum="1"
+                            <DockPanel>
+                                <TextBlock Text="显示秒数"
+                                           Foreground="#9DA6B6"
+                                           FontSize="12" />
+                                <TextBlock DockPanel.Dock="Right"
+                                           Text="{Binding ElementName=DisplaySecondsSlider, Path=Value, StringFormat={}{0:0} 秒}"
+                                           Foreground="#F7F8FB"
+                                           FontSize="12" />
+                            </DockPanel>
+                            <Slider x:Name="DisplaySecondsSlider"
+                                    Minimum="1"
                                     Maximum="10"
                                     TickFrequency="1"
                                     IsSnapToTickEnabled="True"
-                                    Value="{Binding Settings.DisplaySeconds}" />
+                                    Value="{Binding Settings.DisplaySeconds}"
+                                    ValueChanged="SettingsControl_Changed" />
                         </StackPanel>
 
                         <StackPanel Grid.Column="2">
-                            <TextBlock Text="缩放"
-                                       Foreground="#9DA6B6"
-                                       FontSize="12" />
-                            <Slider Minimum="70"
+                            <DockPanel>
+                                <TextBlock Text="缩放"
+                                           Foreground="#9DA6B6"
+                                           FontSize="12" />
+                                <TextBlock DockPanel.Dock="Right"
+                                           Text="{Binding ElementName=ScaleSlider, Path=Value, StringFormat={}{0:0}%}"
+                                           Foreground="#F7F8FB"
+                                           FontSize="12" />
+                            </DockPanel>
+                            <Slider x:Name="ScaleSlider"
+                                    Minimum="70"
                                     Maximum="180"
                                     TickFrequency="5"
                                     IsSnapToTickEnabled="True"
-                                    Value="{Binding Settings.ScalePercent}" />
+                                    Value="{Binding Settings.ScalePercent}"
+                                    ValueChanged="SettingsControl_Changed" />
                         </StackPanel>
                     </Grid>
 

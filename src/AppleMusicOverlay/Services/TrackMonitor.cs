@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using AppleMusicOverlay.Models;
 
 namespace AppleMusicOverlay.Services;
@@ -6,19 +7,25 @@ public sealed class TrackMonitor : IDisposable
 {
     private readonly IMediaSessionService _mediaSessionService;
     private readonly TimeSpan _pollInterval;
+    private readonly TimeSpan _settleDelay;
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
     private string? _lastTrackKey;
+    private string? _lastCoverKey;
     private bool _disposed;
 
     public event EventHandler<TrackInfo?>? TrackRead;
 
     public event EventHandler<TrackInfo>? TrackChanged;
 
-    public TrackMonitor(IMediaSessionService mediaSessionService, TimeSpan? pollInterval = null)
+    public TrackMonitor(
+        IMediaSessionService mediaSessionService,
+        TimeSpan? pollInterval = null,
+        TimeSpan? settleDelay = null)
     {
         _mediaSessionService = mediaSessionService;
         _pollInterval = pollInterval ?? TimeSpan.FromMilliseconds(800);
+        _settleDelay = settleDelay ?? TimeSpan.FromMilliseconds(280);
     }
 
     public void Start()
@@ -58,13 +65,25 @@ public sealed class TrackMonitor : IDisposable
             return;
         }
 
-        string key = TrackIdentity.Create(track);
-        if (key == _lastTrackKey)
+        string trackKey = TrackIdentity.Create(track);
+        string coverKey = CreateCoverKey(track);
+        bool trackChanged = trackKey != _lastTrackKey;
+        bool coverUpdated = trackKey == _lastTrackKey && coverKey != _lastCoverKey && track.CoverBytes is { Length: > 0 };
+
+        if (!trackChanged && !coverUpdated)
         {
             return;
         }
 
-        _lastTrackKey = key;
+        if (trackChanged)
+        {
+            track = await SettleTrackAsync(track, trackKey, cancellationToken);
+            trackKey = TrackIdentity.Create(track);
+            coverKey = CreateCoverKey(track);
+        }
+
+        _lastTrackKey = trackKey;
+        _lastCoverKey = coverKey;
         TrackChanged?.Invoke(this, track);
     }
 
@@ -96,6 +115,48 @@ public sealed class TrackMonitor : IDisposable
                 break;
             }
         }
+    }
+
+    private async Task<TrackInfo> SettleTrackAsync(TrackInfo initialTrack, string initialTrackKey, CancellationToken cancellationToken)
+    {
+        if (_settleDelay <= TimeSpan.Zero)
+        {
+            return await ReadSettledTrackAsync(initialTrack, initialTrackKey, cancellationToken);
+        }
+
+        await Task.Delay(_settleDelay, cancellationToken);
+        return await ReadSettledTrackAsync(initialTrack, initialTrackKey, cancellationToken);
+    }
+
+    private async Task<TrackInfo> ReadSettledTrackAsync(TrackInfo initialTrack, string initialTrackKey, CancellationToken cancellationToken)
+    {
+        try
+        {
+            TrackInfo? settledTrack = await _mediaSessionService.GetCurrentTrackAsync(cancellationToken);
+            if (settledTrack != null && TrackIdentity.Create(settledTrack) == initialTrackKey)
+            {
+                return settledTrack;
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+        }
+
+        return initialTrack;
+    }
+
+    private static string CreateCoverKey(TrackInfo track)
+    {
+        if (track.CoverBytes is not { Length: > 0 } coverBytes)
+        {
+            return string.Empty;
+        }
+
+        return Convert.ToHexString(SHA256.HashData(coverBytes));
     }
 
     private void ThrowIfDisposed()
