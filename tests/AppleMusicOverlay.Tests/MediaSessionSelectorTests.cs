@@ -48,4 +48,26 @@ public sealed class MediaSessionSelectorTests
 
         Assert.Equal(current, selected);
     }
+
+    [Fact]
+    public void SelectBestUsesPreferredSourceWhenAvailable()
+    {
+        var edge = new MediaSessionCandidate("MicrosoftEdge", "Song", "Artist", true, false, 0);
+        var chrome = new MediaSessionCandidate("Chrome", "Video", "YouTube", true, true, 1);
+
+        MediaSessionCandidate? selected = MediaSessionSelector.SelectBest([edge, chrome], "Chrome");
+
+        Assert.Equal(chrome, selected);
+    }
+
+    [Fact]
+    public void SelectBestFallsBackToAutomaticWhenPreferredSourceIsUnavailable()
+    {
+        var edge = new MediaSessionCandidate("MicrosoftEdge", "Song", "Artist", true, false, 0);
+        var chrome = new MediaSessionCandidate("Chrome", "Video", "YouTube", true, true, 1);
+
+        MediaSessionCandidate? selected = MediaSessionSelector.SelectBest([edge, chrome], "Spotify");
+
+        Assert.Equal(edge, selected);
+    }
 }

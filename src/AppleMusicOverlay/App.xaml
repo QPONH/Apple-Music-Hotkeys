@@ -22,6 +22,14 @@
             <Setter Property="BorderThickness" Value="1" />
         </Style>
 
+        <Style TargetType="ComboBox">
+            <Setter Property="MinHeight" Value="32" />
+            <Setter Property="Foreground" Value="#11151C" />
+            <Setter Property="Background" Value="#F7F8FB" />
+            <Setter Property="BorderBrush" Value="#303847" />
+            <Setter Property="BorderThickness" Value="1" />
+        </Style>
+
         <Style TargetType="CheckBox">
             <Setter Property="Foreground" Value="#F7F8FB" />
         </Style>

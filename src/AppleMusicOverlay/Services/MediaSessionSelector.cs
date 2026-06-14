@@ -2,8 +2,20 @@ namespace AppleMusicOverlay.Services;
 
 public static class MediaSessionSelector
 {
-    public static MediaSessionCandidate? SelectBest(IReadOnlyCollection<MediaSessionCandidate> candidates)
+    public static MediaSessionCandidate? SelectBest(
+        IReadOnlyCollection<MediaSessionCandidate> candidates,
+        string? preferredSourceAppUserModelId = null)
     {
+        if (!string.IsNullOrWhiteSpace(preferredSourceAppUserModelId))
+        {
+            MediaSessionCandidate? preferred = candidates.FirstOrDefault(candidate =>
+                candidate.SourceAppUserModelId.Equals(preferredSourceAppUserModelId, StringComparison.OrdinalIgnoreCase));
+            if (preferred != null)
+            {
+                return preferred;
+            }
+        }
+
         return candidates
             .OrderByDescending(Score)
             .ThenBy(candidate => candidate.Index)

@@ -92,14 +92,21 @@ public partial class OverlayWindow : Window
     {
         if (track.CoverBytes is { Length: > 0 })
         {
-            var bitmap = new BitmapImage();
-            using var stream = new MemoryStream(track.CoverBytes);
-            bitmap.BeginInit();
-            bitmap.CacheOption = BitmapCacheOption.OnLoad;
-            bitmap.StreamSource = stream;
-            bitmap.EndInit();
-            bitmap.Freeze();
-            return bitmap;
+            try
+            {
+                var bitmap = new BitmapImage();
+                using var stream = new MemoryStream(track.CoverBytes);
+                bitmap.BeginInit();
+                bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                bitmap.StreamSource = stream;
+                bitmap.EndInit();
+                bitmap.Freeze();
+                return bitmap;
+            }
+            catch
+            {
+                return CreatePlaceholder();
+            }
         }
 
         return CreatePlaceholder();

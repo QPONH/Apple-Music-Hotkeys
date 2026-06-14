@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Collections.ObjectModel;
 using System.Runtime.CompilerServices;
 using AppleMusicOverlay.Models;
 using AppleMusicOverlay.Services;
@@ -18,9 +19,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
     {
         _settingsService = settingsService;
         _settings = settingsService.Load();
+        CaptureSources.Add(MediaSessionSourceOption.Automatic);
     }
 
     public OverlaySettings Settings => _settings;
+
+    public ObservableCollection<MediaSessionSourceOption> CaptureSources { get; } = new();
 
     public TrackInfo? CurrentTrack
     {
@@ -31,12 +35,15 @@ public sealed class MainViewModel : INotifyPropertyChanged
             OnPropertyChanged();
             OnPropertyChanged(nameof(CurrentTitle));
             OnPropertyChanged(nameof(CurrentArtist));
+            OnPropertyChanged(nameof(TransportButtonText));
         }
     }
 
     public string CurrentTitle => CurrentTrack?.Title ?? "未检测到歌曲";
 
     public string CurrentArtist => CurrentTrack?.Artist ?? "打开 Apple Music PWA 后刷新";
+
+    public string TransportButtonText => CurrentTrack?.IsPlaying == true ? "暂停" : "播放";
 
     public string StatusText
     {
@@ -65,8 +72,55 @@ public sealed class MainViewModel : INotifyPropertyChanged
         StatusText = statusText;
     }
 
+    public void ReplaceCaptureSources(IEnumerable<MediaSessionCandidate> sessions)
+    {
+        string selected = Settings.CaptureSourceAppUserModelId;
+        CaptureSources.Clear();
+        CaptureSources.Add(MediaSessionSourceOption.Automatic);
+
+        foreach (MediaSessionCandidate session in sessions.OrderBy(session => session.SourceAppUserModelId))
+        {
+            CaptureSources.Add(MediaSessionSourceOption.FromCandidate(session));
+        }
+
+        if (!string.IsNullOrWhiteSpace(selected) &&
+            CaptureSources.All(source => !source.SourceAppUserModelId.Equals(selected, StringComparison.OrdinalIgnoreCase)))
+        {
+            CaptureSources.Add(new MediaSessionSourceOption(selected, $"{selected}（未检测到）"));
+        }
+
+        OnPropertyChanged(nameof(CaptureSources));
+    }
+
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+    }
+}
+
+public sealed record MediaSessionSourceOption(string SourceAppUserModelId, string DisplayName)
+{
+    public static MediaSessionSourceOption Automatic { get; } = new(string.Empty, "自动选择");
+
+    public static MediaSessionSourceOption FromCandidate(MediaSessionCandidate candidate)
+    {
+        string title = string.IsNullOrWhiteSpace(candidate.Title) ? "未知媒体" : candidate.Title;
+        string source = SimplifySourceName(candidate.SourceAppUserModelId);
+        return new MediaSessionSourceOption(candidate.SourceAppUserModelId, $"{source} · {title}");
+    }
+
+    private static string SimplifySourceName(string sourceAppUserModelId)
+    {
+        if (sourceAppUserModelId.Contains("edge", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Microsoft Edge";
+        }
+
+        if (sourceAppUserModelId.Contains("chrome", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Google Chrome";
+        }
+
+        return sourceAppUserModelId;
     }
 }

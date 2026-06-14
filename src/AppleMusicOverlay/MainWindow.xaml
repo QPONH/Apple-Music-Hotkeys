@@ -78,7 +78,7 @@
                         <Button Content="上一首"
                                 Margin="0,0,6,0"
                                 Click="Previous_Click" />
-                        <Button Content="播放"
+                        <Button Content="{Binding TransportButtonText}"
                                 Margin="3,0"
                                 Click="Toggle_Click" />
                         <Button Content="下一首"
@@ -103,10 +103,32 @@
                         <RowDefinition Height="Auto" />
                     </Grid.RowDefinitions>
 
-                    <TextBlock Text="显示"
-                               Foreground="#F7F8FB"
-                               FontSize="16"
-                               FontWeight="SemiBold" />
+                    <StackPanel>
+                        <TextBlock Text="抓取源"
+                                   Foreground="#F7F8FB"
+                                   FontSize="16"
+                                   FontWeight="SemiBold" />
+                        <Grid Margin="0,12,0,18">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="10" />
+                                <ColumnDefinition Width="84" />
+                            </Grid.ColumnDefinitions>
+                            <ComboBox x:Name="CaptureSourceCombo"
+                                      ItemsSource="{Binding CaptureSources}"
+                                      DisplayMemberPath="DisplayName"
+                                      SelectedValuePath="SourceAppUserModelId"
+                                      SelectedValue="{Binding Settings.CaptureSourceAppUserModelId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                      SelectionChanged="CaptureSourceCombo_SelectionChanged" />
+                            <Button Grid.Column="2"
+                                    Content="刷新源"
+                                    Click="RefreshSources_Click" />
+                        </Grid>
+                        <TextBlock Text="显示"
+                                   Foreground="#F7F8FB"
+                                   FontSize="16"
+                                   FontWeight="SemiBold" />
+                    </StackPanel>
 
                     <WrapPanel Grid.Row="1"
                                Margin="0,14,0,20">

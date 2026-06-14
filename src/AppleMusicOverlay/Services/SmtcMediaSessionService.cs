@@ -4,8 +4,10 @@ using Windows.Storage.Streams;
 
 namespace AppleMusicOverlay.Services;
 
-public sealed class SmtcMediaSessionService : IMediaSessionService
+public sealed class SmtcMediaSessionService : IMediaSessionService, IMediaSessionSourceService
 {
+    public string PreferredSourceAppUserModelId { get; set; } = string.Empty;
+
     public async Task<TrackInfo?> GetCurrentTrackAsync(CancellationToken cancellationToken = default)
     {
         GlobalSystemMediaTransportControlsSession? session = await GetSessionAsync(cancellationToken);
@@ -21,7 +23,7 @@ public sealed class SmtcMediaSessionService : IMediaSessionService
 
         string title = NormalizeText(properties.Title, "Unknown Track");
         string artist = NormalizeText(properties.Artist, "Unknown Artist");
-        byte[]? coverBytes = await ReadCoverBytesAsync(properties.Thumbnail, cancellationToken);
+        byte[]? coverBytes = await TryReadCoverBytesAsync(properties.Thumbnail, cancellationToken);
 
         return new TrackInfo(
             title,
@@ -59,7 +61,30 @@ public sealed class SmtcMediaSessionService : IMediaSessionService
         }
     }
 
-    private static async Task<GlobalSystemMediaTransportControlsSession?> GetSessionAsync(CancellationToken cancellationToken)
+    public async Task<IReadOnlyList<MediaSessionCandidate>> ListSessionsAsync(CancellationToken cancellationToken = default)
+    {
+        SessionSnapshot snapshot = await GetSnapshotAsync(cancellationToken);
+        return snapshot.Candidates;
+    }
+
+    private async Task<GlobalSystemMediaTransportControlsSession?> GetSessionAsync(CancellationToken cancellationToken)
+    {
+        SessionSnapshot snapshot = await GetSnapshotAsync(cancellationToken);
+        if (snapshot.Sessions.Count == 0)
+        {
+            return null;
+        }
+
+        MediaSessionCandidate? selected = MediaSessionSelector.SelectBest(snapshot.Candidates, PreferredSourceAppUserModelId);
+        if (selected != null && snapshot.Sessions.TryGetValue(selected.Index, out GlobalSystemMediaTransportControlsSession? selectedSession))
+        {
+            return selectedSession;
+        }
+
+        return snapshot.Current ?? snapshot.Sessions.Values.FirstOrDefault();
+    }
+
+    private static async Task<SessionSnapshot> GetSnapshotAsync(CancellationToken cancellationToken)
     {
         GlobalSystemMediaTransportControlsSessionManager manager =
             await GlobalSystemMediaTransportControlsSessionManager.RequestAsync().AsTask(cancellationToken);
@@ -67,7 +92,10 @@ public sealed class SmtcMediaSessionService : IMediaSessionService
         IReadOnlyList<GlobalSystemMediaTransportControlsSession> sessions = manager.GetSessions();
         if (sessions.Count == 0)
         {
-            return null;
+            return new SessionSnapshot(
+                new Dictionary<int, GlobalSystemMediaTransportControlsSession>(),
+                [],
+                null);
         }
 
         GlobalSystemMediaTransportControlsSession? current = manager.GetCurrentSession();
@@ -93,13 +121,7 @@ public sealed class SmtcMediaSessionService : IMediaSessionService
             sessionByIndex[index] = session;
         }
 
-        MediaSessionCandidate? selected = MediaSessionSelector.SelectBest(candidates);
-        if (selected != null && sessionByIndex.TryGetValue(selected.Index, out GlobalSystemMediaTransportControlsSession? selectedSession))
-        {
-            return selectedSession;
-        }
-
-        return current ?? sessions.FirstOrDefault();
+        return new SessionSnapshot(sessionByIndex, candidates, current);
     }
 
     private static async Task<byte[]?> ReadCoverBytesAsync(IRandomAccessStreamReference? thumbnail, CancellationToken cancellationToken)
@@ -122,8 +144,29 @@ public sealed class SmtcMediaSessionService : IMediaSessionService
         return bytes;
     }
 
+    private static async Task<byte[]?> TryReadCoverBytesAsync(IRandomAccessStreamReference? thumbnail, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await ReadCoverBytesAsync(thumbnail, cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private static string NormalizeText(string? value, string fallback)
     {
         return string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
     }
+
+    private sealed record SessionSnapshot(
+        IReadOnlyDictionary<int, GlobalSystemMediaTransportControlsSession> Sessions,
+        IReadOnlyList<MediaSessionCandidate> Candidates,
+        GlobalSystemMediaTransportControlsSession? Current);
 }

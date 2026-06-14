@@ -10,17 +10,22 @@ public partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel;
     private readonly IMediaSessionService _mediaService;
+    private readonly IMediaSessionSourceService _sourceService;
     private readonly TrackMonitor _trackMonitor;
     private readonly OverlayWindow _overlayWindow;
     private readonly GlobalHotkeyService _hotkeyService;
     private readonly TrayIconService _trayIconService;
     private bool _isExiting;
+    private bool _isRefreshingSources;
 
     public MainWindow()
     {
         InitializeComponent();
         _viewModel = new MainViewModel(new OverlaySettingsService());
-        _mediaService = new SmtcMediaSessionService();
+        var mediaService = new SmtcMediaSessionService();
+        _mediaService = mediaService;
+        _sourceService = mediaService;
+        ApplyPreferredSource();
         _trackMonitor = new TrackMonitor(_mediaService);
         _overlayWindow = new OverlayWindow();
         _overlayWindow.ApplySettings(_viewModel.Settings);
@@ -50,6 +55,7 @@ public partial class MainWindow : Window
 
     private async void MainWindow_Loaded(object sender, RoutedEventArgs e)
     {
+        await RefreshSourcesAsync();
         RegisterHotkeys();
         _trackMonitor.Start();
         await _trackMonitor.PollOnceAsync();
@@ -57,6 +63,24 @@ public partial class MainWindow : Window
 
     private async void Refresh_Click(object sender, RoutedEventArgs e)
     {
+        await RefreshSourcesAsync();
+        await _trackMonitor.PollOnceAsync();
+    }
+
+    private async void RefreshSources_Click(object sender, RoutedEventArgs e)
+    {
+        await RefreshSourcesAsync();
+    }
+
+    private async void CaptureSourceCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
+    {
+        if (_isRefreshingSources)
+        {
+            return;
+        }
+
+        ApplyPreferredSource();
+        _viewModel.Save();
         await _trackMonitor.PollOnceAsync();
     }
 
@@ -83,6 +107,7 @@ public partial class MainWindow : Window
     private void Save_Click(object sender, RoutedEventArgs e)
     {
         _viewModel.Save();
+        ApplyPreferredSource();
         _overlayWindow.ApplySettings(_viewModel.Settings);
         RegisterHotkeys();
     }
@@ -96,6 +121,31 @@ public partial class MainWindow : Window
         bool test = _hotkeyService.Register(AppAction.ShowTestOverlay, _viewModel.Settings.KeyboardTestOverlay);
 
         _viewModel.SetStatus(previous && next && toggle && test ? "快捷键已启用" : "部分快捷键未注册");
+    }
+
+    private async Task RefreshSourcesAsync()
+    {
+        try
+        {
+            _isRefreshingSources = true;
+            IReadOnlyList<MediaSessionCandidate> sessions = await _sourceService.ListSessionsAsync();
+            _viewModel.ReplaceCaptureSources(sessions);
+            ApplyPreferredSource();
+            _viewModel.SetStatus(sessions.Count == 0 ? "未检测到媒体源" : $"检测到 {sessions.Count} 个媒体源");
+        }
+        catch
+        {
+            _viewModel.SetStatus("媒体源刷新失败");
+        }
+        finally
+        {
+            _isRefreshingSources = false;
+        }
+    }
+
+    private void ApplyPreferredSource()
+    {
+        _sourceService.PreferredSourceAppUserModelId = _viewModel.Settings.CaptureSourceAppUserModelId;
     }
 
     private async void HotkeyService_ActionRequested(object? sender, AppAction action)

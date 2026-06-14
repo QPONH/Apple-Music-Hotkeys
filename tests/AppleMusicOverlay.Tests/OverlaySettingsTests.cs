@@ -15,6 +15,7 @@ public sealed class OverlaySettingsTests
         Assert.True(settings.ShowArtist);
         Assert.False(settings.ShowControls);
         Assert.Equal(5, settings.DisplaySeconds);
+        Assert.Equal(string.Empty, settings.CaptureSourceAppUserModelId);
     }
 
     [Fact]

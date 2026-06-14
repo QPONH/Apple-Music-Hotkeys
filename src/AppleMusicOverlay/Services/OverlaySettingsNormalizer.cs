@@ -20,6 +20,7 @@ public static class OverlaySettingsNormalizer
         settings.KeyboardNext = NormalizeText(settings.KeyboardNext, "Ctrl+Shift+Right");
         settings.KeyboardToggle = NormalizeText(settings.KeyboardToggle, "Ctrl+Shift+Down");
         settings.KeyboardTestOverlay = NormalizeText(settings.KeyboardTestOverlay, "Ctrl+Shift+Up");
+        settings.CaptureSourceAppUserModelId = settings.CaptureSourceAppUserModelId?.Trim() ?? string.Empty;
         return settings;
     }
 
