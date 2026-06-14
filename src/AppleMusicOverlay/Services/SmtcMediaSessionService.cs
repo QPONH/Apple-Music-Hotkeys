@@ -63,13 +63,43 @@ public sealed class SmtcMediaSessionService : IMediaSessionService
     {
         GlobalSystemMediaTransportControlsSessionManager manager =
             await GlobalSystemMediaTransportControlsSessionManager.RequestAsync().AsTask(cancellationToken);
-        GlobalSystemMediaTransportControlsSession? current = manager.GetCurrentSession();
-        if (current != null)
+
+        IReadOnlyList<GlobalSystemMediaTransportControlsSession> sessions = manager.GetSessions();
+        if (sessions.Count == 0)
         {
-            return current;
+            return null;
         }
 
-        return manager.GetSessions().FirstOrDefault();
+        GlobalSystemMediaTransportControlsSession? current = manager.GetCurrentSession();
+        var candidates = new List<MediaSessionCandidate>(sessions.Count);
+        var sessionByIndex = new Dictionary<int, GlobalSystemMediaTransportControlsSession>();
+
+        for (int index = 0; index < sessions.Count; index++)
+        {
+            GlobalSystemMediaTransportControlsSession session = sessions[index];
+            GlobalSystemMediaTransportControlsSessionMediaProperties properties =
+                await session.TryGetMediaPropertiesAsync().AsTask(cancellationToken);
+            GlobalSystemMediaTransportControlsSessionPlaybackInfo playback = session.GetPlaybackInfo();
+
+            var candidate = new MediaSessionCandidate(
+                NormalizeText(session.SourceAppUserModelId, "Unknown Source"),
+                NormalizeText(properties.Title, "Unknown Track"),
+                NormalizeText(properties.Artist, "Unknown Artist"),
+                playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing,
+                ReferenceEquals(session, current),
+                index);
+
+            candidates.Add(candidate);
+            sessionByIndex[index] = session;
+        }
+
+        MediaSessionCandidate? selected = MediaSessionSelector.SelectBest(candidates);
+        if (selected != null && sessionByIndex.TryGetValue(selected.Index, out GlobalSystemMediaTransportControlsSession? selectedSession))
+        {
+            return selectedSession;
+        }
+
+        return current ?? sessions.FirstOrDefault();
     }
 
     private static async Task<byte[]?> ReadCoverBytesAsync(IRandomAccessStreamReference? thumbnail, CancellationToken cancellationToken)

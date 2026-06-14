@@ -51,7 +51,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public void ApplyTrack(TrackInfo? track)
     {
         CurrentTrack = track;
-        StatusText = track == null ? "未读取到系统媒体会话" : "已连接媒体会话";
+        StatusText = track == null ? "未读取到系统媒体会话" : $"已连接：{track.SourceAppId}";
     }
 
     public void Save()
