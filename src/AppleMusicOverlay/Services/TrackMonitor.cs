@@ -36,7 +36,21 @@ public sealed class TrackMonitor : IDisposable
     public async Task PollOnceAsync(CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
-        TrackInfo? track = await _mediaSessionService.GetCurrentTrackAsync(cancellationToken);
+        TrackInfo? track;
+        try
+        {
+            track = await _mediaSessionService.GetCurrentTrackAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch
+        {
+            TrackRead?.Invoke(this, null);
+            return;
+        }
+
         TrackRead?.Invoke(this, track);
 
         if (track == null)
@@ -74,17 +88,12 @@ public sealed class TrackMonitor : IDisposable
         {
             try
             {
-                await PollOnceAsync(cancellationToken);
                 await Task.Delay(_pollInterval, cancellationToken);
+                await PollOnceAsync(cancellationToken);
             }
             catch (OperationCanceledException)
             {
                 break;
-            }
-            catch
-            {
-                TrackRead?.Invoke(this, null);
-                await Task.Delay(_pollInterval, cancellationToken);
             }
         }
     }
