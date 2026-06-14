@@ -1,0 +1,7 @@
+.references/
+.superpowers/
+bin/
+obj/
+publish/
+*.user
+*.log
