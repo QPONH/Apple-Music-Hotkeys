@@ -1,4 +1,5 @@
 using System.Windows;
+using System.Windows.Input;
 using AppleMusicOverlay.Models;
 using AppleMusicOverlay.Services;
 using AppleMusicOverlay.ViewModels;
@@ -105,6 +106,35 @@ public partial class MainWindow : Window
         await ShowCurrentTrackOverlayAsync();
     }
 
+    private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (e.ClickCount == 2)
+        {
+            ToggleWindowState();
+            return;
+        }
+
+        if (e.ButtonState == MouseButtonState.Pressed)
+        {
+            DragMove();
+        }
+    }
+
+    private void Minimize_Click(object sender, RoutedEventArgs e)
+    {
+        WindowState = WindowState.Minimized;
+    }
+
+    private void Maximize_Click(object sender, RoutedEventArgs e)
+    {
+        ToggleWindowState();
+    }
+
+    private void Close_Click(object sender, RoutedEventArgs e)
+    {
+        Close();
+    }
+
     private void Save_Click(object sender, RoutedEventArgs e)
     {
         _viewModel.Save();
@@ -201,6 +231,11 @@ public partial class MainWindow : Window
     {
         _isExiting = true;
         Close();
+    }
+
+    private void ToggleWindowState()
+    {
+        WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
     }
 
     private void MainWindow_Closed(object? sender, EventArgs e)

@@ -11,7 +11,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly OverlaySettingsService _settingsService;
     private readonly OverlaySettings _settings;
     private TrackInfo? _currentTrack;
-    private string _statusText = "等待系统媒体会话";
+    private string _statusText = "等待播放源";
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -41,7 +41,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public string CurrentTitle => CurrentTrack?.Title ?? "未检测到歌曲";
 
-    public string CurrentArtist => CurrentTrack?.Artist ?? "打开 Apple Music PWA 后刷新";
+    public string CurrentArtist => CurrentTrack?.Artist ?? "播放音乐后自动同步";
 
     public string TransportButtonText => CurrentTrack?.IsPlaying == true ? "暂停" : "播放";
 
@@ -58,7 +58,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public void ApplyTrack(TrackInfo? track)
     {
         CurrentTrack = track;
-        StatusText = track == null ? "未读取到系统媒体会话" : $"已连接：{track.SourceAppId}";
+        StatusText = track == null ? "未检测到正在播放的音乐" : $"已连接：{track.SourceAppId}";
     }
 
     public void Save()

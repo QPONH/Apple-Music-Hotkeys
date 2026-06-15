@@ -18,7 +18,7 @@ public sealed class TrayIconService : IDisposable
         _exitApplication = exitApplication;
         _notifyIcon = new Forms.NotifyIcon
         {
-            Text = "Apple Music Overlay",
+            Text = "MusicFloat",
             Icon = SystemIcons.Application,
             Visible = true,
             ContextMenuStrip = BuildMenu()
