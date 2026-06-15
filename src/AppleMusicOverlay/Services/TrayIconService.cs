@@ -7,14 +7,14 @@ namespace AppleMusicOverlay.Services;
 public sealed class TrayIconService : IDisposable
 {
     private readonly Window _owner;
-    private readonly Action _testOverlay;
+    private readonly Action _showCurrentTrack;
     private readonly Action _exitApplication;
     private readonly Forms.NotifyIcon _notifyIcon;
 
-    public TrayIconService(Window owner, Action testOverlay, Action exitApplication)
+    public TrayIconService(Window owner, Action showCurrentTrack, Action exitApplication)
     {
         _owner = owner;
-        _testOverlay = testOverlay;
+        _showCurrentTrack = showCurrentTrack;
         _exitApplication = exitApplication;
         _notifyIcon = new Forms.NotifyIcon
         {
@@ -36,7 +36,7 @@ public sealed class TrayIconService : IDisposable
     {
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("打开", null, (_, _) => _owner.Dispatcher.Invoke(ShowOwner));
-        menu.Items.Add("测试显示", null, (_, _) => _owner.Dispatcher.Invoke(_testOverlay));
+        menu.Items.Add("显示当前", null, (_, _) => _owner.Dispatcher.Invoke(_showCurrentTrack));
         menu.Items.Add("退出", null, (_, _) => _owner.Dispatcher.Invoke(_exitApplication));
         return menu;
     }

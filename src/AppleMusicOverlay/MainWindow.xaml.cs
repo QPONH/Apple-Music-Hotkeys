@@ -30,7 +30,7 @@ public partial class MainWindow : Window
         _overlayWindow = new OverlayWindow();
         _overlayWindow.ApplySettings(_viewModel.Settings);
         _hotkeyService = new GlobalHotkeyService(this);
-        _trayIconService = new TrayIconService(this, () => _ = ShowTestOverlayAsync(), ExitApplication);
+        _trayIconService = new TrayIconService(this, () => _ = ShowCurrentTrackOverlayAsync(), ExitApplication);
         DataContext = _viewModel;
 
         Loaded += MainWindow_Loaded;
@@ -100,9 +100,9 @@ public partial class MainWindow : Window
         await _mediaService.NextAsync();
     }
 
-    private async void TestOverlay_Click(object sender, RoutedEventArgs e)
+    private async void ShowCurrentTrack_Click(object sender, RoutedEventArgs e)
     {
-        await ShowTestOverlayAsync();
+        await ShowCurrentTrackOverlayAsync();
     }
 
     private void Save_Click(object sender, RoutedEventArgs e)
@@ -129,9 +129,9 @@ public partial class MainWindow : Window
         bool previous = _hotkeyService.Register(AppAction.PreviousTrack, _viewModel.Settings.KeyboardPrevious);
         bool next = _hotkeyService.Register(AppAction.NextTrack, _viewModel.Settings.KeyboardNext);
         bool toggle = _hotkeyService.Register(AppAction.TogglePlayPause, _viewModel.Settings.KeyboardToggle);
-        bool test = _hotkeyService.Register(AppAction.ShowTestOverlay, _viewModel.Settings.KeyboardTestOverlay);
+        bool showCurrent = _hotkeyService.Register(AppAction.ShowCurrentTrack, _viewModel.Settings.KeyboardTestOverlay);
 
-        _viewModel.SetStatus(previous && next && toggle && test ? "快捷键已启用" : "部分快捷键未注册");
+        _viewModel.SetStatus(previous && next && toggle && showCurrent ? "快捷键已启用" : "部分快捷键未注册");
     }
 
     private async Task RefreshSourcesAsync()
@@ -172,16 +172,28 @@ public partial class MainWindow : Window
             case AppAction.TogglePlayPause:
                 await _mediaService.TogglePlayPauseAsync();
                 break;
-            case AppAction.ShowTestOverlay:
-                await ShowTestOverlayAsync();
+            case AppAction.ShowCurrentTrack:
+                await ShowCurrentTrackOverlayAsync();
                 break;
         }
     }
 
-    private async Task ShowTestOverlayAsync()
+    private async Task ShowCurrentTrackOverlayAsync()
     {
         _overlayWindow.ApplySettings(_viewModel.Settings);
-        var track = new TrackInfo("Sapphire Night", "Apple Music", null, "Preview", TimeSpan.FromMinutes(3), true);
+        TrackInfo? track = _trackMonitor.CurrentTrack ?? _viewModel.CurrentTrack;
+        if (track == null)
+        {
+            await _trackMonitor.PollOnceAsync();
+            track = _trackMonitor.CurrentTrack ?? _viewModel.CurrentTrack;
+        }
+
+        if (track == null)
+        {
+            _viewModel.SetStatus("未读取到当前播放歌曲");
+            return;
+        }
+
         await _overlayWindow.ShowTrackAsync(track);
     }
 

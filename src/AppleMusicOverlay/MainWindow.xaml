@@ -34,9 +34,9 @@
                         Width="76"
                         Margin="0,0,8,0"
                         Click="Refresh_Click" />
-                <Button Content="测试显示"
+                <Button Content="显示当前"
                         Width="96"
-                        Click="TestOverlay_Click" />
+                        Click="ShowCurrentTrack_Click" />
             </StackPanel>
         </DockPanel>
 
@@ -224,7 +224,7 @@
                                  Text="{Binding Settings.KeyboardToggle, UpdateSourceTrigger=PropertyChanged}" />
 
                         <TextBlock Grid.Row="3"
-                                   Text="测试显示"
+                                   Text="显示当前"
                                    Foreground="#B6BDCA"
                                    VerticalAlignment="Center" />
                         <TextBox Grid.Row="3"
