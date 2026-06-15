@@ -13,6 +13,7 @@ public sealed class TrackMonitor : IDisposable
     private Task? _loopTask;
     private string? _lastTrackKey;
     private string? _lastCoverKey;
+    private string? _pendingTrackKey;
     private TrackInfo? _lastStableTrack;
     private bool _disposed;
 
@@ -66,6 +67,7 @@ public sealed class TrackMonitor : IDisposable
 
         if (track == null)
         {
+            _pendingTrackKey = null;
             _lastStableTrack = null;
             TrackRead?.Invoke(this, null);
             return;
@@ -74,8 +76,9 @@ public sealed class TrackMonitor : IDisposable
         track = NormalizeTrack(track);
         string trackKey = TrackIdentity.Create(track);
         string coverKey = CreateCoverKey(track);
+        bool pendingTrackReady = trackKey == _pendingTrackKey && HasCover(track);
         bool metadataUpdated = IsMetadataRefresh(track);
-        bool trackChanged = trackKey != _lastTrackKey && !metadataUpdated;
+        bool trackChanged = (trackKey != _lastTrackKey || pendingTrackReady) && !metadataUpdated;
         bool refreshed = metadataUpdated ||
                          (trackKey == _lastTrackKey && coverKey != _lastCoverKey && track.CoverBytes is { Length: > 0 });
 
@@ -107,6 +110,13 @@ public sealed class TrackMonitor : IDisposable
 
             track = RemovePreviousCover(track, _lastCoverKey);
             coverKey = CreateCoverKey(track);
+            if (!HasCover(track))
+            {
+                _pendingTrackKey = trackKey;
+                TrackRead?.Invoke(this, _lastStableTrack);
+                return;
+            }
+
             if (trackKey == _lastTrackKey)
             {
                 if (coverKey != _lastCoverKey && track.CoverBytes is { Length: > 0 })
@@ -125,6 +135,7 @@ public sealed class TrackMonitor : IDisposable
 
             _lastTrackKey = trackKey;
             _lastCoverKey = coverKey;
+            _pendingTrackKey = null;
             PublishRead(track);
             TrackChanged?.Invoke(this, track);
             return;
@@ -258,8 +269,13 @@ public sealed class TrackMonitor : IDisposable
     private static bool IsReadyToDisplay(TrackInfo track, string? previousCoverKey)
     {
         return IsUsableTrack(track) &&
-               track.CoverBytes is { Length: > 0 } &&
+               HasCover(track) &&
                (string.IsNullOrEmpty(previousCoverKey) || CreateCoverKey(track) != previousCoverKey);
+    }
+
+    private static bool HasCover(TrackInfo track)
+    {
+        return track.CoverBytes is { Length: > 0 };
     }
 
     private static bool IsUsableTrack(TrackInfo track)

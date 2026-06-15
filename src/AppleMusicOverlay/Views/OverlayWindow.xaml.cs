@@ -12,6 +12,8 @@ public partial class OverlayWindow : Window
 {
     private static readonly Duration EnterDuration = TimeSpan.FromMilliseconds(230);
     private static readonly Duration ExitDuration = TimeSpan.FromMilliseconds(180);
+    private static readonly Duration ContentFadeOutDuration = TimeSpan.FromMilliseconds(70);
+    private static readonly Duration ContentFadeInDuration = TimeSpan.FromMilliseconds(130);
 
     private CancellationTokenSource? _hideCts;
     private OverlaySettings _settings = new();
@@ -39,7 +41,8 @@ public partial class OverlayWindow : Window
     {
         _hideCts?.Cancel();
         _hideCts = new CancellationTokenSource();
-        UpdateTrack(track);
+        SetTrackContent(track);
+        ContentRoot.Opacity = 1;
         Show();
         Visibility = Visibility.Visible;
         WindowStyleService.ApplyOverlayStyles(this);
@@ -56,9 +59,33 @@ public partial class OverlayWindow : Window
 
     public void UpdateTrack(TrackInfo track)
     {
+        if (IsVisible && Visibility == Visibility.Visible && OverlayRoot.Opacity > 0.6)
+        {
+            BeginContentSwapAnimation(track);
+            return;
+        }
+
+        SetTrackContent(track);
+    }
+
+    private void SetTrackContent(TrackInfo track)
+    {
         TitleText.Text = track.Title;
         ArtistText.Text = track.Artist;
         CoverImage.Source = CreateCover(track);
+        CoverImage.Opacity = CoverImage.Source == null ? 0 : 1;
+    }
+
+    private void BeginContentSwapAnimation(TrackInfo track)
+    {
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var fadeOut = new DoubleAnimation(1, 0.86, ContentFadeOutDuration) { EasingFunction = ease };
+        fadeOut.Completed += (_, _) =>
+        {
+            SetTrackContent(track);
+            ContentRoot.BeginAnimation(OpacityProperty, new DoubleAnimation(0.86, 1, ContentFadeInDuration) { EasingFunction = ease });
+        };
+        ContentRoot.BeginAnimation(OpacityProperty, fadeOut);
     }
 
     private async Task HideAfterDelayAsync(CancellationToken cancellationToken)
@@ -93,7 +120,7 @@ public partial class OverlayWindow : Window
         RootTranslate.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(0, -4, ExitDuration) { EasingFunction = ease });
     }
 
-    private static BitmapSource CreateCover(TrackInfo track)
+    private static BitmapSource? CreateCover(TrackInfo track)
     {
         if (track.CoverBytes is { Length: > 0 })
         {
@@ -110,33 +137,11 @@ public partial class OverlayWindow : Window
             }
             catch
             {
-                return CreatePlaceholder();
+                return null;
             }
         }
 
-        return CreatePlaceholder();
-    }
-
-    private static BitmapSource CreatePlaceholder()
-    {
-        int width = 96;
-        int height = 96;
-        byte[] pixels = new byte[width * height * 4];
-        for (int y = 0; y < height; y++)
-        {
-            for (int x = 0; x < width; x++)
-            {
-                int offset = (y * width + x) * 4;
-                pixels[offset] = (byte)(42 + x / 3);
-                pixels[offset + 1] = (byte)(35 + y / 4);
-                pixels[offset + 2] = (byte)(74 + x / 6);
-                pixels[offset + 3] = 255;
-            }
-        }
-
-        BitmapSource bitmap = BitmapSource.Create(width, height, 96, 96, PixelFormats.Bgra32, null, pixels, width * 4);
-        bitmap.Freeze();
-        return bitmap;
+        return null;
     }
 
     private void CoverImage_SizeChanged(object sender, SizeChangedEventArgs e)

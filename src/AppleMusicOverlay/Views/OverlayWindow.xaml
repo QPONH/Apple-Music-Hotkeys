@@ -23,7 +23,8 @@
         </Grid.RenderTransform>
 
         <Viewbox Stretch="Fill">
-            <Grid Width="188"
+            <Grid x:Name="ContentRoot"
+                  Width="188"
                   Height="238">
                 <Grid.RowDefinitions>
                     <RowDefinition Height="176" />
@@ -31,36 +32,55 @@
                     <RowDefinition Height="Auto" />
                 </Grid.RowDefinitions>
 
-                <Border Width="176"
-                        Height="176"
-                        HorizontalAlignment="Center"
-                        CornerRadius="8"
-                        ClipToBounds="True">
-                    <Border.Effect>
-                        <DropShadowEffect BlurRadius="22"
-                                          ShadowDepth="8"
-                                          Opacity="0.32"
+                <Grid Width="178"
+                      Height="178"
+                      HorizontalAlignment="Center">
+                    <Grid.Effect>
+                        <DropShadowEffect BlurRadius="30"
+                                          ShadowDepth="10"
+                                          Opacity="0.38"
                                           Color="#000000" />
-                    </Border.Effect>
-                    <Image x:Name="CoverImage"
-                           Stretch="Uniform"
-                           RenderOptions.BitmapScalingMode="HighQuality"
-                           SizeChanged="CoverImage_SizeChanged" />
-                </Border>
+                    </Grid.Effect>
+
+                    <Border x:Name="CoverFrame"
+                            Width="176"
+                            Height="176"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            Background="#08000000"
+                            BorderBrush="#26FFFFFF"
+                            BorderThickness="1"
+                            CornerRadius="9"
+                            ClipToBounds="True">
+                        <Image x:Name="CoverImage"
+                               Stretch="Uniform"
+                               RenderOptions.BitmapScalingMode="HighQuality"
+                               SizeChanged="CoverImage_SizeChanged" />
+                    </Border>
+
+                    <Border Width="176"
+                            Height="176"
+                            HorizontalAlignment="Center"
+                            VerticalAlignment="Center"
+                            BorderBrush="#22FFFFFF"
+                            BorderThickness="1"
+                            CornerRadius="9"
+                            IsHitTestVisible="False" />
+                </Grid>
 
                 <TextBlock x:Name="TitleText"
                            Grid.Row="1"
-                           Margin="4,13,4,0"
+                           Margin="4,12,4,0"
                            Foreground="#F7F7FA"
                            FontFamily="Segoe UI Variable Display, Segoe UI"
                            FontSize="13"
-                           FontWeight="SemiBold"
+                           FontWeight="DemiBold"
                            TextTrimming="CharacterEllipsis"
                            TextAlignment="Center">
                     <TextBlock.Effect>
                         <DropShadowEffect BlurRadius="8"
                                           ShadowDepth="1"
-                                          Opacity="0.72"
+                                          Opacity="0.8"
                                           Color="#000000" />
                     </TextBlock.Effect>
                 </TextBlock>
@@ -68,7 +88,7 @@
                 <TextBlock x:Name="ArtistText"
                            Grid.Row="2"
                            Margin="4,3,4,0"
-                           Foreground="#D5D7DE"
+                           Foreground="#D9DCE4"
                            FontFamily="Segoe UI Variable Text, Segoe UI"
                            FontSize="11"
                            TextTrimming="CharacterEllipsis"
@@ -76,7 +96,7 @@
                     <TextBlock.Effect>
                         <DropShadowEffect BlurRadius="8"
                                           ShadowDepth="1"
-                                          Opacity="0.72"
+                                          Opacity="0.76"
                                           Color="#000000" />
                     </TextBlock.Effect>
                 </TextBlock>

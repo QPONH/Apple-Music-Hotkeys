@@ -8,9 +8,9 @@ public sealed class TrackMonitorTests
     [Fact]
     public async Task PollOnceRaisesChangedForNewTracksAndRefreshesCoverUpdates()
     {
-        var first = new TrackInfo("First", "Artist", null, "AppleMusic", TimeSpan.FromMinutes(3), true);
+        var first = new TrackInfo("First", "Artist", [1], "AppleMusic", TimeSpan.FromMinutes(3), true);
         var same = first with { CoverBytes = [9], IsPlaying = false };
-        var second = first with { Title = "Second" };
+        var second = first with { Title = "Second", CoverBytes = [2] };
         var service = new FakeMediaSessionService(first, first, same, second, second, null);
         var monitor = new TrackMonitor(service, settleDelay: TimeSpan.Zero);
         var reads = new List<TrackInfo?>();
@@ -55,7 +55,7 @@ public sealed class TrackMonitorTests
     [Fact]
     public async Task PollOnceUsesSettledTrackWhenIdentityChangesDuringSettle()
     {
-        var first = new TrackInfo("First", "Artist", null, "AppleMusic", TimeSpan.FromMinutes(3), true);
+        var first = new TrackInfo("First", "Artist", [1], "AppleMusic", TimeSpan.FromMinutes(3), true);
         var transitional = new TrackInfo("Loading", "", null, "AppleMusic", TimeSpan.FromMinutes(3), true);
         var settled = new TrackInfo("Second", "Artist", [2], "AppleMusic", TimeSpan.FromMinutes(3), true);
         var service = new FakeMediaSessionService(first, first, transitional, settled);
@@ -72,7 +72,7 @@ public sealed class TrackMonitorTests
     [Fact]
     public async Task PollOnceDoesNotRaiseChangedForUnknownTransitionBeforeRealTrack()
     {
-        var first = new TrackInfo("First", "Artist", null, "AppleMusic", TimeSpan.FromMinutes(3), true);
+        var first = new TrackInfo("First", "Artist", [1], "AppleMusic", TimeSpan.FromMinutes(3), true);
         var unknown = new TrackInfo("Unknown Track", "Unknown Artist", null, "AppleMusic", TimeSpan.FromMinutes(3), true);
         var second = new TrackInfo("Second", "Artist", [2], "AppleMusic", TimeSpan.FromMinutes(3), true);
         var service = new FakeMediaSessionService(first, first, unknown, unknown, second, second);
@@ -93,7 +93,7 @@ public sealed class TrackMonitorTests
     [Fact]
     public async Task CurrentTrackKeepsLastStableTrackDuringUnknownTransition()
     {
-        var first = new TrackInfo("First", "Artist", null, "AppleMusic", TimeSpan.FromMinutes(3), true);
+        var first = new TrackInfo("First", "Artist", [1], "AppleMusic", TimeSpan.FromMinutes(3), true);
         var unknown = new TrackInfo("Unknown Track", "Unknown Artist", null, "AppleMusic", TimeSpan.FromMinutes(3), true);
         var second = new TrackInfo("Second", "Artist", [2], "AppleMusic", TimeSpan.FromMinutes(3), true);
         var service = new FakeMediaSessionService(first, first, unknown, unknown, second, second);
@@ -139,7 +139,6 @@ public sealed class TrackMonitorTests
         byte[] freshCover = [2];
         var first = new TrackInfo("First", "Artist", oldCover, "AppleMusic", TimeSpan.FromMinutes(3), true);
         var secondWithOldCover = new TrackInfo("Second", "Artist", oldCover, "AppleMusic", TimeSpan.FromMinutes(3), true);
-        var secondWithoutCover = secondWithOldCover with { CoverBytes = null };
         var secondWithFreshCover = secondWithOldCover with { CoverBytes = freshCover };
         var service = new FakeMediaSessionService(first, first, secondWithOldCover, secondWithOldCover, secondWithFreshCover);
         var monitor = new TrackMonitor(service, settleDelay: TimeSpan.Zero);
@@ -152,12 +151,12 @@ public sealed class TrackMonitorTests
         await monitor.PollOnceAsync();
         await monitor.PollOnceAsync();
 
-        Assert.Equal([first, secondWithoutCover], changes);
-        Assert.Equal([secondWithFreshCover], refreshes);
+        Assert.Equal([first, secondWithFreshCover], changes);
+        Assert.Empty(refreshes);
     }
 
     [Fact]
-    public async Task PollOnceRaisesChangedWhenSameTrackReceivesCoverLater()
+    public async Task PollOnceRaisesChangedOnlyAfterFirstTrackReceivesCover()
     {
         var withoutCover = new TrackInfo("Song", "Artist", null, "AppleMusic", TimeSpan.FromMinutes(3), true);
         var withCover = withoutCover with { CoverBytes = [2] };
@@ -171,8 +170,8 @@ public sealed class TrackMonitorTests
         await monitor.PollOnceAsync();
         await monitor.PollOnceAsync();
 
-        Assert.Equal([withoutCover], changes);
-        Assert.Equal([withCover], refreshes);
+        Assert.Equal([withCover], changes);
+        Assert.Empty(refreshes);
     }
 
     [Fact]
