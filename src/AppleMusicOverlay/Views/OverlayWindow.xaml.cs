@@ -39,9 +39,7 @@ public partial class OverlayWindow : Window
     {
         _hideCts?.Cancel();
         _hideCts = new CancellationTokenSource();
-        TitleText.Text = track.Title;
-        ArtistText.Text = track.Artist;
-        CoverImage.Source = CreateCover(track);
+        UpdateTrack(track);
         Show();
         Visibility = Visibility.Visible;
         WindowStyleService.ApplyOverlayStyles(this);
@@ -54,6 +52,13 @@ public partial class OverlayWindow : Window
         }
 
         return Task.CompletedTask;
+    }
+
+    public void UpdateTrack(TrackInfo track)
+    {
+        TitleText.Text = track.Title;
+        ArtistText.Text = track.Artist;
+        CoverImage.Source = CreateCover(track);
     }
 
     private async Task HideAfterDelayAsync(CancellationToken cancellationToken)

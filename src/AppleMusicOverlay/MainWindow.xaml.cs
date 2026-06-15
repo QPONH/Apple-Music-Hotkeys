@@ -37,6 +37,7 @@ public partial class MainWindow : Window
         Closed += MainWindow_Closed;
         _trackMonitor.TrackRead += (_, track) => Dispatcher.Invoke(() => _viewModel.ApplyTrack(track));
         _trackMonitor.TrackChanged += (_, track) => Dispatcher.Invoke(() => _ = _overlayWindow.ShowTrackAsync(track));
+        _trackMonitor.TrackRefreshed += (_, track) => Dispatcher.Invoke(() => _overlayWindow.UpdateTrack(track));
         _hotkeyService.ActionRequested += HotkeyService_ActionRequested;
     }
 

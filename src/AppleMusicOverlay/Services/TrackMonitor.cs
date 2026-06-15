@@ -18,6 +18,8 @@ public sealed class TrackMonitor : IDisposable
 
     public event EventHandler<TrackInfo>? TrackChanged;
 
+    public event EventHandler<TrackInfo>? TrackRefreshed;
+
     public TrackMonitor(
         IMediaSessionService mediaSessionService,
         TimeSpan? pollInterval = null,
@@ -77,14 +79,17 @@ public sealed class TrackMonitor : IDisposable
 
         if (trackChanged)
         {
-            track = await SettleTrackAsync(track, trackKey, cancellationToken);
+            track = await SettleTrackAsync(track, cancellationToken);
             trackKey = TrackIdentity.Create(track);
             coverKey = CreateCoverKey(track);
+            _lastTrackKey = trackKey;
+            _lastCoverKey = coverKey;
+            TrackChanged?.Invoke(this, track);
+            return;
         }
 
-        _lastTrackKey = trackKey;
         _lastCoverKey = coverKey;
-        TrackChanged?.Invoke(this, track);
+        TrackRefreshed?.Invoke(this, track);
     }
 
     public void Dispose()
@@ -117,23 +122,23 @@ public sealed class TrackMonitor : IDisposable
         }
     }
 
-    private async Task<TrackInfo> SettleTrackAsync(TrackInfo initialTrack, string initialTrackKey, CancellationToken cancellationToken)
+    private async Task<TrackInfo> SettleTrackAsync(TrackInfo initialTrack, CancellationToken cancellationToken)
     {
         if (_settleDelay <= TimeSpan.Zero)
         {
-            return await ReadSettledTrackAsync(initialTrack, initialTrackKey, cancellationToken);
+            return await ReadSettledTrackAsync(initialTrack, cancellationToken);
         }
 
         await Task.Delay(_settleDelay, cancellationToken);
-        return await ReadSettledTrackAsync(initialTrack, initialTrackKey, cancellationToken);
+        return await ReadSettledTrackAsync(initialTrack, cancellationToken);
     }
 
-    private async Task<TrackInfo> ReadSettledTrackAsync(TrackInfo initialTrack, string initialTrackKey, CancellationToken cancellationToken)
+    private async Task<TrackInfo> ReadSettledTrackAsync(TrackInfo initialTrack, CancellationToken cancellationToken)
     {
         try
         {
             TrackInfo? settledTrack = await _mediaSessionService.GetCurrentTrackAsync(cancellationToken);
-            if (settledTrack != null && TrackIdentity.Create(settledTrack) == initialTrackKey)
+            if (settledTrack != null)
             {
                 return settledTrack;
             }
