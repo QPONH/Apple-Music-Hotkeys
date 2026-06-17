@@ -25,20 +25,32 @@
         <Canvas x:Name="WindowCanvas"
                 Width="460.8"
                 Height="568.8">
-            <Canvas x:Name="VisualGroup"
-                    Canvas.Left="102.4"
-                    Canvas.Top="126.4"
-                    Width="256"
-                    Height="308"
-                    RenderTransformOrigin="0,0"
-                    SnapsToDevicePixels="True">
+            <Canvas x:Name="AutoHideGroup"
+                    Width="460.8"
+                    Height="568.8"
+                    Opacity="1"
+                    IsHitTestVisible="False"
+                    RenderTransformOrigin="0.5,0.5">
                 <Canvas.RenderTransform>
-                    <ScaleTransform x:Name="VisualScale"
-                                    CenterX="128"
-                                    CenterY="158"
+                    <ScaleTransform x:Name="AutoHideScale"
                                     ScaleX="1"
                                     ScaleY="1" />
                 </Canvas.RenderTransform>
+
+                <Canvas x:Name="VisualGroup"
+                        Canvas.Left="102.4"
+                        Canvas.Top="126.4"
+                        Width="256"
+                        Height="308"
+                        RenderTransformOrigin="0,0"
+                        SnapsToDevicePixels="True">
+                    <Canvas.RenderTransform>
+                        <ScaleTransform x:Name="VisualScale"
+                                        CenterX="128"
+                                        CenterY="158"
+                                        ScaleX="1"
+                                        ScaleY="1" />
+                    </Canvas.RenderTransform>
 
                 <Canvas x:Name="ShadowHost"
                         Canvas.Left="0"
@@ -131,6 +143,7 @@
                                           Color="#111827" />
                     </TextBlock.Effect>
                 </TextBlock>
+            </Canvas>
             </Canvas>
         </Canvas>
     </Grid>

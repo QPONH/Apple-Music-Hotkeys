@@ -15,6 +15,7 @@ public sealed class OverlaySettings
     public bool CloseToTray { get; set; } = true;
     public bool AutoStart { get; set; } = false;
     public bool PauseOverlay { get; set; } = false;
+    public bool AutoHideOnMouseNear { get; set; } = false;
     public string CaptureSourceAppUserModelId { get; set; } = string.Empty;
     public string KeyboardPrevious { get; set; } = "Ctrl+Shift+Left";
     public string KeyboardNext { get; set; } = "Ctrl+Shift+Right";

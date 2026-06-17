@@ -16,6 +16,7 @@ public sealed class OverlaySettingsTests
         Assert.False(settings.ShowControls);
         Assert.Equal(5, settings.DisplaySeconds);
         Assert.Equal(80d, settings.CoverShadowSizePercent);
+        Assert.False(settings.AutoHideOnMouseNear);
         Assert.Equal(string.Empty, settings.CaptureSourceAppUserModelId);
     }
 
@@ -97,7 +98,8 @@ public sealed class OverlaySettingsTests
             LeftPercent = 0.4,
             TopPercent = 0.7,
             KeyboardNext = "Ctrl+Shift+Right",
-            PauseOverlay = true
+            PauseOverlay = true,
+            AutoHideOnMouseNear = true
         };
 
         service.Save(input);
@@ -107,5 +109,6 @@ public sealed class OverlaySettingsTests
         Assert.Equal(0.7, loaded.TopPercent);
         Assert.Equal("Ctrl+Shift+Right", loaded.KeyboardNext);
         Assert.True(loaded.PauseOverlay);
+        Assert.True(loaded.AutoHideOnMouseNear);
     }
 }

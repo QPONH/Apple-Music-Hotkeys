@@ -349,6 +349,81 @@ public sealed class ControlPanelXamlTests
         Assert.Contains("KeyShadowCaster.Opacity = 0", overlayCode);
     }
 
+    [Fact]
+    public void PauseOverlayToggleSynchronizesRuntimeImmediately()
+    {
+        string mainXaml = File.ReadAllText(GetMainWindowXamlPath());
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+        string overlayCode = File.ReadAllText(GetOverlayWindowCodeBehindPath());
+        string pauseToggle = ExtractElementAround(mainXaml, "Settings.PauseOverlay");
+        string pauseHandler = ExtractBetween(mainCode, "private void PauseOverlay_Changed", "private void DeleteHotkey_Click");
+        string showCurrentOverlay = ExtractBetween(mainCode, "private async Task ShowCurrentTrackOverlayAsync()", "private void ExitApplication()");
+
+        Assert.Contains("Mode=TwoWay", pauseToggle);
+        Assert.Contains("UpdateSourceTrigger=PropertyChanged", pauseToggle);
+        Assert.Contains("Checked=\"PauseOverlay_Changed\"", pauseToggle);
+        Assert.Contains("Unchecked=\"PauseOverlay_Changed\"", pauseToggle);
+        Assert.Contains("sender is not CheckBox pauseOverlayToggle", pauseHandler);
+        Assert.Contains("bool isPaused = pauseOverlayToggle.IsChecked == true", pauseHandler);
+        Assert.Contains("_viewModel.Settings.PauseOverlay = isPaused", pauseHandler);
+        Assert.Contains("_overlayWindow.ApplySettings(_viewModel.Settings)", pauseHandler);
+        Assert.Contains("_trackMonitor.CurrentTrack ?? _viewModel.CurrentTrack", pauseHandler);
+        Assert.Contains("_overlayWindow.ShowTrackAsync(track)", pauseHandler);
+        Assert.Contains("if (isPaused)", pauseHandler);
+        Assert.Contains("DispatcherPriority.Background", pauseHandler);
+        Assert.Contains("_viewModel.Save", pauseHandler);
+        Assert.DoesNotContain("_overlayWindow.ApplySettings(_viewModel.Settings)", showCurrentOverlay);
+        Assert.Contains("private TrackInfo? _currentTrack", overlayCode);
+        Assert.Contains("pauseOverlayChanged", overlayCode);
+        Assert.Contains("ApplyPauseOverlayMode(pauseOverlayChanged)", overlayCode);
+        Assert.Contains("ShowTrackAsync(_currentTrack)", overlayCode);
+        Assert.Contains("BeginExitAnimation();", overlayCode);
+    }
+
+    [Fact]
+    public void TrackChangeTemporaryOverlayRestoresAutoHideVisualLayer()
+    {
+        string overlayCode = File.ReadAllText(GetOverlayWindowCodeBehindPath());
+        string showTrack = ExtractBetween(overlayCode, "public Task ShowTrackAsync", "public void UpdateTrack");
+
+        Assert.Contains("RestorePointerAutoHideVisual(force: true)", showTrack);
+        Assert.Contains("HideAfterDelayAsync", showTrack);
+        Assert.Contains("if (!_settings.PauseOverlay)", showTrack);
+        Assert.Contains("_displayRevision++", overlayCode);
+        Assert.Contains("int exitRevision = _displayRevision", overlayCode);
+        Assert.Contains("if (_displayRevision == exitRevision)", overlayCode);
+    }
+
+    [Fact]
+    public void PauseOverlaySubOptionsExposeMouseAutoHideAndPositionUi()
+    {
+        string mainXaml = File.ReadAllText(GetMainWindowXamlPath());
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+        string settingsCode = File.ReadAllText(GetOverlaySettingsPath());
+        string overlayCode = File.ReadAllText(GetOverlayWindowCodeBehindPath());
+
+        Assert.Contains("Settings.AutoHideOnMouseNear", mainXaml);
+        Assert.Contains("MouseAutoHide_Changed", mainXaml);
+        Assert.Contains("IsEnabled=\"{Binding Settings.PauseOverlay}\"", mainXaml);
+        Assert.Contains("开启常驻显示悬浮窗后可用", mainXaml);
+        Assert.Contains("鼠标靠近时自动隐藏", mainXaml);
+        Assert.Contains("悬浮窗位置", mainXaml);
+        Assert.Contains("调整位置", mainXaml);
+        Assert.Contains("PositionOverlay_Click", mainXaml);
+
+        Assert.Contains("public bool AutoHideOnMouseNear", settingsCode);
+        Assert.Contains("private void MouseAutoHide_Changed", mainCode);
+        Assert.Contains("_overlayWindow.ApplySettings(_viewModel.Settings)", ExtractBetween(mainCode, "private void MouseAutoHide_Changed", "private void PositionOverlay_Click"));
+        Assert.Contains("private void PositionOverlay_Click", mainCode);
+        Assert.Contains("StartPointerAutoHideTracking", overlayCode);
+        Assert.Contains("StopPointerAutoHideTracking", overlayCode);
+        Assert.Contains("CoverClip.PointToScreen", overlayCode);
+        Assert.Contains("GetCursorPos", overlayCode);
+        Assert.Contains("HandoffBehavior.SnapshotAndReplace", overlayCode);
+        Assert.Contains("AutoHideGroup.BeginAnimation(OpacityProperty", overlayCode);
+        Assert.Contains("private const double PointerAutoHideOpacity = 0;", overlayCode);
+    }
+
     private static string GetMainWindowXamlPath()
     {
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
@@ -386,6 +461,18 @@ public sealed class ControlPanelXamlTests
 
         int end = text.IndexOf(endMarker, start + startMarker.Length, StringComparison.Ordinal);
         Assert.True(end >= 0, $"Missing end marker: {endMarker}");
+
+        return text[start..end];
+    }
+
+    private static string ExtractElementAround(string text, string marker)
+    {
+        int markerIndex = text.IndexOf(marker, StringComparison.Ordinal);
+        Assert.True(markerIndex >= 0, $"Missing marker: {marker}");
+
+        int start = text.LastIndexOf('<', markerIndex);
+        int end = text.IndexOf("/>", markerIndex, StringComparison.Ordinal);
+        Assert.True(start >= 0 && end >= 0, $"Could not extract element around marker: {marker}");
 
         return text[start..end];
     }

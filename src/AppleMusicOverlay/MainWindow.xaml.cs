@@ -245,6 +245,45 @@ public partial class MainWindow : Window
         _overlayWindow.ApplySettings(_viewModel.Settings);
     }
 
+    private void PauseOverlay_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_overlayWindow == null || sender is not CheckBox pauseOverlayToggle)
+        {
+            return;
+        }
+
+        bool isPaused = pauseOverlayToggle.IsChecked == true;
+        _viewModel.Settings.PauseOverlay = isPaused;
+        _overlayWindow.ApplySettings(_viewModel.Settings);
+        if (isPaused)
+        {
+            TrackInfo? track = _trackMonitor.CurrentTrack ?? _viewModel.CurrentTrack;
+            if (track != null)
+            {
+                _ = _overlayWindow.ShowTrackAsync(track);
+            }
+        }
+
+        _ = Dispatcher.InvokeAsync(() => _viewModel.Save(), DispatcherPriority.Background);
+    }
+
+    private void MouseAutoHide_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_overlayWindow == null || sender is not CheckBox autoHideToggle)
+        {
+            return;
+        }
+
+        _viewModel.Settings.AutoHideOnMouseNear = autoHideToggle.IsChecked == true;
+        _overlayWindow.ApplySettings(_viewModel.Settings);
+        _ = Dispatcher.InvokeAsync(() => _viewModel.Save(), DispatcherPriority.Background);
+    }
+
+    private void PositionOverlay_Click(object sender, RoutedEventArgs e)
+    {
+        _viewModel.SetStatus("悬浮窗位置调整将在下一阶段开放。");
+    }
+
     private void DeleteHotkey_Click(object sender, RoutedEventArgs e)
     {
         if (sender is not Button button)
@@ -942,7 +981,6 @@ public partial class MainWindow : Window
 
     private async Task ShowCurrentTrackOverlayAsync()
     {
-        _overlayWindow.ApplySettings(_viewModel.Settings);
         TrackInfo? track = _trackMonitor.CurrentTrack ?? _viewModel.CurrentTrack;
         if (track == null)
         {

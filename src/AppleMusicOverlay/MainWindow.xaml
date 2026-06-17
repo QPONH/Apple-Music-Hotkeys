@@ -1121,7 +1121,63 @@
                                         </Grid>
                                         <CheckBox Content="常驻显示悬浮窗"
                                                   Margin="0,18,0,0"
-                                                  IsChecked="{Binding Settings.PauseOverlay}" />
+                                                  IsChecked="{Binding Settings.PauseOverlay, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                  Checked="PauseOverlay_Changed"
+                                                  Unchecked="PauseOverlay_Changed" />
+                                        <Border Margin="0,14"
+                                                Background="{StaticResource BorderSoftBrush}"
+                                                Height="1" />
+                                        <Grid IsEnabled="{Binding Settings.PauseOverlay}"
+                                              ToolTip="开启常驻显示悬浮窗后可用">
+                                            <Grid.RowDefinitions>
+                                                <RowDefinition Height="Auto" />
+                                                <RowDefinition Height="14" />
+                                                <RowDefinition Height="Auto" />
+                                            </Grid.RowDefinitions>
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel>
+                                                    <TextBlock Text="鼠标靠近时自动隐藏"
+                                                               Style="{StaticResource SectionTitleStyle}" />
+                                                    <TextBlock Text="鼠标靠近封面时，悬浮窗会暂时淡出。"
+                                                               Margin="0,5,0,0"
+                                                               Style="{StaticResource BodyTextStyle}" />
+                                                    <TextBlock Text="开启常驻显示悬浮窗后可用"
+                                                               Margin="0,5,0,0"
+                                                               Style="{StaticResource CaptionTextStyle}" />
+                                                </StackPanel>
+                                                <CheckBox Grid.Column="1"
+                                                          VerticalAlignment="Center"
+                                                          IsChecked="{Binding Settings.AutoHideOnMouseNear, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                          Checked="MouseAutoHide_Changed"
+                                                          Unchecked="MouseAutoHide_Changed" />
+                                            </Grid>
+                                            <Grid Grid.Row="2">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel>
+                                                    <TextBlock Text="悬浮窗位置"
+                                                               Style="{StaticResource SectionTitleStyle}" />
+                                                    <TextBlock Text="调整悬浮窗在屏幕上的显示位置。"
+                                                               Margin="0,5,0,0"
+                                                               Style="{StaticResource BodyTextStyle}" />
+                                                    <TextBlock Text="开启常驻显示悬浮窗后可用"
+                                                               Margin="0,5,0,0"
+                                                               Style="{StaticResource CaptionTextStyle}" />
+                                                </StackPanel>
+                                                <Button Grid.Column="1"
+                                                        Content="调整位置"
+                                                        Width="96"
+                                                        Style="{StaticResource SecondaryButtonStyle}"
+                                                        VerticalAlignment="Center"
+                                                        Click="PositionOverlay_Click" />
+                                            </Grid>
+                                        </Grid>
                                     </StackPanel>
                                 </Border>
 
