@@ -6,8 +6,9 @@ public sealed class OverlaySettings
     public DisplayStyle DisplayStyle { get; set; } = DisplayStyle.MinimalCover;
     public double LeftPercent { get; set; } = 0.04;
     public double TopPercent { get; set; } = 0.42;
-    public int ScalePercent { get; set; } = 100;
+    public double ScalePercent { get; set; } = 100;
     public int DisplaySeconds { get; set; } = 5;
+    public double CoverShadowSizePercent { get; set; } = 80;
     public bool ShowTitle { get; set; } = true;
     public bool ShowArtist { get; set; } = true;
     public bool ShowControls { get; set; } = false;

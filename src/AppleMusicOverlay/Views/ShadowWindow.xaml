@@ -1,0 +1,41 @@
+<Window x:Class="AppleMusicOverlay.Views.ShadowWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ResizeMode="NoResize"
+        ShowActivated="False"
+        ShowInTaskbar="False"
+        Focusable="False"
+        IsHitTestVisible="False">
+    <Grid IsHitTestVisible="False"
+          SnapsToDevicePixels="True">
+        <Border x:Name="AmbientShadowShape"
+                Margin="56"
+                Background="#0F172A"
+                CornerRadius="20">
+            <Border.Effect>
+                <DropShadowEffect x:Name="AmbientShadow"
+                                  BlurRadius="62"
+                                  ShadowDepth="0"
+                                  Opacity="0.28"
+                                  Color="#000000" />
+            </Border.Effect>
+        </Border>
+
+        <Border x:Name="LiftShadowShape"
+                Margin="56"
+                Background="#0F172A"
+                CornerRadius="20">
+            <Border.Effect>
+                <DropShadowEffect x:Name="LiftShadow"
+                                  BlurRadius="42"
+                                  Direction="270"
+                                  ShadowDepth="14"
+                                  Opacity="0.17"
+                                  Color="#000000" />
+            </Border.Effect>
+        </Border>
+    </Grid>
+</Window>

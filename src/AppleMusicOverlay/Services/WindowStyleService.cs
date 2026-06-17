@@ -28,6 +28,29 @@ public static class WindowStyleService
         SetWindowPos(hwnd, HwndTopmost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate | SwpShowWindow);
     }
 
+    public static void ApplyShadowStyles(Window window)
+    {
+        var helper = new WindowInteropHelper(window);
+        IntPtr hwnd = helper.Handle == IntPtr.Zero ? helper.EnsureHandle() : helper.Handle;
+        int style = GetWindowLong(hwnd, GwlExStyle);
+        style |= WsExTransparent | WsExLayered | WsExToolWindow | WsExNoActivate;
+        SetWindowLong(hwnd, GwlExStyle, style);
+    }
+
+    public static void PlaceShadowBehind(Window shadowWindow, Window ownerWindow)
+    {
+        var shadowHelper = new WindowInteropHelper(shadowWindow);
+        var ownerHelper = new WindowInteropHelper(ownerWindow);
+        IntPtr shadowHwnd = shadowHelper.Handle == IntPtr.Zero ? shadowHelper.EnsureHandle() : shadowHelper.Handle;
+        IntPtr ownerHwnd = ownerHelper.Handle == IntPtr.Zero ? ownerHelper.EnsureHandle() : ownerHelper.Handle;
+        if (ownerHwnd == IntPtr.Zero)
+        {
+            return;
+        }
+
+        SetWindowPos(shadowHwnd, ownerHwnd, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate | SwpShowWindow);
+    }
+
     [DllImport("user32.dll")]
     private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 

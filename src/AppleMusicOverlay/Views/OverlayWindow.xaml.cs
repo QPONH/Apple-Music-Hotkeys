@@ -10,6 +10,25 @@ namespace AppleMusicOverlay.Views;
 
 public partial class OverlayWindow : Window
 {
+    private const double BaseWidth = 256;
+    private const double BaseHeight = 308;
+    private const double MaxOverlayScale = 1.8;
+    private const double VisualCenterX = 128;
+    private const double VisualCenterY = 158;
+    private const double MaxVisualHorizontalExtent = VisualCenterX;
+    private const double MaxVisualVerticalExtent = VisualCenterY;
+    private const double WindowWidth = MaxVisualHorizontalExtent * 2 * MaxOverlayScale;
+    private const double WindowHeight = MaxVisualVerticalExtent * 2 * MaxOverlayScale;
+    private const double CoverSize = 176;
+    private const double ShadowCasterInset = 2;
+    private const double ShadowCasterSize = CoverSize - (ShadowCasterInset * 2);
+    private const double MaxAmbientShadowBlur = 32;
+    private const double MaxAmbientShadowDepth = 0;
+    private const double MaxAmbientShadowOpacity = 0.19;
+    private const double MaxKeyShadowBlur = 36;
+    private const double MaxKeyShadowDepth = 8;
+    private const double MaxKeyShadowOpacity = 0.22;
+
     private static readonly Duration EnterDuration = TimeSpan.FromMilliseconds(230);
     private static readonly Duration ExitDuration = TimeSpan.FromMilliseconds(180);
     private static readonly Duration ContentFadeOutDuration = TimeSpan.FromMilliseconds(70);
@@ -17,6 +36,8 @@ public partial class OverlayWindow : Window
 
     private CancellationTokenSource? _hideCts;
     private OverlaySettings _settings = new();
+    private bool _hasCover;
+    private bool _hasPositionedWindow;
 
     public OverlayWindow()
     {
@@ -29,12 +50,15 @@ public partial class OverlayWindow : Window
     {
         _settings = OverlaySettingsNormalizer.Normalize(settings);
         double scale = _settings.ScalePercent / 100.0;
-        Width = 188 * scale;
-        Height = 238 * scale;
-        Left = Math.Max(0, SystemParameters.PrimaryScreenWidth - Width - 28) * _settings.LeftPercent + 14;
-        Top = Math.Max(0, SystemParameters.PrimaryScreenHeight - Height - 28) * _settings.TopPercent + 14;
+        Point visualCenter = GetOrCreateVisualCenter(scale);
+        Width = WindowWidth;
+        Height = WindowHeight;
+        Left = visualCenter.X - (WindowWidth / 2);
+        Top = visualCenter.Y - (WindowHeight / 2);
         TitleText.Visibility = _settings.ShowTitle ? Visibility.Visible : Visibility.Collapsed;
         ArtistText.Visibility = _settings.ShowArtist ? Visibility.Visible : Visibility.Collapsed;
+        ApplyScaleTransform(scale);
+        ApplyCoverShadowSettings();
     }
 
     public Task ShowTrackAsync(TrackInfo track)
@@ -42,7 +66,7 @@ public partial class OverlayWindow : Window
         _hideCts?.Cancel();
         _hideCts = new CancellationTokenSource();
         SetTrackContent(track);
-        ContentRoot.Opacity = 1;
+        VisualGroup.Opacity = 1;
         Show();
         Visibility = Visibility.Visible;
         WindowStyleService.ApplyOverlayStyles(this);
@@ -72,8 +96,11 @@ public partial class OverlayWindow : Window
     {
         TitleText.Text = track.Title;
         ArtistText.Text = track.Artist;
-        CoverImage.Source = CreateCover(track);
-        CoverImage.Opacity = CoverImage.Source == null ? 0 : 1;
+        BitmapSource? cover = CreateCover(track);
+        CoverImage.Source = cover;
+        _hasCover = cover != null;
+        CoverImage.Opacity = _hasCover ? 1 : 0;
+        ApplyCoverShadowSettings();
     }
 
     private void BeginContentSwapAnimation(TrackInfo track)
@@ -83,9 +110,9 @@ public partial class OverlayWindow : Window
         fadeOut.Completed += (_, _) =>
         {
             SetTrackContent(track);
-            ContentRoot.BeginAnimation(OpacityProperty, new DoubleAnimation(0.86, 1, ContentFadeInDuration) { EasingFunction = ease });
+            VisualGroup.BeginAnimation(OpacityProperty, new DoubleAnimation(0.86, 1, ContentFadeInDuration) { EasingFunction = ease });
         };
-        ContentRoot.BeginAnimation(OpacityProperty, fadeOut);
+        VisualGroup.BeginAnimation(OpacityProperty, fadeOut);
     }
 
     private async Task HideAfterDelayAsync(CancellationToken cancellationToken)
@@ -120,6 +147,53 @@ public partial class OverlayWindow : Window
         RootTranslate.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(0, -4, ExitDuration) { EasingFunction = ease });
     }
 
+    private void ApplyCoverShadowSettings()
+    {
+        double t = _settings.CoverShadowSizePercent / 100.0;
+        if (!_hasCover)
+        {
+            KeyShadowCaster.Opacity = 0;
+            AmbientShadowCaster.Opacity = 0;
+            return;
+        }
+
+        KeyShadowCaster.Opacity = 1;
+        AmbientShadowCaster.Opacity = 1;
+        KeyShadowCaster.Width = ShadowCasterSize;
+        KeyShadowCaster.Height = ShadowCasterSize;
+        AmbientShadowCaster.Width = ShadowCasterSize;
+        AmbientShadowCaster.Height = ShadowCasterSize;
+        AmbientShadowEffect.BlurRadius = MaxAmbientShadowBlur * t;
+        AmbientShadowEffect.ShadowDepth = MaxAmbientShadowDepth * t;
+        AmbientShadowEffect.Opacity = MaxAmbientShadowOpacity * t;
+        KeyShadowEffect.BlurRadius = MaxKeyShadowBlur * t;
+        KeyShadowEffect.ShadowDepth = MaxKeyShadowDepth * t;
+        KeyShadowEffect.Opacity = MaxKeyShadowOpacity * t;
+    }
+
+    private Point GetOrCreateVisualCenter(double scale)
+    {
+        if (_hasPositionedWindow)
+        {
+            return new Point(Left + (WindowWidth / 2), Top + (WindowHeight / 2));
+        }
+
+        double visibleContentW = BaseWidth * scale;
+        double visibleContentH = BaseHeight * scale;
+        double visualLeft = Math.Max(0, SystemParameters.PrimaryScreenWidth - visibleContentW - 28) * _settings.LeftPercent + 14;
+        double visualTop = Math.Max(0, SystemParameters.PrimaryScreenHeight - visibleContentH - 28) * _settings.TopPercent + 14;
+        _hasPositionedWindow = true;
+        return new Point(visualLeft + (visibleContentW / 2), visualTop + (visibleContentH / 2));
+    }
+
+    private void ApplyScaleTransform(double scale)
+    {
+        var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
+        var duration = TimeSpan.FromMilliseconds(110);
+        VisualScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(scale, duration) { EasingFunction = ease });
+        VisualScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(scale, duration) { EasingFunction = ease });
+    }
+
     private static BitmapSource? CreateCover(TrackInfo track)
     {
         if (track.CoverBytes is { Length: > 0 })
@@ -146,6 +220,6 @@ public partial class OverlayWindow : Window
 
     private void CoverImage_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        CoverImage.Clip = new RectangleGeometry(new Rect(0, 0, e.NewSize.Width, e.NewSize.Height), 7, 7);
+        CoverImage.Clip = new RectangleGeometry(new Rect(0, 0, e.NewSize.Width, e.NewSize.Height), 9, 9);
     }
 }

@@ -15,6 +15,7 @@ public sealed class OverlaySettingsTests
         Assert.True(settings.ShowArtist);
         Assert.False(settings.ShowControls);
         Assert.Equal(5, settings.DisplaySeconds);
+        Assert.Equal(80d, settings.CoverShadowSizePercent);
         Assert.Equal(string.Empty, settings.CaptureSourceAppUserModelId);
     }
 
@@ -26,7 +27,8 @@ public sealed class OverlaySettingsTests
             LeftPercent = -0.25,
             TopPercent = 2.0,
             ScalePercent = 240,
-            DisplaySeconds = 45
+            DisplaySeconds = 45,
+            CoverShadowSizePercent = 180.5
         };
 
         OverlaySettings normalized = OverlaySettingsNormalizer.Normalize(settings);
@@ -35,6 +37,52 @@ public sealed class OverlaySettingsTests
         Assert.Equal(1, normalized.TopPercent);
         Assert.Equal(180, normalized.ScalePercent);
         Assert.Equal(10, normalized.DisplaySeconds);
+        Assert.Equal(100d, normalized.CoverShadowSizePercent);
+    }
+
+    [Fact]
+    public void NormalizePreservesFractionalCoverShadowSize()
+    {
+        var settings = new OverlaySettings
+        {
+            CoverShadowSizePercent = 0.5
+        };
+
+        OverlaySettings normalized = OverlaySettingsNormalizer.Normalize(settings);
+
+        Assert.Equal(0.5, normalized.CoverShadowSizePercent);
+    }
+
+    [Fact]
+    public void NormalizePreservesFractionalScalePercent()
+    {
+        var settings = new OverlaySettings
+        {
+            ScalePercent = 110.5
+        };
+
+        OverlaySettings normalized = OverlaySettingsNormalizer.Normalize(settings);
+
+        Assert.Equal(110.5, normalized.ScalePercent);
+    }
+
+    [Fact]
+    public void NormalizeAllowsEmptyHotkeysForDeletedBindings()
+    {
+        var settings = new OverlaySettings
+        {
+            KeyboardPrevious = " ",
+            KeyboardNext = string.Empty,
+            KeyboardToggle = "Ctrl+Shift+Down",
+            KeyboardTestOverlay = " Ctrl+Shift+Up "
+        };
+
+        OverlaySettings normalized = OverlaySettingsNormalizer.Normalize(settings);
+
+        Assert.Equal(string.Empty, normalized.KeyboardPrevious);
+        Assert.Equal(string.Empty, normalized.KeyboardNext);
+        Assert.Equal("Ctrl+Shift+Down", normalized.KeyboardToggle);
+        Assert.Equal("Ctrl+Shift+Up", normalized.KeyboardTestOverlay);
     }
 
     [Fact]
