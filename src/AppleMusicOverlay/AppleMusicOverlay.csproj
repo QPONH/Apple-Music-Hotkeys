@@ -9,10 +9,16 @@
     <UseWPF>true</UseWPF>
     <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\MusicFloat.ico</ApplicationIcon>
   </PropertyGroup>
 
   <ItemGroup>
     <FrameworkReference Include="Microsoft.WindowsDesktop.App.WindowsForms" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Remove="Assets\MusicFloat.ico" />
+    <Content Include="Assets\MusicFloat.ico" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

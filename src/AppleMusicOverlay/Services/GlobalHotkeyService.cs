@@ -5,18 +5,21 @@ using AppleMusicOverlay.Models;
 
 namespace AppleMusicOverlay.Services;
 
+public sealed record GlobalHotkeyEventArgs(AppAction Action, string HotkeyText);
+
 public sealed class GlobalHotkeyService : IDisposable
 {
     private const int WmHotkey = 0x0312;
     private const uint ModNoRepeat = 0x4000;
 
     private readonly Window _owner;
-    private readonly Dictionary<int, AppAction> _actions = new();
+    private readonly Dictionary<int, RegisteredHotkey> _hotkeys = new();
     private HwndSource? _source;
     private int _nextId = 0x4150;
     private bool _disposed;
 
     public event EventHandler<AppAction>? ActionRequested;
+    public event EventHandler<GlobalHotkeyEventArgs>? HotkeyPressed;
 
     public GlobalHotkeyService(Window owner)
     {
@@ -39,7 +42,7 @@ public sealed class GlobalHotkeyService : IDisposable
             return false;
         }
 
-        _actions[id] = action;
+        _hotkeys[id] = new RegisteredHotkey(action, hotkeyText.Trim());
         return true;
     }
 
@@ -51,12 +54,12 @@ public sealed class GlobalHotkeyService : IDisposable
         }
 
         IntPtr handle = EnsureHandle();
-        foreach (int id in _actions.Keys)
+        foreach (int id in _hotkeys.Keys)
         {
             UnregisterHotKey(handle, id);
         }
 
-        _actions.Clear();
+        _hotkeys.Clear();
     }
 
     public void Dispose()
@@ -87,10 +90,12 @@ public sealed class GlobalHotkeyService : IDisposable
 
     private IntPtr WndProc(IntPtr hwnd, int msg, IntPtr wParam, IntPtr lParam, ref bool handled)
     {
-        if (msg == WmHotkey && _actions.TryGetValue(wParam.ToInt32(), out AppAction action))
+        if (msg == WmHotkey && _hotkeys.TryGetValue(wParam.ToInt32(), out RegisteredHotkey? hotkey))
         {
             handled = true;
-            ActionRequested?.Invoke(this, action);
+            var args = new GlobalHotkeyEventArgs(hotkey.Action, hotkey.HotkeyText);
+            HotkeyPressed?.Invoke(this, args);
+            ActionRequested?.Invoke(this, hotkey.Action);
         }
 
         return IntPtr.Zero;
@@ -109,4 +114,6 @@ public sealed class GlobalHotkeyService : IDisposable
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
+
+    private sealed record RegisteredHotkey(AppAction Action, string HotkeyText);
 }

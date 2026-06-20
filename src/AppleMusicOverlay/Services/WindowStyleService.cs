@@ -18,12 +18,21 @@ public static class WindowStyleService
 
     private static readonly IntPtr HwndTopmost = new(-1);
 
-    public static void ApplyOverlayStyles(Window window)
+    public static void ApplyOverlayStyles(Window window, bool clickThrough = true)
     {
         var helper = new WindowInteropHelper(window);
         IntPtr hwnd = helper.Handle == IntPtr.Zero ? helper.EnsureHandle() : helper.Handle;
         int style = GetWindowLong(hwnd, GwlExStyle);
-        style |= WsExTransparent | WsExLayered | WsExToolWindow | WsExNoActivate;
+        style |= WsExLayered | WsExToolWindow | WsExNoActivate;
+        if (clickThrough)
+        {
+            style |= WsExTransparent;
+        }
+        else
+        {
+            style &= ~WsExTransparent;
+        }
+
         SetWindowLong(hwnd, GwlExStyle, style);
         SetWindowPos(hwnd, HwndTopmost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate | SwpShowWindow);
     }

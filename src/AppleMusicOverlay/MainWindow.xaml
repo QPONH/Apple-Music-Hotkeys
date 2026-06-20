@@ -7,6 +7,7 @@
         Height="660"
         MinWidth="780"
         MinHeight="540"
+        ShowInTaskbar="True"
         WindowStyle="None"
         ResizeMode="CanResize"
         AllowsTransparency="True"
@@ -912,15 +913,20 @@
                                                 Background="{StaticResource BorderSoftBrush}" />
                                         <CheckBox Grid.Row="4"
                                                   Content="悬浮窗显示歌名"
-                                                  IsChecked="{Binding Settings.ShowTitle}" />
+                                                  IsChecked="{Binding Settings.ShowTitle}"
+                                                  Checked="OverlayTextOption_Changed"
+                                                  Unchecked="OverlayTextOption_Changed" />
                                         <Border Grid.Row="5"
                                                 Margin="0,12"
                                                 Background="{StaticResource BorderSoftBrush}" />
                                         <CheckBox Grid.Row="6"
                                                   Content="悬浮窗显示歌手"
-                                                  IsChecked="{Binding Settings.ShowArtist}" />
+                                                  IsChecked="{Binding Settings.ShowArtist}"
+                                                  Checked="OverlayTextOption_Changed"
+                                                  Unchecked="OverlayTextOption_Changed" />
                                     </Grid>
                                 </Border>
+
                             </StackPanel>
                             <Border x:Name="LegacyHotkeyCapturePanel"
                                     Panel.ZIndex="20"
@@ -987,8 +993,8 @@
                                                     Minimum="0"
                                                     Maximum="100"
                                                     TickFrequency="0.5"
-                                                    Value="{Binding Settings.CoverShadowSizePercent}"
-                                                    ValueChanged="SettingsControl_Changed" />
+                                                    Value="{Binding Settings.CoverShadowSizePercent, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                    ValueChanged="OverlaySettingSlider_ValueChanged" />
                                         </StackPanel>
                                     </Grid>
                                 </Border>
@@ -997,8 +1003,6 @@
                                         Margin="0,0,0,14">
                                     <Grid>
                                         <Grid.RowDefinitions>
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="1" />
                                             <RowDefinition Height="Auto" />
                                             <RowDefinition Height="1" />
                                             <RowDefinition Height="Auto" />
@@ -1027,8 +1031,8 @@
                                                         Maximum="10"
                                                         TickFrequency="1"
                                                         IsSnapToTickEnabled="True"
-                                                        Value="{Binding Settings.DisplaySeconds}"
-                                                        ValueChanged="SettingsControl_Changed" />
+                                                        Value="{Binding Settings.DisplaySeconds, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                        ValueChanged="OverlaySettingSlider_ValueChanged" />
                                             </StackPanel>
                                         </Grid>
 
@@ -1058,39 +1062,8 @@
                                                         Minimum="70"
                                                         Maximum="180"
                                                         TickFrequency="0.5"
-                                                        Value="{Binding Settings.ScalePercent}"
-                                                        ValueChanged="SettingsControl_Changed" />
-                                            </StackPanel>
-                                        </Grid>
-
-                                        <Border Grid.Row="3"
-                                                Margin="0,18"
-                                                Background="{StaticResource BorderSoftBrush}" />
-
-                                        <Grid Grid.Row="4">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <StackPanel>
-                                                <TextBlock Text="预览测试"
-                                                           Style="{StaticResource SectionTitleStyle}" />
-                                                <TextBlock Text="使用当前歌曲触发一次悬浮窗，便于检查显示时长和缩放。"
-                                                           Margin="0,5,0,0"
-                                                           Style="{StaticResource BodyTextStyle}" />
-                                            </StackPanel>
-                                            <StackPanel Grid.Column="1"
-                                                        Orientation="Horizontal"
-                                                        VerticalAlignment="Center">
-                                                <Button Content="保存"
-                                                        Width="82"
-                                                        Style="{StaticResource SecondaryButtonStyle}"
-                                                        Margin="0,0,8,0"
-                                                        Click="Save_Click" />
-                                                <Button Content="测试悬浮窗"
-                                                        Width="112"
-                                                        Style="{StaticResource PrimaryButtonStyle}"
-                                                        Click="ShowCurrentTrack_Click" />
+                                                        Value="{Binding Settings.ScalePercent, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                        ValueChanged="OverlaySettingSlider_ValueChanged" />
                                             </StackPanel>
                                         </Grid>
                                     </Grid>
@@ -1197,8 +1170,7 @@
                                     Visibility="Collapsed"
                                     Opacity="0"
                                     ClipToBounds="True"
-                                    RenderTransformOrigin="0.5,0"
-                                    IsHitTestVisible="False">
+                                    RenderTransformOrigin="0.5,0">
                                 <Border.RenderTransform>
                                     <TransformGroup>
                                         <ScaleTransform x:Name="HotkeyCaptureScale"
@@ -1225,6 +1197,20 @@
                                                FontWeight="Normal"
                                                LineHeight="17"
                                                TextWrapping="Wrap" />
+                                    <StackPanel x:Name="HotkeyCaptureActionsPanel"
+                                                Margin="0,10,0,0"
+                                                Orientation="Vertical"
+                                                Visibility="Collapsed">
+                                        <Button x:Name="GamepadCapturePrimaryButton"
+                                                Height="30"
+                                                Margin="0,0,0,6"
+                                                Style="{StaticResource PrimaryButtonStyle}"
+                                                Click="GamepadCapturePrimary_Click" />
+                                        <Button x:Name="GamepadCaptureSecondaryButton"
+                                                Height="30"
+                                                Style="{StaticResource SecondaryButtonStyle}"
+                                                Click="GamepadCaptureSecondary_Click" />
+                                    </StackPanel>
                                 </StackPanel>
                             </Border>
                         </StackPanel>
@@ -1234,7 +1220,7 @@
                             <StackPanel>
                                 <TextBlock Text="快捷键设置"
                                            Style="{StaticResource PageTitleStyle}" />
-                                <TextBlock Text="点击任一快捷键框后，按下想要的快捷键；Esc 取消。修改完成后请点击保存。"
+                                <TextBlock Text="点击任一快捷键框后，按下想要的快捷键；Esc 取消。录入成功后会自动保存。"
                                            Margin="0,5,0,16"
                                            Style="{StaticResource BodyTextStyle}" />
 
@@ -1248,8 +1234,6 @@
                                             <RowDefinition Height="1" />
                                             <RowDefinition Height="Auto" />
                                             <RowDefinition Height="1" />
-                                            <RowDefinition Height="Auto" />
-                                            <RowDefinition Height="18" />
                                             <RowDefinition Height="Auto" />
                                         </Grid.RowDefinitions>
 
@@ -1374,7 +1358,7 @@
                                                 <ColumnDefinition Width="Auto" />
                                             </Grid.ColumnDefinitions>
                                             <StackPanel>
-                                                <TextBlock Text="测试悬浮窗"
+                                                <TextBlock Text="显示悬浮窗"
                                                            Style="{StaticResource ValueTextStyle}" />
                                                 <TextBlock Text="用当前歌曲显示一次悬浮窗"
                                                            Margin="0,4,0,0"
@@ -1400,45 +1384,224 @@
                                                     Style="{StaticResource SecondaryButtonStyle}"
                                                     Click="DeleteHotkey_Click" />
                                         </Grid>
-
-                                        <Grid Grid.Row="8">
-                                            <Grid.ColumnDefinitions>
-                                                <ColumnDefinition Width="*" />
-                                                <ColumnDefinition Width="Auto" />
-                                            </Grid.ColumnDefinitions>
-                                            <TextBlock Text="修改完成后请点击保存。"
-                                                       Style="{StaticResource CaptionTextStyle}"
-                                                       VerticalAlignment="Center" />
-                                            <Button Grid.Column="1"
-                                                    Content="保存快捷键"
-                                                    Width="110"
-                                                    Style="{StaticResource PrimaryButtonStyle}"
-                                                    Click="Save_Click" />
-                                        </Grid>
                                     </Grid>
                                 </Border>
 
-                                <Border Style="{StaticResource CardStyle}">
+                                <Border x:Name="GamepadHotkeyCard"
+                                        Style="{StaticResource CardStyle}">
                                     <Grid>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto" />
+                                            <RowDefinition Height="12" />
+                                            <RowDefinition Height="Auto" />
+                                        </Grid.RowDefinitions>
                                         <Grid.ColumnDefinitions>
                                             <ColumnDefinition Width="*" />
                                             <ColumnDefinition Width="Auto" />
                                         </Grid.ColumnDefinitions>
-                                        <StackPanel>
-                                            <TextBlock Text="手柄快捷键"
-                                                       Style="{StaticResource SectionTitleStyle}" />
-                                            <TextBlock Text="后续会在这里配置 Xbox / DS5 组合键。"
-                                                       Margin="0,5,0,0"
-                                                       Style="{StaticResource BodyTextStyle}" />
+
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+                                            <Ellipse x:Name="GamepadConnectedDot"
+                                                     Width="10"
+                                                     Height="10"
+                                                     Margin="0,5,11,0"
+                                                     VerticalAlignment="Top"
+                                                     Fill="#58D68D"
+                                                     Opacity="0">
+                                                <Ellipse.Effect>
+                                                    <DropShadowEffect BlurRadius="12"
+                                                                      ShadowDepth="0"
+                                                                      Opacity="0.46"
+                                                                      Color="#58D68D" />
+                                                </Ellipse.Effect>
+                                            </Ellipse>
+                                            <StackPanel Grid.Column="1">
+                                                <TextBlock x:Name="GamepadStatusTitleText"
+                                                           Text="未检测到手柄"
+                                                           Style="{StaticResource SectionTitleStyle}" />
+                                                <TextBlock x:Name="GamepadStatusDescriptionText"
+                                                           Text="请通过 USB 或蓝牙连接 Xbox 或 DualSense 手柄。"
+                                                           Margin="0,5,0,0"
+                                                           Style="{StaticResource BodyTextStyle}" />
+                                            </StackPanel>
+                                        </Grid>
+
+                                        <StackPanel Grid.Column="1"
+                                                    Orientation="Horizontal"
+                                                    VerticalAlignment="Top">
+                                            <ComboBox x:Name="GamepadDeviceSelector"
+                                                      Width="190"
+                                                      Margin="0,0,10,0"
+                                                      DisplayMemberPath="DisplayName"
+                                                      Visibility="Collapsed"
+                                                      SelectionChanged="GamepadDeviceSelector_SelectionChanged" />
+                                            <Button Content="重新检测"
+                                                    Width="88"
+                                                    Style="{StaticResource SecondaryButtonStyle}"
+                                                    Click="RefreshGamepads_Click" />
                                         </StackPanel>
-                                        <Border Grid.Column="1"
-                                                Style="{StaticResource StatusPillStyle}"
-                                                VerticalAlignment="Top">
-                                            <TextBlock Text="Phase 2"
-                                                       Foreground="{StaticResource TextPrimaryBrush}"
-                                                       FontSize="12"
-                                                       FontWeight="SemiBold" />
-                                        </Border>
+
+                                        <Grid x:Name="GamepadBindingsHost"
+                                              Grid.Row="2"
+                                              Grid.ColumnSpan="2"
+                                              Visibility="Collapsed"
+                                              Opacity="0"
+                                              RenderTransformOrigin="0.5,0">
+                                            <Grid.RenderTransform>
+                                                <ScaleTransform x:Name="GamepadBindingsHostScale"
+                                                                ScaleX="1"
+                                                                ScaleY="0.96" />
+                                            </Grid.RenderTransform>
+                                            <StackPanel>
+                                                <TextBlock Text="手柄快捷键"
+                                                           Style="{StaticResource SectionTitleStyle}" />
+                                                <TextBlock Text="建议使用两个或以上手柄按键组合，可以降低游戏中的误触概率。"
+                                                           Margin="0,5,0,12"
+                                                           Style="{StaticResource BodyTextStyle}" />
+                                                <Grid>
+                                                    <Grid.RowDefinitions>
+                                                        <RowDefinition Height="Auto" />
+                                                        <RowDefinition Height="8" />
+                                                        <RowDefinition Height="Auto" />
+                                                        <RowDefinition Height="8" />
+                                                        <RowDefinition Height="Auto" />
+                                                        <RowDefinition Height="8" />
+                                                        <RowDefinition Height="Auto" />
+                                                    </Grid.RowDefinitions>
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="170" />
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <StackPanel>
+                                                            <TextBlock Text="上一首"
+                                                                       Style="{StaticResource ValueTextStyle}" />
+                                                            <TextBlock Text="切到上一首歌曲"
+                                                                       Margin="0,4,0,0"
+                                                                       Style="{StaticResource CaptionTextStyle}" />
+                                                        </StackPanel>
+                                                        <TextBox x:Name="GamepadPreviousBox"
+                                                                 Grid.Column="1"
+                                                                 Tag="PreviousTrack"
+                                                                 IsReadOnly="True"
+                                                                 Focusable="False"
+                                                                 Cursor="Hand"
+                                                                 PreviewMouseDown="GamepadBindingBox_PreviewMouseDown"
+                                                                 PreviewKeyDown="GamepadBindingBox_PreviewKeyDown" />
+                                                        <Button Grid.Column="2"
+                                                                Content="清除"
+                                                                Tag="PreviousTrack"
+                                                                Width="62"
+                                                                Height="38"
+                                                                Margin="10,0,0,0"
+                                                                Style="{StaticResource SecondaryButtonStyle}"
+                                                                Click="ClearGamepadBinding_Click" />
+                                                    </Grid>
+                                                    <Grid Grid.Row="2">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="170" />
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <StackPanel>
+                                                            <TextBlock Text="下一首"
+                                                                       Style="{StaticResource ValueTextStyle}" />
+                                                            <TextBlock Text="切到下一首歌曲"
+                                                                       Margin="0,4,0,0"
+                                                                       Style="{StaticResource CaptionTextStyle}" />
+                                                        </StackPanel>
+                                                        <TextBox x:Name="GamepadNextBox"
+                                                                 Grid.Column="1"
+                                                                 Tag="NextTrack"
+                                                                 IsReadOnly="True"
+                                                                 Focusable="False"
+                                                                 Cursor="Hand"
+                                                                 PreviewMouseDown="GamepadBindingBox_PreviewMouseDown"
+                                                                 PreviewKeyDown="GamepadBindingBox_PreviewKeyDown" />
+                                                        <Button Grid.Column="2"
+                                                                Content="清除"
+                                                                Tag="NextTrack"
+                                                                Width="62"
+                                                                Height="38"
+                                                                Margin="10,0,0,0"
+                                                                Style="{StaticResource SecondaryButtonStyle}"
+                                                                Click="ClearGamepadBinding_Click" />
+                                                    </Grid>
+                                                    <Grid Grid.Row="4">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="170" />
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <StackPanel>
+                                                            <TextBlock Text="播放 / 暂停"
+                                                                       Style="{StaticResource ValueTextStyle}" />
+                                                            <TextBlock Text="切换当前媒体播放状态"
+                                                                       Margin="0,4,0,0"
+                                                                       Style="{StaticResource CaptionTextStyle}" />
+                                                        </StackPanel>
+                                                        <TextBox x:Name="GamepadToggleBox"
+                                                                 Grid.Column="1"
+                                                                 Tag="TogglePlayPause"
+                                                                 IsReadOnly="True"
+                                                                 Focusable="False"
+                                                                 Cursor="Hand"
+                                                                 PreviewMouseDown="GamepadBindingBox_PreviewMouseDown"
+                                                                 PreviewKeyDown="GamepadBindingBox_PreviewKeyDown" />
+                                                        <Button Grid.Column="2"
+                                                                Content="清除"
+                                                                Tag="TogglePlayPause"
+                                                                Width="62"
+                                                                Height="38"
+                                                                Margin="10,0,0,0"
+                                                                Style="{StaticResource SecondaryButtonStyle}"
+                                                                Click="ClearGamepadBinding_Click" />
+                                                    </Grid>
+                                                    <Grid Grid.Row="6">
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="170" />
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <StackPanel>
+                                                            <TextBlock Text="显示悬浮窗"
+                                                                       Style="{StaticResource ValueTextStyle}" />
+                                                            <TextBlock Text="用当前歌曲显示一次悬浮窗"
+                                                                       Margin="0,4,0,0"
+                                                                       Style="{StaticResource CaptionTextStyle}" />
+                                                        </StackPanel>
+                                                        <TextBox x:Name="GamepadShowCurrentBox"
+                                                                 Grid.Column="1"
+                                                                 Tag="ShowCurrentTrack"
+                                                                 IsReadOnly="True"
+                                                                 Focusable="False"
+                                                                 Cursor="Hand"
+                                                                 PreviewMouseDown="GamepadBindingBox_PreviewMouseDown"
+                                                                 PreviewKeyDown="GamepadBindingBox_PreviewKeyDown" />
+                                                        <Button Grid.Column="2"
+                                                                Content="清除"
+                                                                Tag="ShowCurrentTrack"
+                                                                Width="62"
+                                                                Height="38"
+                                                                Margin="10,0,0,0"
+                                                                Style="{StaticResource SecondaryButtonStyle}"
+                                                                Click="ClearGamepadBinding_Click" />
+                                                    </Grid>
+                                                </Grid>
+                                            </StackPanel>
+                                            <StackPanel Visibility="Collapsed">
+                                                <TextBlock Text="手柄快捷键"
+                                                           Style="{StaticResource SectionTitleStyle}" />
+                                                <TextBlock Text="已检测到手柄。下一阶段会在这里配置单键与组合键。"
+                                                           Margin="0,5,0,0"
+                                                           Style="{StaticResource BodyTextStyle}" />
+                                            </StackPanel>
+                                        </Grid>
                                     </Grid>
                                 </Border>
                             </StackPanel>

@@ -11,6 +11,93 @@
         ShowInTaskbar="False"
         Topmost="True"
         Focusable="False">
+    <Window.Resources>
+        <Style x:Key="PositionEditBarStyle" TargetType="{x:Type Border}">
+            <Setter Property="Padding" Value="8,5" />
+            <Setter Property="Background" Value="#B81B2432" />
+            <Setter Property="BorderBrush" Value="#38FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="18" />
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+            <Setter Property="Effect">
+                <Setter.Value>
+                    <DropShadowEffect BlurRadius="22"
+                                      ShadowDepth="8"
+                                      Opacity="0.22"
+                                      Color="#000000" />
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="PositionEditButtonStyle" TargetType="{x:Type Button}">
+            <Setter Property="Focusable" Value="False" />
+            <Setter Property="MinHeight" Value="26" />
+            <Setter Property="Padding" Value="11,3" />
+            <Setter Property="Cursor" Value="Hand" />
+            <Setter Property="Foreground" Value="#EAF0F8" />
+            <Setter Property="Background" Value="#16FFFFFF" />
+            <Setter Property="BorderBrush" Value="#24FFFFFF" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="FontFamily" Value="Segoe UI Variable Text, Segoe UI" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="RenderTransformOrigin" Value="0.5,0.5" />
+            <Setter Property="RenderTransform">
+                <Setter.Value>
+                    <ScaleTransform ScaleX="1" ScaleY="1" />
+                </Setter.Value>
+            </Setter>
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="{x:Type Button}">
+                        <Border x:Name="ButtonChrome"
+                                Padding="{TemplateBinding Padding}"
+                                Background="{TemplateBinding Background}"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="13">
+                            <ContentPresenter HorizontalAlignment="Center"
+                                              VerticalAlignment="Center"
+                                              RecognizesAccessKey="True" />
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#24FFFFFF" />
+                    <Setter Property="BorderBrush" Value="#38FFFFFF" />
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter Property="Background" Value="#30FFFFFF" />
+                    <Setter Property="RenderTransform">
+                        <Setter.Value>
+                            <ScaleTransform ScaleX="0.98" ScaleY="0.98" />
+                        </Setter.Value>
+                    </Setter>
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="PositionEditDoneButtonStyle"
+               TargetType="{x:Type Button}"
+               BasedOn="{StaticResource PositionEditButtonStyle}">
+            <Setter Property="Foreground" Value="#061017" />
+            <Setter Property="Background" Value="#A56ACDDD" />
+            <Setter Property="BorderBrush" Value="#90D9F7FF" />
+            <Setter Property="Padding" Value="13,3" />
+            <Style.Triggers>
+                <Trigger Property="IsMouseOver" Value="True">
+                    <Setter Property="Background" Value="#B878D9E8" />
+                    <Setter Property="BorderBrush" Value="#BDEBFFFF" />
+                </Trigger>
+                <Trigger Property="IsPressed" Value="True">
+                    <Setter Property="Background" Value="#9360C1D1" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+    </Window.Resources>
+
     <Grid x:Name="OverlayRoot"
           Opacity="0"
           RenderTransformOrigin="0.5,0.5"
@@ -45,11 +132,20 @@
                         RenderTransformOrigin="0,0"
                         SnapsToDevicePixels="True">
                     <Canvas.RenderTransform>
-                        <ScaleTransform x:Name="VisualScale"
-                                        CenterX="128"
-                                        CenterY="158"
-                                        ScaleX="1"
-                                        ScaleY="1" />
+                        <TransformGroup>
+                            <ScaleTransform x:Name="VisualScale"
+                                            CenterX="128"
+                                            CenterY="158"
+                                            ScaleX="1"
+                                            ScaleY="1" />
+                            <ScaleTransform x:Name="PositionEditScale"
+                                            CenterX="128"
+                                            CenterY="158"
+                                            ScaleX="1"
+                                            ScaleY="1" />
+                            <TranslateTransform x:Name="PositionEditTranslate"
+                                                Y="0" />
+                        </TransformGroup>
                     </Canvas.RenderTransform>
 
                 <Canvas x:Name="ShadowHost"
@@ -57,8 +153,7 @@
                         Canvas.Top="0"
                         Width="256"
                         Height="256"
-                        Background="Transparent"
-                        IsHitTestVisible="False">
+                        Background="{x:Null}">
                     <Border x:Name="AmbientShadowCaster"
                             Canvas.Left="42"
                             Canvas.Top="42"
@@ -101,7 +196,10 @@
                             Width="176"
                             Height="176"
                             CornerRadius="9"
-                            ClipToBounds="True">
+                            ClipToBounds="True"
+                            MouseLeftButtonDown="CoverClip_MouseLeftButtonDown"
+                            MouseMove="CoverClip_MouseMove"
+                            MouseLeftButtonUp="CoverClip_MouseLeftButtonUp">
                         <Image x:Name="CoverImage"
                                Stretch="Uniform"
                                RenderOptions.BitmapScalingMode="HighQuality"
@@ -144,6 +242,42 @@
                     </TextBlock.Effect>
                 </TextBlock>
             </Canvas>
+
+            <Border x:Name="PositionEditBar"
+                    Canvas.Left="110"
+                    Canvas.Top="72"
+                    Style="{StaticResource PositionEditBarStyle}"
+                    Opacity="0"
+                    Visibility="Collapsed"
+                    IsHitTestVisible="True"
+                    RenderTransformOrigin="0.5,0.5">
+                <Border.RenderTransform>
+                    <TransformGroup>
+                        <TranslateTransform x:Name="PositionEditBarTranslate"
+                                            Y="6" />
+                        <TranslateTransform x:Name="PositionEditBarInertiaTranslate"
+                                            X="0"
+                                            Y="0" />
+                    </TransformGroup>
+                </Border.RenderTransform>
+                <StackPanel Orientation="Horizontal"
+                            VerticalAlignment="Center">
+                    <TextBlock Text="正在调整位置"
+                               VerticalAlignment="Center"
+                               Foreground="#F7F8FB"
+                               FontFamily="Segoe UI Variable Text, Segoe UI"
+                               FontSize="12.5"
+                               FontWeight="SemiBold"
+                               Margin="4,0,12,0" />
+                    <Button Content="取消"
+                            Style="{StaticResource PositionEditButtonStyle}"
+                            Margin="0,0,6,0"
+                            Click="PositionEditCancel_Click" />
+                    <Button Content="完成"
+                            Style="{StaticResource PositionEditDoneButtonStyle}"
+                            Click="PositionEditDone_Click" />
+                </StackPanel>
+            </Border>
             </Canvas>
         </Canvas>
     </Grid>

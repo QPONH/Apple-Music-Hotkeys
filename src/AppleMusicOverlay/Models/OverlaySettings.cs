@@ -21,4 +21,7 @@ public sealed class OverlaySettings
     public string KeyboardNext { get; set; } = "Ctrl+Shift+Right";
     public string KeyboardToggle { get; set; } = "Ctrl+Shift+Down";
     public string KeyboardTestOverlay { get; set; } = "Ctrl+Shift+Up";
+    public GamepadBindingSet XboxGamepadBindings { get; set; } = new();
+    public GamepadBindingSet DualSenseGamepadBindings { get; set; } = new();
+    public GamepadBindingSet CompatibleGamepadBindings { get; set; } = new();
 }
