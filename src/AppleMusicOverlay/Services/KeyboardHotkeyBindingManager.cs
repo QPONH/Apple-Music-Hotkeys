@@ -91,7 +91,7 @@ public static class KeyboardHotkeyBindingManager
     {
         return new HotkeyApplyResult(
             false,
-            $"{hotkeyText} 已用于‘{GamepadBindingActions.GetLabel(conflictAction)}’。",
+            LocalizationService.Current.Format("HotkeyConflictTemplate", hotkeyText, GamepadBindingActions.GetLabel(conflictAction)),
             HotkeyApplyFailureKind.InternalConflict,
             conflictAction,
             hotkeyText);
@@ -101,7 +101,7 @@ public static class KeyboardHotkeyBindingManager
     {
         return new HotkeyApplyResult(
             false,
-            "该快捷键无法注册，可能已被系统或其他程序占用，请重新选择。",
+            LocalizationService.Current.Text("HotkeyRegistrationFailed"),
             HotkeyApplyFailureKind.RegistrationFailed,
             null,
             hotkeyText);
@@ -111,7 +111,9 @@ public static class KeyboardHotkeyBindingManager
     {
         return new HotkeyApplyResult(
             true,
-            string.IsNullOrWhiteSpace(hotkeyText) ? "已自动保存：未设置" : $"已自动保存：{hotkeyText}");
+            string.IsNullOrWhiteSpace(hotkeyText)
+                ? LocalizationService.Current.Text("AutoSavedUnset")
+                : LocalizationService.Current.Format("AutoSavedTemplate", hotkeyText));
     }
 
     private static AppAction? FindDuplicate(Dictionary<AppAction, string> candidate, AppAction currentAction, string hotkeyText)

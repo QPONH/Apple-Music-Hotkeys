@@ -8,7 +8,7 @@ public static class GamepadBindingFormatter
     {
         if (binding == null || binding.IsEmpty)
         {
-            return "点击绑定";
+            return LocalizationService.Current.Text("ClickToBind");
         }
 
         return string.Join(" + ", binding.Buttons.Select(button => FormatButton(button, kind)));
@@ -17,7 +17,7 @@ public static class GamepadBindingFormatter
     public static string FormatButtons(IEnumerable<GamepadButton> buttons, GamepadDeviceKind kind)
     {
         IReadOnlyList<GamepadButton> normalized = GamepadBindingOrder.Normalize(buttons);
-        return normalized.Count == 0 ? "正在监听" : string.Join(" + ", normalized.Select(button => FormatButton(button, kind)));
+        return normalized.Count == 0 ? LocalizationService.Current.Text("Listening") : string.Join(" + ", normalized.Select(button => FormatButton(button, kind)));
     }
 
     public static string FormatButton(GamepadButton button, GamepadDeviceKind kind)
@@ -74,10 +74,10 @@ public static class GamepadBindingFormatter
     {
         return button switch
         {
-            GamepadButton.FaceSouth => "按键下",
-            GamepadButton.FaceEast => "按键右",
-            GamepadButton.FaceWest => "按键左",
-            GamepadButton.FaceNorth => "按键上",
+            GamepadButton.FaceSouth => LocalizationService.Current.Text("GamepadButtonSouth"),
+            GamepadButton.FaceEast => LocalizationService.Current.Text("GamepadButtonEast"),
+            GamepadButton.FaceWest => LocalizationService.Current.Text("GamepadButtonWest"),
+            GamepadButton.FaceNorth => LocalizationService.Current.Text("GamepadButtonNorth"),
             _ => FormatDirectionalOrCompatible(button)
         };
     }

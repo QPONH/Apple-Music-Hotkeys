@@ -94,13 +94,14 @@ public static class GamepadBindingActions
 
     public static string GetLabel(AppAction action)
     {
+        AppleMusicOverlay.Services.LocalizationService localizer = AppleMusicOverlay.Services.LocalizationService.Current;
         return action switch
         {
-            AppAction.PreviousTrack => "上一首",
-            AppAction.NextTrack => "下一首",
-            AppAction.TogglePlayPause => "播放 / 暂停",
-            AppAction.ShowCurrentTrack => "显示悬浮窗",
-            _ => "其他操作"
+            AppAction.PreviousTrack => localizer.Text("PreviousTrack"),
+            AppAction.NextTrack => localizer.Text("NextTrack"),
+            AppAction.TogglePlayPause => localizer.Text("TogglePlayPause"),
+            AppAction.ShowCurrentTrack => localizer.Text("ShowOverlay"),
+            _ => localizer.Text("OtherAction")
         };
     }
 }

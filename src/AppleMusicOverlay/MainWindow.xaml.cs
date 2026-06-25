@@ -16,11 +16,6 @@ namespace AppleMusicOverlay;
 
 public partial class MainWindow : Window, IHotkeySnapshotRegistrar
 {
-    private const string HotkeyCapturePrompt = "按下想要的快捷键";
-    private const string HotkeyUnsetText = "未设置";
-    private const string HotkeyEditingStatus = "快捷键修改中：按下 Ctrl / Alt / Shift / Win + 一个按键，Esc 取消。";
-    private const string HotkeyNeedModifierStatus = "请使用 Ctrl / Alt / Shift / Win 组合键。";
-    private const string HotkeyNeedMainKeyStatus = "请再按一个字母、数字、方向键或功能键。";
     private const string MaximizeGlyph = "\uE922";
     private const string RestoreGlyph = "\uE923";
     private const double NormalWindowFrameRadius = 20;
@@ -59,6 +54,12 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
     private DateTimeOffset _lastGamepadRuntimeUpdate = DateTimeOffset.Now;
     private bool _gamepadRuntimeCaptureActive;
     private bool IsKeyboardHotkeyInputSuppressed => _capturingHotkeyBox != null || _keyboardHotkeyConflict != null;
+    private LocalizationService Localizer => LocalizationService.Current;
+    private string HotkeyCapturePrompt => Localizer.Text("HotkeyCapturePrompt");
+    private string HotkeyUnsetText => Localizer.Text("HotkeyUnset");
+    private string HotkeyEditingStatus => Localizer.Text("HotkeyEditingStatus");
+    private string HotkeyNeedModifierStatus => Localizer.Text("HotkeyNeedModifier");
+    private string HotkeyNeedMainKeyStatus => Localizer.Text("HotkeyNeedMainKey");
 
     private sealed record KeyboardHotkeyConflict(TextBox Box, AppAction TargetAction, AppAction ConflictAction, string HotkeyText);
 
@@ -69,6 +70,8 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         LogStartup("ctor: after InitializeComponent");
         ApplyAppIcon();
         _viewModel = new MainViewModel(new OverlaySettingsService());
+        Localizer.SetLanguage(_viewModel.Settings.LanguageCode);
+        Localizer.LanguageChanged += LocalizationService_LanguageChanged;
         LogStartup("ctor: view model ready");
         var mediaService = new SmtcMediaSessionService();
         _mediaService = mediaService;
@@ -84,9 +87,14 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         _gamepadService = new GamepadInputService();
         _gamepadService.DevicesChanged += GamepadService_DevicesChanged;
         _gamepadService.SelectedButtonsChanged += GamepadService_SelectedButtonsChanged;
-        _trayIconService = new TrayIconService(this, () => _ = ShowCurrentTrackOverlayAsync(), () => RequestApplicationExit());
+        _trayIconService = new TrayIconService(this, () => _ = ShowCurrentTrackOverlayAsync(), () => RequestApplicationExit(), Localizer);
         LogStartup("ctor: tray ready");
         DataContext = _viewModel;
+        _viewModel.RefreshLocalizedText();
+        _trayIconService.UpdateText();
+        LanguageCombo.ItemsSource = LocalizationService.SupportedLanguages;
+        LanguageCombo.SelectedValue = _viewModel.Settings.LanguageCode;
+        UpdateDisplaySecondsValueText();
         DisplayHotkeyBoxValues();
         DisplayGamepadBindingBoxValues();
         HotkeyNavigationCard.ExpansionCollapsed += (_, _) =>
@@ -157,7 +165,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
             e.Cancel = true;
             _shadowWindow.Hide();
             Hide();
-            _viewModel.SetStatus("已最小化到托盘");
+            _viewModel.SetLocalizedStatus("CurrentStatusMinimizedToTray");
             return;
         }
 
@@ -242,7 +250,46 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
     {
         if (await ShowCurrentTrackOverlayAsync())
         {
-            ShowOverlayNavigationPrompt("已显示悬浮窗", "正在使用当前设置进行预览。", CurrentNavigationPromptDelay);
+            ShowOverlayNavigationPrompt("OverlayShownTitle", "OverlayShownMessage", CurrentNavigationPromptDelay);
+        }
+    }
+
+    private void LanguageCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (LanguageCombo.SelectedValue is not string languageCode ||
+            languageCode == _viewModel.Settings.LanguageCode)
+        {
+            return;
+        }
+
+        _viewModel.Settings.LanguageCode = LocalizationService.NormalizeLanguageCode(languageCode);
+        Localizer.SetLanguage(_viewModel.Settings.LanguageCode);
+        _viewModel.Save();
+        ShowGeneralNavigationPrompt("GeneralLanguageChangedTitle", "GeneralLanguageChangedMessage", CurrentNavigationPromptDelay);
+    }
+
+    private void GeneralSetting_Changed(object sender, RoutedEventArgs e)
+    {
+        if (_viewModel == null || !IsLoaded)
+        {
+            return;
+        }
+
+        _viewModel.Save();
+        ShowGeneralNavigationPrompt("GeneralSavedTitle", "GeneralSavedMessage", OverlayNavigationPromptDelay);
+    }
+
+    private void LocalizationService_LanguageChanged(object? sender, EventArgs e)
+    {
+        _viewModel.RefreshLocalizedText();
+        UpdateDisplaySecondsValueText();
+        DisplayHotkeyBoxValues();
+        DisplayGamepadBindingBoxValues();
+        UpdateGamepadDeviceUi();
+        _trayIconService.UpdateText();
+        if (LanguageCombo.SelectedValue as string != _viewModel.Settings.LanguageCode)
+        {
+            LanguageCombo.SelectedValue = _viewModel.Settings.LanguageCode;
         }
     }
 
@@ -299,11 +346,11 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
 
         if (registered)
         {
-            ShowHotkeyCapturePanel("快捷键已保存并生效。", autoHide: true, autoHideMilliseconds: 2200);
+            ShowHotkeyCapturePanel(Localizer.Text("HotkeySaved"), autoHide: true, autoHideMilliseconds: 2200);
         }
         else
         {
-            ShowHotkeyCapturePanel("部分快捷键未注册，可能已被系统或其他应用占用。", isConflict: true);
+            ShowHotkeyCapturePanel(Localizer.Text("HotkeyRegisterPartialFailed"), isConflict: true);
         }
     }
 
@@ -314,6 +361,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
             return;
         }
 
+        UpdateDisplaySecondsValueText();
         _overlayWindow.ApplySettings(_viewModel.Settings);
         QueueOverlaySettingsAutoSave(debounce: true);
     }
@@ -371,7 +419,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
 
     private void PositionOverlay_Click(object sender, RoutedEventArgs e)
     {
-        ShowPersistentOverlayNavigationPrompt("正在调整位置", "拖动悬浮窗到合适位置，然后选择完成或取消。");
+        ShowPersistentOverlayNavigationPrompt("OverlayAdjustingTitle", "OverlayAdjustingMessage");
         _overlayWindow.BeginPositionEdit(_viewModel.Settings, SaveOverlayPositionSettingsNow, HandleOverlayPositionEditCompleted);
     }
 
@@ -429,11 +477,11 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         bool hasMultipleDevices = devices.Count > 1;
 
         GamepadStatusTitleText.Text = hasDevice
-            ? hasMultipleDevices ? "已连接多个手柄" : selected!.StatusText
-            : "未检测到手柄";
+            ? hasMultipleDevices ? Localizer.Text("ConnectedMultipleGamepads") : selected!.StatusText
+            : Localizer.Text("GamepadNotDetected");
         GamepadStatusDescriptionText.Text = hasDevice
-            ? $"当前设备：{selected!.DisplayName}"
-            : "请通过 USB 或蓝牙连接 Xbox 或 DualSense 手柄。";
+            ? Localizer.Format("CurrentDeviceTemplate", selected!.DisplayName)
+            : Localizer.Text("GamepadNotDetectedDescription");
 
         GamepadDeviceSelector.ItemsSource = devices;
         GamepadDeviceSelector.SelectedItem = selected;
@@ -533,18 +581,18 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         _capturingGamepadKind = selected?.Kind ?? GamepadDeviceKind.Compatible;
         SetGamepadRuntimeCaptureActive(true);
         box.Focusable = true;
-        box.Text = "正在监听";
+        box.Text = Localizer.Text("Listening");
         ShowHotkeyCapturePanel(
-            "按下要绑定的手柄按键或组合键，松开所有按键后完成，Esc 取消。",
-            title: "手柄快捷键修改");
+            Localizer.Text("GamepadListenInstruction"),
+            title: Localizer.Text("GamepadHotkeyEditTitle"));
 
         if (selected == null || !selected.HasStandardGamepad)
         {
             _gamepadCaptureSession = null;
             ShowHotkeyCapturePanel(
-                selected == null ? "未检测到可用手柄。" : "当前设备暂不支持按键录入。",
+                selected == null ? Localizer.Text("GamepadNoAvailableDevice") : Localizer.Text("GamepadUnsupportedDevice"),
                 isConflict: true,
-                title: "手柄快捷键修改");
+                title: Localizer.Text("GamepadHotkeyEditTitle"));
             return;
         }
 
@@ -602,49 +650,49 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         switch (_gamepadCaptureSession.State)
         {
             case GamepadCaptureState.WaitingForNeutral:
-                _capturingGamepadBox.Text = "正在监听";
-                ShowHotkeyCapturePanel("请先松开手柄上的所有按键。", title: "手柄快捷键修改");
+                _capturingGamepadBox.Text = Localizer.Text("Listening");
+                ShowHotkeyCapturePanel(Localizer.Text("GamepadReleaseAllButtons"), title: Localizer.Text("GamepadHotkeyEditTitle"));
                 break;
             case GamepadCaptureState.Listening:
-                _capturingGamepadBox.Text = "正在监听";
-                ShowHotkeyCapturePanel("按下要绑定的手柄按键或组合键，松开所有按键后完成，Esc 取消。", title: "手柄快捷键修改");
+                _capturingGamepadBox.Text = Localizer.Text("Listening");
+                ShowHotkeyCapturePanel(Localizer.Text("GamepadListenInstruction"), title: Localizer.Text("GamepadHotkeyEditTitle"));
                 break;
             case GamepadCaptureState.Capturing:
-                _capturingGamepadBox.Text = string.IsNullOrWhiteSpace(detectedText) ? "正在监听" : detectedText;
-                ShowHotkeyCapturePanel($"已检测：{detectedText}\n松开所有按键后完成，Esc 取消。", title: "手柄快捷键修改");
+                _capturingGamepadBox.Text = string.IsNullOrWhiteSpace(detectedText) ? Localizer.Text("Listening") : detectedText;
+                ShowHotkeyCapturePanel(Localizer.Format("GamepadDetectedTemplate", detectedText), title: Localizer.Text("GamepadHotkeyEditTitle"));
                 break;
             case GamepadCaptureState.TooManyButtons:
-                _capturingGamepadBox.Text = "点击绑定";
+                _capturingGamepadBox.Text = Localizer.Text("ClickToBind");
                 ShowHotkeyCapturePanel(
-                    "最多可以绑定 3 个手柄按键，请重新录入。",
+                    Localizer.Text("GamepadTooManyButtons"),
                     isConflict: true,
-                    title: "手柄快捷键修改",
-                    primaryAction: "重新录入",
-                    secondaryAction: "取消");
+                    title: Localizer.Text("GamepadHotkeyEditTitle"),
+                    primaryAction: Localizer.Text("Retry"),
+                    secondaryAction: Localizer.Text("Cancel"));
                 break;
             case GamepadCaptureState.SingleButtonWarning:
                 _capturingGamepadBox.Text = detectedText;
                 ShowHotkeyCapturePanel(
-                    "单个按键可能与游戏操作冲突，推荐使用组合键。",
+                    Localizer.Text("GamepadSingleButtonWarning"),
                     isConflict: true,
-                    title: "手柄快捷键修改",
-                    primaryAction: "仍然使用",
-                    secondaryAction: "重新录入");
+                    title: Localizer.Text("GamepadHotkeyEditTitle"),
+                    primaryAction: Localizer.Text("UseAnyway"),
+                    secondaryAction: Localizer.Text("Retry"));
                 break;
             case GamepadCaptureState.Conflict:
                 _capturingGamepadBox.Text = detectedText;
                 ShowHotkeyCapturePanel(
                     _gamepadCaptureSession.Message,
                     isConflict: true,
-                    title: "手柄快捷键修改",
-                    primaryAction: "替换原绑定",
-                    secondaryAction: "取消");
+                    title: Localizer.Text("GamepadHotkeyEditTitle"),
+                    primaryAction: Localizer.Text("ReplaceOriginalBinding"),
+                    secondaryAction: Localizer.Text("Cancel"));
                 break;
             case GamepadCaptureState.Completed:
                 CompleteGamepadCaptureAndSave();
                 break;
             case GamepadCaptureState.DeviceDisconnected:
-                ShowHotkeyCapturePanel("手柄已断开，请重新连接后再录入。", isConflict: true, title: "手柄快捷键修改");
+                ShowHotkeyCapturePanel(Localizer.Text("GamepadDisconnectedCapture"), isConflict: true, title: Localizer.Text("GamepadHotkeyEditTitle"));
                 _gamepadCaptureTimer.Stop();
                 break;
             case GamepadCaptureState.Cancelled:
@@ -667,7 +715,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         string savedText = _gamepadCaptureSession.PendingBinding == null
             ? string.Empty
             : GamepadBindingFormatter.Format(_gamepadCaptureSession.PendingBinding, _capturingGamepadKind);
-        ShowHotkeyCapturePanel($"已自动保存：{savedText}", autoHide: true, autoHideMilliseconds: 650, title: "手柄快捷键修改");
+        ShowHotkeyCapturePanel(Localizer.Format("AutoSavedTemplate", savedText), autoHide: true, autoHideMilliseconds: 650, title: Localizer.Text("GamepadHotkeyEditTitle"));
         ClearGamepadCaptureState(restoreBox: false);
     }
 
@@ -698,7 +746,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
                 string savedText = _gamepadCaptureSession.PendingBinding == null
                     ? string.Empty
                     : GamepadBindingFormatter.Format(_gamepadCaptureSession.PendingBinding, _capturingGamepadKind);
-                ShowHotkeyCapturePanel($"已自动保存：{savedText}", autoHide: true, autoHideMilliseconds: 650, title: "手柄快捷键修改");
+                ShowHotkeyCapturePanel(Localizer.Format("AutoSavedTemplate", savedText), autoHide: true, autoHideMilliseconds: 650, title: Localizer.Text("GamepadHotkeyEditTitle"));
                 ClearGamepadCaptureState(restoreBox: false);
                 break;
             case GamepadCaptureState.TooManyButtons:
@@ -754,7 +802,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
 
         if (!result.Success)
         {
-            ShowHotkeyCapturePanel(result.Message, isConflict: true, title: "键盘快捷键修改");
+            ShowHotkeyCapturePanel(result.Message, isConflict: true, title: Localizer.Text("KeyboardHotkeyEditTitle"));
             DisplayHotkeyBoxValues();
             conflict.Box.Text = HotkeyCapturePrompt;
             _pendingHotkeyText = null;
@@ -768,7 +816,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         _capturingHotkeyOriginalText = conflict.Box.Text;
         _pendingHotkeyText = null;
         _keyboardHotkeyConflict = null;
-        ShowHotkeyCapturePanel(result.Message, autoHide: true, autoHideMilliseconds: 650, title: "键盘快捷键修改");
+        ShowHotkeyCapturePanel(result.Message, autoHide: true, autoHideMilliseconds: 650, title: Localizer.Text("KeyboardHotkeyEditTitle"));
         ClearHotkeyCapture(hidePanel: false);
         Keyboard.ClearFocus();
     }
@@ -848,11 +896,11 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
     {
         if (action == null)
         {
-            return "点击绑定";
+            return Localizer.Text("ClickToBind");
         }
 
         GamepadBinding binding = GetCurrentGamepadBindings().GetBinding(action.Value);
-        return binding.IsEmpty ? "点击绑定" : GamepadBindingFormatter.Format(binding, GetCurrentGamepadKind());
+        return binding.IsEmpty ? Localizer.Text("ClickToBind") : GamepadBindingFormatter.Format(binding, GetCurrentGamepadKind());
     }
 
     private GamepadBindingSet GetCurrentGamepadBindings()
@@ -998,7 +1046,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         _viewModel.Save();
         if (showNavigationFeedback)
         {
-            ShowOverlayNavigationPrompt("设置已保存", "悬浮窗设置已自动更新。", OverlayNavigationPromptDelay);
+            ShowOverlayNavigationPrompt("OverlaySavedTitle", "OverlaySavedMessage", OverlayNavigationPromptDelay);
         }
     }
 
@@ -1007,22 +1055,36 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         SaveOverlaySettingsNow(showNavigationFeedback: false);
     }
 
-    private void ShowCurrentNavigationPrompt(string title, string message, TimeSpan autoCollapseDelay)
+    private void UpdateDisplaySecondsValueText()
+    {
+        if (DisplaySecondsValueText != null && DisplaySecondsSlider != null)
+        {
+            DisplaySecondsValueText.Text = Localizer.Format("SecondsSuffix", DisplaySecondsSlider.Value);
+        }
+    }
+
+    private void ShowCurrentNavigationPrompt(string titleKey, string messageKey, TimeSpan autoCollapseDelay)
     {
         ClearInactiveTransientNavigationPrompts(CurrentNavigationCard);
-        CurrentNavigationCard.ShowPrompt(title, message, autoCollapseDelay);
+        CurrentNavigationCard.ShowPrompt(Localizer.Text(titleKey), Localizer.Text(messageKey), autoCollapseDelay);
     }
 
-    private void ShowOverlayNavigationPrompt(string title, string message, TimeSpan autoCollapseDelay)
+    private void ShowOverlayNavigationPrompt(string titleKey, string messageKey, TimeSpan autoCollapseDelay)
     {
         ClearInactiveTransientNavigationPrompts(OverlayNavigationCard);
-        OverlayNavigationCard.ShowPrompt(title, message, autoCollapseDelay);
+        OverlayNavigationCard.ShowPrompt(Localizer.Text(titleKey), Localizer.Text(messageKey), autoCollapseDelay);
     }
 
-    private void ShowPersistentOverlayNavigationPrompt(string title, string message)
+    private void ShowPersistentOverlayNavigationPrompt(string titleKey, string messageKey)
     {
         ClearInactiveTransientNavigationPrompts(OverlayNavigationCard);
-        OverlayNavigationCard.ShowPersistentPrompt(title, message);
+        OverlayNavigationCard.ShowPersistentPrompt(Localizer.Text(titleKey), Localizer.Text(messageKey));
+    }
+
+    private void ShowGeneralNavigationPrompt(string titleKey, string messageKey, TimeSpan autoCollapseDelay)
+    {
+        ClearInactiveTransientNavigationPrompts(GeneralNavigationCard);
+        GeneralNavigationCard.ShowPrompt(Localizer.Text(titleKey), Localizer.Text(messageKey), autoCollapseDelay);
     }
 
     private void ClearInactiveTransientNavigationPrompts(ExpandableNavigationCard activeCard)
@@ -1036,28 +1098,33 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         {
             OverlayNavigationCard.ClearPrompt();
         }
+
+        if (!ReferenceEquals(activeCard, GeneralNavigationCard) && !GeneralNavigationCard.IsPromptPersistent)
+        {
+            GeneralNavigationCard.ClearPrompt();
+        }
     }
 
     private void ShowCurrentRefreshResult(int sessionCount)
     {
         if (sessionCount > 0)
         {
-            ShowCurrentNavigationPrompt("刷新完成", "已更新当前播放信息。", CurrentNavigationPromptDelay);
+            ShowCurrentNavigationPrompt("CurrentRefreshCompleteTitle", "CurrentRefreshCompleteMessage", CurrentNavigationPromptDelay);
             return;
         }
 
-        ShowCurrentNavigationPrompt("未检测到音乐", "暂未找到正在播放的媒体会话。", CurrentNavigationPromptDelay);
+        ShowCurrentNavigationPrompt("CurrentNoMusicTitle", "CurrentNoMusicMessage", CurrentNavigationPromptDelay);
     }
 
     private void HandleOverlayPositionEditCompleted(OverlayPositionEditResult result)
     {
         if (result == OverlayPositionEditResult.Saved)
         {
-            ShowOverlayNavigationPrompt("位置已保存", "悬浮窗位置已自动保存。", OverlayPositionResultPromptDelay);
+            ShowOverlayNavigationPrompt("OverlayPositionSavedTitle", "OverlayPositionSavedMessage", OverlayPositionResultPromptDelay);
             return;
         }
 
-        ShowOverlayNavigationPrompt("已取消调整", "悬浮窗已恢复到调整前的位置。", OverlayPositionResultPromptDelay);
+        ShowOverlayNavigationPrompt("OverlayPositionCancelledTitle", "OverlayPositionCancelledMessage", OverlayPositionResultPromptDelay);
     }
 
     private void DeleteHotkey_Click(object sender, RoutedEventArgs e)
@@ -1246,7 +1313,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
 
     private void RestoreHotkeyBox(TextBox box)
     {
-        if (box.Text == HotkeyCapturePrompt || box.Text == "请按组合键" || _pressedHotkeyKeys.Count > 0)
+        if (box.Text == HotkeyCapturePrompt || box.Text == Localizer.Text("HotkeyPressCombination") || _pressedHotkeyKeys.Count > 0)
         {
             box.Text = GetHotkeySetting(box.Tag as string);
         }
@@ -1281,12 +1348,12 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         if (TryCreateHotkeyText(_pressedHotkeyKeys, out string hotkeyText))
         {
             _pendingHotkeyText = hotkeyText;
-            ShowHotkeyCapturePanel($"已检测：{hotkeyText}。松开全部按键后自动保存。");
+            ShowHotkeyCapturePanel(Localizer.Format("HotkeyDetectedTemplate", hotkeyText));
             return;
         }
 
         ShowHotkeyCapturePanel(_pressedHotkeyKeys.Any(IsModifierKey)
-            ? (_pendingHotkeyText == null ? HotkeyNeedMainKeyStatus : $"松开全部按键后自动保存：{_pendingHotkeyText}。")
+            ? (_pendingHotkeyText == null ? HotkeyNeedMainKeyStatus : Localizer.Format("HotkeyReleaseToSaveTemplate", _pendingHotkeyText))
             : HotkeyNeedModifierStatus);
     }
 
@@ -1313,15 +1380,15 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
                 ShowHotkeyCapturePanel(
                     result.Message,
                     isConflict: true,
-                    title: "键盘快捷键修改",
-                    primaryAction: "替换原绑定",
-                    secondaryAction: "取消");
+                    title: Localizer.Text("KeyboardHotkeyEditTitle"),
+                    primaryAction: Localizer.Text("ReplaceOriginalBinding"),
+                    secondaryAction: Localizer.Text("Cancel"));
                 box.Text = result.HotkeyText;
                 _pendingHotkeyText = null;
                 return false;
             }
 
-            ShowHotkeyCapturePanel(result.Message, isConflict: true, title: "键盘快捷键修改");
+            ShowHotkeyCapturePanel(result.Message, isConflict: true, title: Localizer.Text("KeyboardHotkeyEditTitle"));
             box.Text = HotkeyCapturePrompt;
             _pendingHotkeyText = null;
             DisplayHotkeyBoxValues();
@@ -1389,7 +1456,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         (string FirstLabel, string SecondLabel, string Hotkey)? duplicate = FindDuplicateHotkey();
         if (duplicate != null)
         {
-            message = $"快捷键重复：{duplicate.Value.Hotkey} 同时用于「{duplicate.Value.FirstLabel}」和「{duplicate.Value.SecondLabel}」。请修改后再保存。";
+            message = Localizer.Format("HotkeyDuplicateTemplate", duplicate.Value.Hotkey, duplicate.Value.FirstLabel, duplicate.Value.SecondLabel);
             return false;
         }
 
@@ -1467,11 +1534,11 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
             {
                 return key switch
                 {
-                    "KeyboardPrevious" => "上一首",
-                    "KeyboardNext" => "下一首",
-                    "KeyboardToggle" => "播放 / 暂停",
-                    "KeyboardTestOverlay" => "测试悬浮窗",
-                    _ => "其他操作"
+                    "KeyboardPrevious" => Localizer.Text("PreviousTrack"),
+                    "KeyboardNext" => Localizer.Text("NextTrack"),
+                    "KeyboardToggle" => Localizer.Text("TogglePlayPause"),
+                    "KeyboardTestOverlay" => Localizer.Text("TestOverlay"),
+                    _ => Localizer.Text("OtherAction")
                 };
             }
         }
@@ -1491,7 +1558,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         };
     }
 
-    private static string NormalizeCapturedHotkeyText(string text, string fallback)
+    private string NormalizeCapturedHotkeyText(string text, string fallback)
     {
         return string.IsNullOrWhiteSpace(text) || text == HotkeyCapturePrompt || text == HotkeyUnsetText ? string.Empty : text.Trim();
     }
@@ -1512,11 +1579,11 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
     {
         return key switch
         {
-            "KeyboardPrevious" => "上一首",
-            "KeyboardNext" => "下一首",
-            "KeyboardToggle" => "播放 / 暂停",
-            "KeyboardTestOverlay" => "测试悬浮窗",
-            _ => "其他操作"
+            "KeyboardPrevious" => LocalizationService.Current.Text("PreviousTrack"),
+            "KeyboardNext" => LocalizationService.Current.Text("NextTrack"),
+            "KeyboardToggle" => LocalizationService.Current.Text("TogglePlayPause"),
+            "KeyboardTestOverlay" => LocalizationService.Current.Text("TestOverlay"),
+            _ => LocalizationService.Current.Text("OtherAction")
         };
     }
 
@@ -1528,7 +1595,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         KeyboardTestOverlayBox.Text = DisplayHotkeyText(_viewModel.Settings.KeyboardTestOverlay);
     }
 
-    private static string DisplayHotkeyText(string hotkeyText)
+    private string DisplayHotkeyText(string hotkeyText)
     {
         return string.IsNullOrWhiteSpace(hotkeyText) ? HotkeyUnsetText : hotkeyText;
     }
@@ -1543,7 +1610,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         string? secondaryAction = null)
     {
         _hotkeyCaptureAutoHideTimer.Stop();
-        HotkeyCaptureTitleText.Text = isConflict ? "快捷键提示" : "快捷键修改";
+        HotkeyCaptureTitleText.Text = isConflict ? Localizer.Text("HotkeyPromptTitle") : Localizer.Text("HotkeyEditTitle");
         HotkeyCaptureStatusText.Text = statusText;
         if (!string.IsNullOrWhiteSpace(title))
         {
@@ -1819,7 +1886,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
     {
         if (showNavigationFeedback)
         {
-            ShowCurrentNavigationPrompt("正在刷新", "正在重新检测媒体会话和播放信息……", TimeSpan.FromMilliseconds(1600));
+            ShowCurrentNavigationPrompt("CurrentRefreshInProgressTitle", "CurrentRefreshInProgressMessage", TimeSpan.FromMilliseconds(1600));
         }
 
         try
@@ -1828,7 +1895,14 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
             IReadOnlyList<MediaSessionCandidate> sessions = await _sourceService.ListSessionsAsync();
             _viewModel.ReplaceCaptureSources(sessions);
             ApplyPreferredSource();
-            _viewModel.SetStatus(sessions.Count == 0 ? "未检测到媒体源" : $"检测到 {sessions.Count} 个媒体源");
+            if (sessions.Count == 0)
+            {
+                _viewModel.SetLocalizedStatus("CurrentStatusNoMediaSource");
+            }
+            else
+            {
+                _viewModel.SetLocalizedStatus("CurrentStatusMediaSourceCountTemplate", sessions.Count);
+            }
             if (showNavigationFeedback)
             {
                 ShowCurrentRefreshResult(sessions.Count);
@@ -1838,10 +1912,10 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         }
         catch
         {
-            _viewModel.SetStatus("媒体源刷新失败");
+            _viewModel.SetLocalizedStatus("CurrentStatusMediaRefreshFailed");
             if (showNavigationFeedback)
             {
-                ShowCurrentNavigationPrompt("未检测到音乐", "暂未找到正在播放的媒体会话。", CurrentNavigationPromptDelay);
+                ShowCurrentNavigationPrompt("CurrentNoMusicTitle", "CurrentNoMusicMessage", CurrentNavigationPromptDelay);
             }
 
             return 0;
@@ -1898,7 +1972,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
 
         if (track == null)
         {
-            _viewModel.SetStatus("未读取到当前播放歌曲");
+            _viewModel.SetLocalizedStatus("CurrentStatusNoCurrentTrack");
             return false;
         }
 

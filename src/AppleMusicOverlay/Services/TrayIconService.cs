@@ -10,15 +10,23 @@ public sealed class TrayIconService : IDisposable
     private readonly Window _owner;
     private readonly Action _showCurrentTrack;
     private readonly Action _exitApplication;
+    private readonly LocalizationService _localizer;
     private readonly Forms.NotifyIcon _notifyIcon;
     private bool _disposed;
+    private Forms.ToolStripMenuItem? _openItem;
+    private Forms.ToolStripMenuItem? _showOverlayItem;
     private Forms.ToolStripMenuItem? _exitItem;
 
-    public TrayIconService(Window owner, Action showCurrentTrack, Action exitApplication)
+    public TrayIconService(
+        Window owner,
+        Action showCurrentTrack,
+        Action exitApplication,
+        LocalizationService? localizer = null)
     {
         _owner = owner;
         _showCurrentTrack = showCurrentTrack;
         _exitApplication = exitApplication;
+        _localizer = localizer ?? LocalizationService.Current;
         _notifyIcon = new Forms.NotifyIcon
         {
             Text = "MusicFloat",
@@ -27,6 +35,29 @@ public sealed class TrayIconService : IDisposable
             ContextMenuStrip = BuildMenu()
         };
         _notifyIcon.DoubleClick += (_, _) => PostToOwner(ShowOwner);
+    }
+
+    public void UpdateText()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        if (_openItem != null)
+        {
+            _openItem.Text = _localizer.Text("TrayOpen");
+        }
+
+        if (_showOverlayItem != null)
+        {
+            _showOverlayItem.Text = _localizer.Text("TrayShowOverlay");
+        }
+
+        if (_exitItem != null)
+        {
+            _exitItem.Text = _localizer.Text("TrayExit");
+        }
     }
 
     public void PrepareForExit()
@@ -59,10 +90,12 @@ public sealed class TrayIconService : IDisposable
     private Forms.ContextMenuStrip BuildMenu()
     {
         var menu = new Forms.ContextMenuStrip();
-        menu.Items.Add("打开 MusicFloat", null, (_, _) => PostToOwner(ShowOwner));
-        menu.Items.Add("显示悬浮窗", null, (_, _) => PostToOwner(_showCurrentTrack));
+        _openItem = new Forms.ToolStripMenuItem(_localizer.Text("TrayOpen"), null, (_, _) => PostToOwner(ShowOwner));
+        _showOverlayItem = new Forms.ToolStripMenuItem(_localizer.Text("TrayShowOverlay"), null, (_, _) => PostToOwner(_showCurrentTrack));
+        menu.Items.Add(_openItem);
+        menu.Items.Add(_showOverlayItem);
         menu.Items.Add(new Forms.ToolStripSeparator());
-        _exitItem = new Forms.ToolStripMenuItem("退出 MusicFloat", null, (_, _) => PostToOwner(_exitApplication));
+        _exitItem = new Forms.ToolStripMenuItem(_localizer.Text("TrayExit"), null, (_, _) => PostToOwner(_exitApplication));
         menu.Items.Add(_exitItem);
         return menu;
     }

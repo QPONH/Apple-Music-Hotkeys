@@ -11,7 +11,9 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private readonly OverlaySettingsService _settingsService;
     private readonly OverlaySettings _settings;
     private TrackInfo? _currentTrack;
-    private string _statusText = "等待播放源";
+    private string _statusText = LocalizationService.Current.Text("CurrentStatusWaiting");
+    private string _statusResourceKey = "CurrentStatusWaiting";
+    private object[] _statusResourceArgs = [];
 
     public event PropertyChangedEventHandler? PropertyChanged;
 
@@ -39,11 +41,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
         }
     }
 
-    public string CurrentTitle => CurrentTrack?.Title ?? "未检测到歌曲";
+    public string CurrentTitle => CurrentTrack?.Title ?? LocalizationService.Current.Text("NoTrackTitle");
 
-    public string CurrentArtist => CurrentTrack?.Artist ?? "播放音乐后自动同步";
+    public string CurrentArtist => CurrentTrack?.Artist ?? LocalizationService.Current.Text("NoTrackArtist");
 
-    public string TransportButtonText => CurrentTrack?.IsPlaying == true ? "暂停" : "播放";
+    public string TransportButtonText => CurrentTrack?.IsPlaying == true
+        ? LocalizationService.Current.Text("Pause")
+        : LocalizationService.Current.Text("Play");
 
     public string StatusText
     {
@@ -58,7 +62,13 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public void ApplyTrack(TrackInfo? track)
     {
         CurrentTrack = track;
-        StatusText = track == null ? "未检测到正在播放的音乐" : $"已连接：{track.SourceAppId}";
+        if (track == null)
+        {
+            SetLocalizedStatus("CurrentStatusNoPlayingMusic");
+            return;
+        }
+
+        SetLocalizedStatus("CurrentStatusConnectedTemplate", track.SourceAppId);
     }
 
     public void Save()
@@ -68,7 +78,32 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public void SetStatus(string statusText)
     {
+        _statusResourceKey = string.Empty;
+        _statusResourceArgs = [];
         StatusText = statusText;
+    }
+
+    public void SetLocalizedStatus(string resourceKey, params object[] args)
+    {
+        _statusResourceKey = resourceKey;
+        _statusResourceArgs = args;
+        StatusText = args.Length == 0
+            ? LocalizationService.Current.Text(resourceKey)
+            : LocalizationService.Current.Format(resourceKey, args);
+    }
+
+    public void RefreshLocalizedText()
+    {
+        if (!string.IsNullOrWhiteSpace(_statusResourceKey))
+        {
+            StatusText = _statusResourceArgs.Length == 0
+                ? LocalizationService.Current.Text(_statusResourceKey)
+                : LocalizationService.Current.Format(_statusResourceKey, _statusResourceArgs);
+        }
+
+        OnPropertyChanged(nameof(CurrentTitle));
+        OnPropertyChanged(nameof(CurrentArtist));
+        OnPropertyChanged(nameof(TransportButtonText));
     }
 
     public void ReplaceCaptureSources(IEnumerable<MediaSessionCandidate> sessions)
@@ -85,7 +120,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
         if (!string.IsNullOrWhiteSpace(selected) &&
             CaptureSources.All(source => !source.SourceAppUserModelId.Equals(selected, StringComparison.OrdinalIgnoreCase)))
         {
-            CaptureSources.Add(new MediaSessionSourceOption(selected, $"{selected}（未检测到）"));
+            CaptureSources.Add(new MediaSessionSourceOption(selected, $"{selected}（{LocalizationService.Current.Text("UndetectedSuffix")}）"));
         }
 
         OnPropertyChanged(nameof(CaptureSources));
@@ -99,11 +134,11 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
 public sealed record MediaSessionSourceOption(string SourceAppUserModelId, string DisplayName)
 {
-    public static MediaSessionSourceOption Automatic { get; } = new(string.Empty, "自动选择");
+    public static MediaSessionSourceOption Automatic => new(string.Empty, LocalizationService.Current.Text("AutoSelect"));
 
     public static MediaSessionSourceOption FromCandidate(MediaSessionCandidate candidate)
     {
-        string title = string.IsNullOrWhiteSpace(candidate.Title) ? "未知媒体" : candidate.Title;
+        string title = string.IsNullOrWhiteSpace(candidate.Title) ? LocalizationService.Current.Text("UnknownMedia") : candidate.Title;
         string source = SimplifySourceName(candidate.SourceAppUserModelId);
         return new MediaSessionSourceOption(candidate.SourceAppUserModelId, $"{source} · {title}");
     }

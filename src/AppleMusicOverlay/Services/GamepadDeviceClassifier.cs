@@ -95,7 +95,7 @@ public static class GamepadDeviceClassifier
 
     private static GamepadDeviceInfo CreateDeviceInfo(string runtimeId, string displayName, ushort vendorId, ushort productId, bool hasStandardGamepad)
     {
-        string normalizedName = string.IsNullOrWhiteSpace(displayName) ? "兼容手柄" : displayName.Trim();
+        string normalizedName = string.IsNullOrWhiteSpace(displayName) ? LocalizationService.Current.Text("CompatibleGamepad") : displayName.Trim();
         return new GamepadDeviceInfo(
             runtimeId,
             normalizedName,

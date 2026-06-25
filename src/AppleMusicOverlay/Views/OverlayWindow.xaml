@@ -1,6 +1,7 @@
 <Window x:Class="AppleMusicOverlay.Views.OverlayWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:services="clr-namespace:AppleMusicOverlay.Services"
         Width="460.8"
         Height="568.8"
         WindowStyle="None"
@@ -262,18 +263,21 @@
                 </Border.RenderTransform>
                 <StackPanel Orientation="Horizontal"
                             VerticalAlignment="Center">
-                    <TextBlock Text="正在调整位置"
+                    <TextBlock x:Name="PositionEditTitleText"
+                               Text="{Binding [PositionEditBarTitle], Source={x:Static services:LocalizationService.Current}}"
                                VerticalAlignment="Center"
                                Foreground="#F7F8FB"
                                FontFamily="Segoe UI Variable Text, Segoe UI"
                                FontSize="12.5"
                                FontWeight="SemiBold"
                                Margin="4,0,12,0" />
-                    <Button Content="取消"
+                    <Button x:Name="PositionEditCancelButton"
+                            Content="{Binding [Cancel], Source={x:Static services:LocalizationService.Current}}"
                             Style="{StaticResource PositionEditButtonStyle}"
                             Margin="0,0,6,0"
                             Click="PositionEditCancel_Click" />
-                    <Button Content="完成"
+                    <Button x:Name="PositionEditDoneButton"
+                            Content="{Binding [Done], Source={x:Static services:LocalizationService.Current}}"
                             Style="{StaticResource PositionEditDoneButtonStyle}"
                             Click="PositionEditDone_Click" />
                 </StackPanel>

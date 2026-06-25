@@ -27,6 +27,7 @@ public sealed class GamepadBindingCaptureSession
     private readonly HashSet<GamepadButton> _pressedButtons = new();
     private TimeSpan _neutralElapsed;
     private bool _hasStartedRound;
+    private static LocalizationService Localizer => LocalizationService.Current;
 
     public GamepadBindingCaptureSession(GamepadDeviceKind deviceKind, AppAction targetAction, GamepadBindingSet bindings)
     {
@@ -34,7 +35,7 @@ public sealed class GamepadBindingCaptureSession
         _targetAction = targetAction;
         _bindings = bindings;
         State = GamepadCaptureState.WaitingForNeutral;
-        Message = "请先松开手柄上的所有按键。";
+        Message = Localizer.Text("GamepadReleaseAllButtons");
     }
 
     public GamepadCaptureState State { get; private set; }
@@ -81,7 +82,7 @@ public sealed class GamepadBindingCaptureSession
         _hasStartedRound = false;
         _neutralElapsed = TimeSpan.Zero;
         State = GamepadCaptureState.WaitingForNeutral;
-        Message = "请先松开手柄上的所有按键。";
+        Message = Localizer.Text("GamepadReleaseAllButtons");
     }
 
     public void ReplaceConflict(GamepadBindingSet bindings)
@@ -94,7 +95,7 @@ public sealed class GamepadBindingCaptureSession
         bindings.Clear(ConflictAction.Value);
         bindings.SetBinding(_targetAction, PendingBinding);
         State = GamepadCaptureState.Completed;
-        Message = $"已自动保存：{DisplayText}";
+        Message = Localizer.Format("AutoSavedTemplate", DisplayText);
     }
 
     public void ApplyCompleted(GamepadBindingSet bindings)
@@ -117,7 +118,7 @@ public sealed class GamepadBindingCaptureSession
         State = GamepadCaptureState.DeviceDisconnected;
         PendingBinding = null;
         ConflictAction = null;
-        Message = "手柄已断开，录入已取消。";
+        Message = Localizer.Text("GamepadDisconnectedCancelled");
     }
 
     private void UpdateWaitingForNeutral(IReadOnlyList<GamepadButton> normalizedPressed, TimeSpan elapsed)
@@ -125,7 +126,7 @@ public sealed class GamepadBindingCaptureSession
         if (normalizedPressed.Count > 0)
         {
             _neutralElapsed = TimeSpan.Zero;
-            Message = "请先松开手柄上的所有按键。";
+            Message = Localizer.Text("GamepadReleaseAllButtons");
             return;
         }
 
@@ -133,7 +134,7 @@ public sealed class GamepadBindingCaptureSession
         if (_neutralElapsed >= NeutralStableDuration)
         {
             State = GamepadCaptureState.Listening;
-            Message = "按下要绑定的手柄按键或组合键，松开所有按键后完成，Esc 取消。";
+            Message = Localizer.Text("GamepadListenInstruction");
         }
     }
 
@@ -147,7 +148,7 @@ public sealed class GamepadBindingCaptureSession
             {
                 PendingBinding = null;
                 State = GamepadCaptureState.TooManyButtons;
-                Message = "最多可以绑定 3 个手柄按键，请重新录入。";
+                Message = Localizer.Text("GamepadTooManyButtons");
                 return;
             }
         }
@@ -156,14 +157,14 @@ public sealed class GamepadBindingCaptureSession
         {
             _hasStartedRound = true;
             State = GamepadCaptureState.Capturing;
-            Message = $"已检测：{DisplayText}\n松开所有按键后完成，Esc 取消。";
+            Message = Localizer.Format("GamepadDetectedTemplate", DisplayText);
             return;
         }
 
         if (!_hasStartedRound)
         {
             State = GamepadCaptureState.Listening;
-            Message = "按下要绑定的手柄按键或组合键，松开所有按键后完成，Esc 取消。";
+            Message = Localizer.Text("GamepadListenInstruction");
             return;
         }
 
@@ -172,7 +173,7 @@ public sealed class GamepadBindingCaptureSession
         if (binding.Buttons.Count == 1)
         {
             State = GamepadCaptureState.SingleButtonWarning;
-            Message = "单个按键可能与游戏操作冲突，推荐使用组合键。";
+            Message = Localizer.Text("GamepadSingleButtonWarning");
             return;
         }
 
@@ -186,11 +187,11 @@ public sealed class GamepadBindingCaptureSession
         {
             ConflictAction = conflict;
             State = GamepadCaptureState.Conflict;
-            Message = $"{GamepadBindingFormatter.Format(binding, _deviceKind)} 已用于“{GamepadBindingActions.GetLabel(conflict.Value)}”。";
+            Message = Localizer.Format("HotkeyConflictTemplate", GamepadBindingFormatter.Format(binding, _deviceKind), GamepadBindingActions.GetLabel(conflict.Value));
             return;
         }
 
         State = GamepadCaptureState.Completed;
-        Message = $"已自动保存：{GamepadBindingFormatter.Format(binding, _deviceKind)}";
+        Message = Localizer.Format("AutoSavedTemplate", GamepadBindingFormatter.Format(binding, _deviceKind));
     }
 }

@@ -100,11 +100,29 @@ public partial class OverlayWindow : Window
     public OverlayWindow()
     {
         InitializeComponent();
+        LocalizationService.Current.LanguageChanged += LocalizationService_LanguageChanged;
+        UpdateLocalizedText();
         Visibility = Visibility.Hidden;
         _pointerAutoHideTimer.Tick += (_, _) => UpdatePointerAutoHideState();
         SourceInitialized += (_, _) => ApplyOverlayWindowStyles();
         PreviewKeyDown += OverlayWindow_PreviewKeyDown;
         Closed += (_, _) => CleanupPositionEdit(restoreOriginalPosition: false, savePosition: false, animateBar: false);
+    }
+
+    private void LocalizationService_LanguageChanged(object? sender, EventArgs e)
+    {
+        UpdateLocalizedText();
+        if (PositionEditBar.Visibility == Visibility.Visible)
+        {
+            UpdatePositionEditBarPlacement();
+        }
+    }
+
+    private void UpdateLocalizedText()
+    {
+        PositionEditTitleText.Text = LocalizationService.Current.Text("PositionEditBarTitle");
+        PositionEditCancelButton.Content = LocalizationService.Current.Text("Cancel");
+        PositionEditDoneButton.Content = LocalizationService.Current.Text("Done");
     }
 
     public void ApplySettings(OverlaySettings settings)

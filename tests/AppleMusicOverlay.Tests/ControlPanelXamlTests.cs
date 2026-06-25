@@ -3,14 +3,15 @@ namespace AppleMusicOverlay.Tests;
 public sealed class ControlPanelXamlTests
 {
     [Fact]
-    public void MainWindowUsesThreePageControlPanelShell()
+    public void MainWindowUsesFourPageControlPanelShell()
     {
         string xaml = File.ReadAllText(GetMainWindowXamlPath());
 
         Assert.Contains("TabControl", xaml);
-        Assert.Contains("当前播放", xaml);
-        Assert.Contains("悬浮窗", xaml);
-        Assert.Contains("快捷键", xaml);
+        Assert.Contains("[NavCurrent]", xaml);
+        Assert.Contains("[NavOverlay]", xaml);
+        Assert.Contains("[NavShortcuts]", xaml);
+        Assert.Contains("[NavGeneral]", xaml);
     }
 
     [Fact]
@@ -47,10 +48,11 @@ public sealed class ControlPanelXamlTests
         string xaml = File.ReadAllText(GetMainWindowXamlPath());
         string cardCode = File.ReadAllText(GetExpandableNavigationCardPath());
 
-        Assert.Equal(3, CountOccurrences(xaml, "<views:ExpandableNavigationCard x:Name="));
+        Assert.Equal(4, CountOccurrences(xaml, "<views:ExpandableNavigationCard x:Name="));
         Assert.Contains("x:Name=\"CurrentNavigationCard\"", xaml);
         Assert.Contains("x:Name=\"OverlayNavigationCard\"", xaml);
         Assert.Contains("x:Name=\"HotkeyNavigationCard\"", xaml);
+        Assert.Contains("x:Name=\"GeneralNavigationCard\"", xaml);
         Assert.Contains("Content=\"{TemplateBinding Content}\"", xaml);
         Assert.Contains("x:Name=\"ExpansionHost\"", xaml);
         Assert.Contains("x:Name=\"ExpansionContentPresenter\"", xaml);
@@ -95,17 +97,19 @@ public sealed class ControlPanelXamlTests
         Assert.Contains("ShowOverlayNavigationPrompt", mainCode);
         Assert.Contains("ShowPersistentOverlayNavigationPrompt", mainCode);
         Assert.Contains("ClearInactiveTransientNavigationPrompts", mainCode);
-        Assert.Contains("CurrentNavigationCard.ShowPrompt(title, message, autoCollapseDelay)", mainCode);
-        Assert.Contains("OverlayNavigationCard.ShowPrompt(title, message, autoCollapseDelay)", mainCode);
-        Assert.Contains("OverlayNavigationCard.ShowPersistentPrompt(title, message)", mainCode);
-        Assert.Contains("ShowCurrentNavigationPrompt(\"正在刷新\"", mainCode);
-        Assert.Contains("ShowCurrentNavigationPrompt(\"刷新完成\"", mainCode);
-        Assert.Contains("ShowCurrentNavigationPrompt(\"未检测到音乐\"", mainCode);
-        Assert.Contains("ShowOverlayNavigationPrompt(\"设置已保存\"", mainCode);
-        Assert.Contains("ShowOverlayNavigationPrompt(\"已显示悬浮窗\"", mainCode);
-        Assert.Contains("ShowPersistentOverlayNavigationPrompt(\"正在调整位置\"", mainCode);
-        Assert.Contains("ShowOverlayNavigationPrompt(\"位置已保存\"", mainCode);
-        Assert.Contains("ShowOverlayNavigationPrompt(\"已取消调整\"", mainCode);
+        Assert.Contains("CurrentNavigationCard.ShowPrompt(Localizer.Text(titleKey), Localizer.Text(messageKey), autoCollapseDelay)", mainCode);
+        Assert.Contains("OverlayNavigationCard.ShowPrompt(Localizer.Text(titleKey), Localizer.Text(messageKey), autoCollapseDelay)", mainCode);
+        Assert.Contains("OverlayNavigationCard.ShowPersistentPrompt(Localizer.Text(titleKey), Localizer.Text(messageKey))", mainCode);
+        Assert.Contains("GeneralNavigationCard.ShowPrompt(Localizer.Text(titleKey), Localizer.Text(messageKey), autoCollapseDelay)", mainCode);
+        Assert.Contains("ShowCurrentNavigationPrompt(\"CurrentRefreshInProgressTitle\"", mainCode);
+        Assert.Contains("ShowCurrentNavigationPrompt(\"CurrentRefreshCompleteTitle\"", mainCode);
+        Assert.Contains("ShowCurrentNavigationPrompt(\"CurrentNoMusicTitle\"", mainCode);
+        Assert.Contains("ShowOverlayNavigationPrompt(\"OverlaySavedTitle\"", mainCode);
+        Assert.Contains("ShowOverlayNavigationPrompt(\"OverlayShownTitle\"", mainCode);
+        Assert.Contains("ShowPersistentOverlayNavigationPrompt(\"OverlayAdjustingTitle\"", mainCode);
+        Assert.Contains("ShowOverlayNavigationPrompt(\"OverlayPositionSavedTitle\"", mainCode);
+        Assert.Contains("ShowOverlayNavigationPrompt(\"OverlayPositionCancelledTitle\"", mainCode);
+        Assert.Contains("ShowGeneralNavigationPrompt(\"GeneralLanguageChangedTitle\"", mainCode);
         Assert.Contains("RefreshSourcesAsync(showNavigationFeedback: true", mainCode);
         Assert.Contains("BeginPositionEdit(_viewModel.Settings, SaveOverlayPositionSettingsNow, HandleOverlayPositionEditCompleted)", mainCode);
         Assert.Contains("<TextBlock Text=\"{Binding StatusText}\"", xaml);
@@ -121,7 +125,7 @@ public sealed class ControlPanelXamlTests
 
         Assert.Contains("HotkeyBox_PreviewKeyDown", xaml);
         Assert.Contains("HotkeyBox_PreviewKeyUp", xaml);
-        Assert.Contains("按下想要的快捷键", xaml);
+        Assert.Contains("[\"HotkeyCapturePrompt\"]", File.ReadAllText(GetLocalizationServicePath()));
         Assert.Contains("IsReadOnly=\"True\"", xaml);
         Assert.Contains("Mode=OneWay", xaml);
     }
@@ -143,7 +147,7 @@ public sealed class ControlPanelXamlTests
     {
         string xaml = File.ReadAllText(GetMainWindowXamlPath());
 
-        Assert.Contains("录入成功后会自动保存", xaml);
+        Assert.Contains("[ShortcutsPageDescription]", xaml);
         Assert.DoesNotContain("修改完成后请点击保存", xaml);
         Assert.DoesNotContain("保存快捷键", xaml);
         Assert.DoesNotContain("保存后重新注册", xaml);
@@ -292,12 +296,12 @@ public sealed class ControlPanelXamlTests
         string code = File.ReadAllText(GetMainWindowCodeBehindPath());
 
         Assert.Equal(4, CountOccurrences(xaml, "Click=\"DeleteHotkey_Click\""));
-        Assert.Equal(4, CountOccurrences(xaml, "Content=\"删除\""));
+        Assert.Equal(4, CountOccurrences(xaml, "Content=\"{Binding [Delete]"));
         Assert.Contains("DeleteHotkey_Click", code);
         Assert.Contains("HotkeyUnsetText", code);
         Assert.Contains("KeyboardHotkeyBindingManager.Apply", code);
         Assert.Contains("TryRegisterSnapshot", code);
-        Assert.Contains("该快捷键无法注册", File.ReadAllText(GetKeyboardHotkeyBindingManagerPath()));
+        Assert.Contains("HotkeyRegistrationFailed", File.ReadAllText(GetKeyboardHotkeyBindingManagerPath()));
         Assert.DoesNotContain("FindHotkeyConflict(box.Tag as string, hotkeyText)", code);
         Assert.DoesNotContain("isConflict: conflict != null", code);
     }
@@ -402,7 +406,7 @@ public sealed class ControlPanelXamlTests
         string settingsCode = File.ReadAllText(GetOverlaySettingsPath());
         string normalizerCode = File.ReadAllText(GetOverlaySettingsNormalizerPath());
 
-        Assert.Contains("封面阴影大小", mainXaml);
+        Assert.Contains("[CoverShadowSize]", mainXaml);
         Assert.Contains("x:Name=\"CoverShadowSizeSlider\"", mainXaml);
         Assert.Contains("Settings.CoverShadowSizePercent", mainXaml);
         Assert.DoesNotContain("IsSnapToTickEnabled=\"True\"", ExtractBetween(mainXaml, "<Slider x:Name=\"CoverShadowSizeSlider\"", "/>"));
@@ -512,10 +516,10 @@ public sealed class ControlPanelXamlTests
         Assert.Contains("Settings.AutoHideOnMouseNear", mainXaml);
         Assert.Contains("MouseAutoHide_Changed", mainXaml);
         Assert.Contains("IsEnabled=\"{Binding Settings.PauseOverlay}\"", mainXaml);
-        Assert.Contains("开启常驻显示悬浮窗后可用", mainXaml);
-        Assert.Contains("鼠标靠近时自动隐藏", mainXaml);
-        Assert.Contains("悬浮窗位置", mainXaml);
-        Assert.Contains("调整位置", mainXaml);
+        Assert.Contains("[PauseOverlayRequired]", mainXaml);
+        Assert.Contains("[AutoHideOnMouseNear]", mainXaml);
+        Assert.Contains("[OverlayPosition]", mainXaml);
+        Assert.Contains("[AdjustPosition]", mainXaml);
         Assert.Contains("PositionOverlay_Click", mainXaml);
 
         Assert.Contains("public bool AutoHideOnMouseNear", settingsCode);
@@ -545,7 +549,7 @@ public sealed class ControlPanelXamlTests
         Assert.DoesNotContain("AutoHideOnMouseNear = false", positionHandler);
 
         Assert.Contains("x:Name=\"PositionEditBar\"", overlayXaml);
-        Assert.Contains("正在调整位置", overlayXaml);
+        Assert.Contains("[PositionEditBarTitle]", overlayXaml);
         Assert.Contains("Click=\"PositionEditCancel_Click\"", overlayXaml);
         Assert.Contains("Click=\"PositionEditDone_Click\"", overlayXaml);
         Assert.Contains("MouseLeftButtonDown=\"CoverClip_MouseLeftButtonDown\"", overlayXaml);
@@ -620,11 +624,11 @@ public sealed class ControlPanelXamlTests
         string gamepadSection = ExtractBetween(mainXaml, "<Border x:Name=\"GamepadHotkeyCard\"", "</Border>");
         string gamepadInputService = File.ReadAllText(GetGamepadInputServicePath());
 
-        Assert.Contains("手柄快捷键", gamepadSection);
+        Assert.Contains("[GamepadShortcuts]", gamepadSection);
         Assert.Contains("x:Name=\"GamepadConnectedDot\"", gamepadSection);
         Assert.Contains("x:Name=\"GamepadStatusTitleText\"", gamepadSection);
-        Assert.Contains("未检测到手柄", gamepadSection);
-        Assert.Contains("请通过 USB 或蓝牙连接 Xbox 或 DualSense 手柄。", gamepadSection);
+        Assert.Contains("[GamepadNotDetected]", gamepadSection);
+        Assert.Contains("[GamepadNotDetectedDescription]", gamepadSection);
         Assert.Contains("x:Name=\"GamepadDeviceSelector\"", gamepadSection);
         Assert.Contains("SelectionChanged=\"GamepadDeviceSelector_SelectionChanged\"", gamepadSection);
         Assert.Contains("Click=\"RefreshGamepads_Click\"", gamepadSection);
@@ -668,13 +672,12 @@ public sealed class ControlPanelXamlTests
         Assert.Contains("x:Name=\"GamepadCaptureSecondaryButton\"", header);
         Assert.Contains("GamepadCapturePrimary_Click", header);
         Assert.Contains("GamepadCaptureSecondary_Click", header);
-        Assert.Contains("title: \"手柄快捷键修改\"", mainCode);
-        Assert.Contains("手柄快捷键修改", mainCode);
-        Assert.Contains("按下要绑定的手柄按键或组合键", mainCode);
-        Assert.Contains("请先松开手柄上的所有按键", mainCode);
-        Assert.Contains("仍然使用", mainCode);
-        Assert.Contains("重新录入", mainCode);
-        Assert.Contains("替换原绑定", mainCode);
+        Assert.Contains("Localizer.Text(\"GamepadHotkeyEditTitle\")", mainCode);
+        Assert.Contains("Localizer.Text(\"GamepadListenInstruction\")", mainCode);
+        Assert.Contains("Localizer.Text(\"GamepadReleaseAllButtons\")", mainCode);
+        Assert.Contains("Localizer.Text(\"UseAnyway\")", mainCode);
+        Assert.Contains("Localizer.Text(\"Retry\")", mainCode);
+        Assert.Contains("Localizer.Text(\"ReplaceOriginalBinding\")", mainCode);
         Assert.Contains("GamepadCaptureState.SingleButtonWarning", mainCode);
         Assert.Contains("GamepadCaptureState.Conflict", mainCode);
     }
@@ -727,9 +730,9 @@ public sealed class ControlPanelXamlTests
         Assert.Contains("HandleKeyboardHotkeyConflictPrimary", mainCode);
         Assert.Contains("HandleKeyboardHotkeyConflictSecondary", mainCode);
         Assert.Contains("ApplyReplacingConflict", mainCode);
-        Assert.Contains("title: \"键盘快捷键修改\"", mainCode);
-        Assert.Contains("primaryAction: \"替换原绑定\"", mainCode);
-        Assert.Contains("secondaryAction: \"取消\"", mainCode);
+        Assert.Contains("title: Localizer.Text(\"KeyboardHotkeyEditTitle\")", mainCode);
+        Assert.Contains("primaryAction: Localizer.Text(\"ReplaceOriginalBinding\")", mainCode);
+        Assert.Contains("secondaryAction: Localizer.Text(\"Cancel\")", mainCode);
         Assert.Contains("DisplayHotkeyBoxValues()", keyboardConflictCancel);
         Assert.DoesNotContain("RestoreHotkeyBox(box)", keyboardConflictCancel);
         Assert.Contains("DisplayHotkeyBoxValues()", keyboardEscape);
@@ -776,6 +779,44 @@ public sealed class ControlPanelXamlTests
     }
 
     [Fact]
+    public void GeneralPageOwnsLanguageAndCloseToTraySettings()
+    {
+        string mainXaml = File.ReadAllText(GetMainWindowXamlPath());
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+        string currentPage = ExtractBetween(mainXaml, "x:Name=\"CurrentNavigationCard\"", "x:Name=\"OverlayNavigationCard\"");
+        string generalPage = ExtractBetween(mainXaml, "x:Name=\"GeneralNavigationCard\"", "</TabItem>");
+
+        Assert.DoesNotContain("Settings.CloseToTray", currentPage);
+        Assert.DoesNotContain("Settings.ShowTitle", currentPage);
+        Assert.DoesNotContain("Settings.ShowArtist", currentPage);
+        Assert.Contains("x:Name=\"LanguageCombo\"", generalPage);
+        Assert.Contains("[Language]", generalPage);
+        Assert.Contains("[WindowBehavior]", generalPage);
+        Assert.Contains("Settings.CloseToTray", generalPage);
+        Assert.Contains("GeneralSetting_Changed", generalPage);
+        Assert.Contains("LanguageCombo_SelectionChanged", mainCode);
+        Assert.Contains("ShowGeneralNavigationPrompt(\"GeneralLanguageChangedTitle\"", mainCode);
+        Assert.Contains("ShowGeneralNavigationPrompt(\"GeneralSavedTitle\"", mainCode);
+        Assert.DoesNotContain("SetStatus(\"设置已保存", mainCode);
+        Assert.DoesNotContain("SetLocalizedStatus(\"GeneralSaved", mainCode);
+    }
+
+    [Fact]
+    public void OverlayTitleAndArtistTogglesOnlyAppearOnOverlayPage()
+    {
+        string mainXaml = File.ReadAllText(GetMainWindowXamlPath());
+        string currentPage = ExtractBetween(mainXaml, "x:Name=\"CurrentNavigationCard\"", "x:Name=\"OverlayNavigationCard\"");
+        string overlayPage = ExtractBetween(mainXaml, "x:Name=\"OverlayNavigationCard\"", "x:Name=\"HotkeyNavigationCard\"");
+
+        Assert.DoesNotContain("Settings.ShowTitle", currentPage);
+        Assert.DoesNotContain("Settings.ShowArtist", currentPage);
+        Assert.Equal(1, CountOccurrences(mainXaml, "Settings.ShowTitle"));
+        Assert.Equal(1, CountOccurrences(mainXaml, "Settings.ShowArtist"));
+        Assert.Contains("[ShowTitle]", overlayPage);
+        Assert.Contains("[ShowArtist]", overlayPage);
+    }
+
+    [Fact]
     public void OverlayPositionEditReportsCompletionToNavigationPromptWithoutReplacingOverlayUi()
     {
         string overlayCode = File.ReadAllText(GetOverlayWindowCodeBehindPath());
@@ -790,7 +831,7 @@ public sealed class ControlPanelXamlTests
         Assert.Contains("PositionEditBar.Visibility = Visibility.Visible", overlayCode);
         Assert.Contains("HandleOverlayPositionEditCompleted", mainCode);
         Assert.Contains("OverlayPositionEditResult.Saved", mainCode);
-        Assert.Contains("已取消调整", mainCode);
+        Assert.Contains("OverlayPositionCancelledTitle", mainCode);
     }
 
     [Fact]
@@ -816,9 +857,10 @@ public sealed class ControlPanelXamlTests
         string trayCode = File.ReadAllText(GetTrayIconServicePath());
         string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
 
-        Assert.Contains("打开 MusicFloat", trayCode);
-        Assert.Contains("显示悬浮窗", trayCode);
-        Assert.Contains("退出 MusicFloat", trayCode);
+        Assert.Contains("TrayOpen", trayCode);
+        Assert.Contains("TrayShowOverlay", trayCode);
+        Assert.Contains("TrayExit", trayCode);
+        Assert.Contains("UpdateText", trayCode);
         Assert.Contains("new Forms.ToolStripSeparator()", trayCode);
         Assert.Contains("BeginInvoke", trayCode);
         Assert.Contains("PrepareForExit", trayCode);
@@ -950,6 +992,23 @@ public sealed class ControlPanelXamlTests
         }
 
         throw new FileNotFoundException("Could not locate GamepadInputService.cs from the test output directory.");
+    }
+
+    private static string GetLocalizationServicePath()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory != null)
+        {
+            string candidate = Path.Combine(directory.FullName, "src", "AppleMusicOverlay", "Services", "LocalizationService.cs");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new FileNotFoundException("Could not locate LocalizationService.cs from the test output directory.");
     }
 
     private static string GetGlobalHotkeyServicePath()

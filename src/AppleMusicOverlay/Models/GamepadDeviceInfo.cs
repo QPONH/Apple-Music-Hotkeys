@@ -8,12 +8,14 @@ public sealed record GamepadDeviceInfo(
     ushort VendorId,
     ushort ProductId)
 {
+    private static AppleMusicOverlay.Services.LocalizationService Localizer => AppleMusicOverlay.Services.LocalizationService.Current;
+
     public string KindDisplayName => Kind switch
     {
-        GamepadDeviceKind.Xbox => "Xbox 手柄",
-        GamepadDeviceKind.DualSense => "DualSense 手柄",
-        _ => "兼容手柄"
+        GamepadDeviceKind.Xbox => Localizer.Text("XboxGamepad"),
+        GamepadDeviceKind.DualSense => Localizer.Text("DualSenseGamepad"),
+        _ => Localizer.Text("CompatibleGamepad")
     };
 
-    public string StatusText => $"已连接 {KindDisplayName}";
+    public string StatusText => Localizer.Format("ConnectedGamepadTemplate", KindDisplayName);
 }

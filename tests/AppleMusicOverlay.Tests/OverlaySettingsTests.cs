@@ -18,6 +18,7 @@ public sealed class OverlaySettingsTests
         Assert.Equal(80d, settings.CoverShadowSizePercent);
         Assert.False(settings.AutoHideOnMouseNear);
         Assert.Equal(string.Empty, settings.CaptureSourceAppUserModelId);
+        Assert.Equal("zh-CN", settings.LanguageCode);
     }
 
     [Fact]
@@ -110,5 +111,35 @@ public sealed class OverlaySettingsTests
         Assert.Equal("Ctrl+Shift+Right", loaded.KeyboardNext);
         Assert.True(loaded.PauseOverlay);
         Assert.True(loaded.AutoHideOnMouseNear);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("fr-FR")]
+    public void NormalizeFallsBackToSimplifiedChineseForUnknownLanguage(string? languageCode)
+    {
+        var settings = new OverlaySettings
+        {
+            LanguageCode = languageCode!
+        };
+
+        OverlaySettings normalized = OverlaySettingsNormalizer.Normalize(settings);
+
+        Assert.Equal("zh-CN", normalized.LanguageCode);
+    }
+
+    [Fact]
+    public void SettingsServicePersistsLanguageCode()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "AppleMusicOverlay.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string path = Path.Combine(dir, "settings.json");
+        var service = new OverlaySettingsService(path);
+
+        service.Save(new OverlaySettings { LanguageCode = "en-US" });
+        OverlaySettings loaded = service.Load();
+
+        Assert.Equal("en-US", loaded.LanguageCode);
     }
 }

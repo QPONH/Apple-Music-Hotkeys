@@ -202,7 +202,7 @@ public sealed class GamepadInputService : IDisposable
             standardGamepadsByRuntimeId[runtimeId] = gamepad;
             descriptors.Add(new GamepadDeviceDescriptor(
                 runtimeId,
-                raw?.DisplayName ?? "兼容手柄",
+                raw?.DisplayName ?? LocalizationService.Current.Text("CompatibleGamepad"),
                 raw?.HardwareVendorId ?? 0,
                 raw?.HardwareProductId ?? 0,
                 HasStandardGamepad: true,
