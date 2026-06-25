@@ -64,7 +64,6 @@ public sealed class MainViewModel : INotifyPropertyChanged
     public void Save()
     {
         _settingsService.Save(_settings);
-        StatusText = "设置已保存";
     }
 
     public void SetStatus(string statusText)

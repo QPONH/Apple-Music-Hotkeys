@@ -14,6 +14,12 @@ using AppleMusicOverlay.Services;
 
 namespace AppleMusicOverlay.Views;
 
+public enum OverlayPositionEditResult
+{
+    Saved,
+    Cancelled
+}
+
 public partial class OverlayWindow : Window
 {
     private const double BaseWidth = 256;
@@ -87,6 +93,7 @@ public partial class OverlayWindow : Window
     private Vector _positionEditBarVelocity;
     private OverlaySettings? _positionEditSettingsTarget;
     private Action? _positionEditSaveCallback;
+    private Action<OverlayPositionEditResult>? _positionEditCompletedCallback;
     private bool _isPositionLifted;
     private bool _isPositionEditBarFollowing;
 
@@ -388,7 +395,10 @@ public partial class OverlayWindow : Window
         AutoHideScale.ScaleY = 1;
     }
 
-    public void BeginPositionEdit(OverlaySettings settings, Action saveSettings)
+    public void BeginPositionEdit(
+        OverlaySettings settings,
+        Action saveSettings,
+        Action<OverlayPositionEditResult>? positionEditCompleted = null)
     {
         if (_isPositionEditing)
         {
@@ -404,6 +414,7 @@ public partial class OverlayWindow : Window
 
         _positionEditSettingsTarget = settings;
         _positionEditSaveCallback = saveSettings;
+        _positionEditCompletedCallback = positionEditCompleted;
         _positionEditOriginalWindowPosition = new Point(Left, Top);
         _pendingPointerAutoHideResume = _settings.PauseOverlay && _settings.AutoHideOnMouseNear;
         _isPositionEditing = true;
@@ -537,7 +548,7 @@ public partial class OverlayWindow : Window
             _positionEditSaveCallback?.Invoke();
         }
 
-        CleanupPositionEdit(restoreOriginalPosition: false, savePosition: true, animateBar: true);
+        CleanupPositionEdit(restoreOriginalPosition: false, savePosition: true, animateBar: true, OverlayPositionEditResult.Saved);
     }
 
     private void CancelPositionEdit(bool animateReturn)
@@ -556,7 +567,7 @@ public partial class OverlayWindow : Window
         {
             Left = _positionEditOriginalWindowPosition.X;
             Top = _positionEditOriginalWindowPosition.Y;
-            CleanupPositionEdit(restoreOriginalPosition: true, savePosition: false, animateBar: true);
+            CleanupPositionEdit(restoreOriginalPosition: true, savePosition: false, animateBar: true, OverlayPositionEditResult.Cancelled);
             return;
         }
 
@@ -569,13 +580,17 @@ public partial class OverlayWindow : Window
             BeginAnimation(TopProperty, null);
             Left = _positionEditOriginalWindowPosition.X;
             Top = _positionEditOriginalWindowPosition.Y;
-            CleanupPositionEdit(restoreOriginalPosition: true, savePosition: false, animateBar: true);
+            CleanupPositionEdit(restoreOriginalPosition: true, savePosition: false, animateBar: true, OverlayPositionEditResult.Cancelled);
         };
         BeginAnimation(LeftProperty, leftAnimation, HandoffBehavior.SnapshotAndReplace);
         BeginAnimation(TopProperty, topAnimation, HandoffBehavior.SnapshotAndReplace);
     }
 
-    private void CleanupPositionEdit(bool restoreOriginalPosition, bool savePosition, bool animateBar)
+    private void CleanupPositionEdit(
+        bool restoreOriginalPosition,
+        bool savePosition,
+        bool animateBar,
+        OverlayPositionEditResult? editResult = null)
     {
         if (!_isPositionEditing && PositionEditBar.Visibility != Visibility.Visible)
         {
@@ -598,9 +613,16 @@ public partial class OverlayWindow : Window
 
         AnimatePositionEditLift(lifted: false, duration: PositionEditDropDuration);
         HidePositionEditBar(animateBar);
+        Action<OverlayPositionEditResult>? completedCallback = _positionEditCompletedCallback;
         _positionEditSettingsTarget = null;
         _positionEditSaveCallback = null;
+        _positionEditCompletedCallback = null;
         ApplyOverlayWindowStyles();
+        if (editResult.HasValue)
+        {
+            completedCallback?.Invoke(editResult.Value);
+        }
+
         if (_pendingPointerAutoHideResume && _settings.PauseOverlay && _settings.AutoHideOnMouseNear)
         {
             ResumePointerAutoHideAfterPositionEdit();

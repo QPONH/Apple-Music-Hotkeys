@@ -42,6 +42,79 @@ public sealed class ControlPanelXamlTests
     }
 
     [Fact]
+    public void SidebarNavigationUsesSharedExpandableCardsInLayoutFlow()
+    {
+        string xaml = File.ReadAllText(GetMainWindowXamlPath());
+        string cardCode = File.ReadAllText(GetExpandableNavigationCardPath());
+
+        Assert.Equal(3, CountOccurrences(xaml, "<views:ExpandableNavigationCard x:Name="));
+        Assert.Contains("x:Name=\"CurrentNavigationCard\"", xaml);
+        Assert.Contains("x:Name=\"OverlayNavigationCard\"", xaml);
+        Assert.Contains("x:Name=\"HotkeyNavigationCard\"", xaml);
+        Assert.Contains("Content=\"{TemplateBinding Content}\"", xaml);
+        Assert.Contains("x:Name=\"ExpansionHost\"", xaml);
+        Assert.Contains("x:Name=\"ExpansionContentPresenter\"", xaml);
+        Assert.Contains("x:Name=\"PART_HeaderRoot\"", xaml);
+        Assert.Contains("AncestorType={x:Type TabItem}", xaml);
+        Assert.Contains("BeginExpansionAnimation", cardCode);
+        Assert.Contains("HeaderedContentControl", cardCode);
+        Assert.DoesNotContain("Canvas", xaml);
+        Assert.DoesNotContain("RetiredHotkeyCapturePanel", xaml);
+    }
+
+    [Fact]
+    public void ExpandableNavigationCardOwnsSharedPromptStateAndAutoCollapseTimer()
+    {
+        string cardCode = File.ReadAllText(GetExpandableNavigationCardPath());
+        string xaml = File.ReadAllText(GetMainWindowXamlPath());
+
+        Assert.Contains("ExpansionTitleProperty", cardCode);
+        Assert.Contains("ExpansionMessageProperty", cardCode);
+        Assert.Contains("IsPromptPersistentProperty", cardCode);
+        Assert.Contains("AutoCollapseDelayProperty", cardCode);
+        Assert.Contains("private readonly DispatcherTimer _autoCollapseTimer", cardCode);
+        Assert.Equal(1, CountOccurrences(cardCode, "DispatcherTimer _autoCollapseTimer = new()"));
+        Assert.Contains("public void ShowPrompt", cardCode);
+        Assert.Contains("public void ShowPersistentPrompt", cardCode);
+        Assert.Contains("public void ClearPrompt", cardCode);
+        Assert.Contains("_autoCollapseTimer.Stop()", cardCode);
+        Assert.Contains("_autoCollapseTimer.Start()", cardCode);
+        Assert.Contains("if (!IsPromptPersistent)", cardCode);
+        Assert.Contains("x:Name=\"DefaultExpansionContent\"", xaml);
+        Assert.Contains("Text=\"{TemplateBinding ExpansionTitle}\"", xaml);
+        Assert.Contains("Text=\"{TemplateBinding ExpansionMessage}\"", xaml);
+    }
+
+    [Fact]
+    public void CurrentAndOverlayOperationsUseNavigationPromptCardsForTemporaryFeedback()
+    {
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+        string xaml = File.ReadAllText(GetMainWindowXamlPath());
+
+        Assert.Contains("ShowCurrentNavigationPrompt", mainCode);
+        Assert.Contains("ShowOverlayNavigationPrompt", mainCode);
+        Assert.Contains("ShowPersistentOverlayNavigationPrompt", mainCode);
+        Assert.Contains("ClearInactiveTransientNavigationPrompts", mainCode);
+        Assert.Contains("CurrentNavigationCard.ShowPrompt(title, message, autoCollapseDelay)", mainCode);
+        Assert.Contains("OverlayNavigationCard.ShowPrompt(title, message, autoCollapseDelay)", mainCode);
+        Assert.Contains("OverlayNavigationCard.ShowPersistentPrompt(title, message)", mainCode);
+        Assert.Contains("ShowCurrentNavigationPrompt(\"正在刷新\"", mainCode);
+        Assert.Contains("ShowCurrentNavigationPrompt(\"刷新完成\"", mainCode);
+        Assert.Contains("ShowCurrentNavigationPrompt(\"未检测到音乐\"", mainCode);
+        Assert.Contains("ShowOverlayNavigationPrompt(\"设置已保存\"", mainCode);
+        Assert.Contains("ShowOverlayNavigationPrompt(\"已显示悬浮窗\"", mainCode);
+        Assert.Contains("ShowPersistentOverlayNavigationPrompt(\"正在调整位置\"", mainCode);
+        Assert.Contains("ShowOverlayNavigationPrompt(\"位置已保存\"", mainCode);
+        Assert.Contains("ShowOverlayNavigationPrompt(\"已取消调整\"", mainCode);
+        Assert.Contains("RefreshSourcesAsync(showNavigationFeedback: true", mainCode);
+        Assert.Contains("BeginPositionEdit(_viewModel.Settings, SaveOverlayPositionSettingsNow, HandleOverlayPositionEditCompleted)", mainCode);
+        Assert.Contains("<TextBlock Text=\"{Binding StatusText}\"", xaml);
+        Assert.DoesNotContain("_viewModel.SetStatus(\"设置已保存", mainCode);
+        Assert.DoesNotContain("? \"快捷键已保存并生效。\"", mainCode);
+        Assert.DoesNotContain(": \"部分快捷键未注册，请检查组合键是否被占用。\"", mainCode);
+    }
+
+    [Fact]
     public void HotkeyFieldsCaptureKeyPressesInsteadOfFreeTextInput()
     {
         string xaml = File.ReadAllText(GetMainWindowXamlPath());
@@ -149,13 +222,15 @@ public sealed class ControlPanelXamlTests
     {
         string xaml = File.ReadAllText(GetMainWindowXamlPath());
         string code = File.ReadAllText(GetMainWindowCodeBehindPath());
-        string header = ExtractBetween(xaml, "<TabItem.Header>", "</TabItem.Header>");
+        string cardCode = File.ReadAllText(GetExpandableNavigationCardPath());
+        string header = ExtractHotkeyNavigationCard(xaml);
 
+        Assert.Contains("x:Name=\"HotkeyNavigationCard\"", header);
         Assert.Contains("x:Name=\"HotkeyCapturePanel\"", xaml);
         Assert.Contains("x:Name=\"HotkeyCaptureTitleText\"", xaml);
         Assert.Contains("x:Name=\"HotkeyCaptureStatusText\"", xaml);
-        Assert.Contains("x:Name=\"HotkeyCaptureScale\"", xaml);
-        Assert.Contains("x:Name=\"HotkeyCaptureTranslate\"", xaml);
+        Assert.Contains("x:Name=\"ExpansionScale\"", xaml);
+        Assert.Contains("x:Name=\"ExpansionTranslate\"", xaml);
         Assert.Contains("x:Name=\"HotkeyCaptureContent\"", header);
         Assert.Contains("<TabItem.Header>", xaml);
         Assert.Contains("MaxHeight=\"0\"", xaml);
@@ -167,12 +242,12 @@ public sealed class ControlPanelXamlTests
         Assert.Contains("ShowHotkeyCapturePanel", code);
         Assert.Contains("HideHotkeyCapturePanel", code);
         Assert.Contains("BeginHotkeyCapturePanelAnimation", code);
-        Assert.Contains("bool wasVisible", code);
-        Assert.Contains("double startHeight", code);
-        Assert.Contains("HotkeyCaptureContent.Measure", code);
+        Assert.Contains("HotkeyNavigationCard.IsExpanded = show", code);
+        Assert.Contains("HotkeyNavigationCard.RefreshExpandedContentHeight()", code);
+        Assert.Contains("bool wasVisible", cardCode);
+        Assert.Contains("double startHeight", cardCode);
+        Assert.Contains("_expansionContentHost.Measure", cardCode);
         Assert.Contains("HotkeyCaptureStatusText.Text = statusText", code);
-        Assert.Contains("HotkeyCapturePanel.Visibility = Visibility.Visible", code);
-        Assert.Contains("HotkeyCapturePanel.Visibility = Visibility.Collapsed", code);
         Assert.Contains("PreviewMouseDown += MainWindow_PreviewMouseDown", code);
         Assert.Contains("MainWindow_PreviewMouseDown", code);
         Assert.Contains("IsClickInsideCurrentHotkeyBox", code);
@@ -198,8 +273,10 @@ public sealed class ControlPanelXamlTests
     {
         string xaml = File.ReadAllText(GetMainWindowXamlPath());
         string code = File.ReadAllText(GetMainWindowCodeBehindPath());
+        string keyboardHotkeySection = ExtractBetween(xaml, "<TextBox x:Name=\"KeyboardPreviousBox\"", "<Border x:Name=\"GamepadHotkeyCard\"");
 
-        Assert.Equal(4, CountOccurrences(xaml, "IsReadOnly=\"True\"\n                                                     Focusable=\"False\""));
+        Assert.Equal(4, CountOccurrences(keyboardHotkeySection, "IsReadOnly=\"True\""));
+        Assert.Equal(4, CountOccurrences(keyboardHotkeySection, "Focusable=\"False\""));
         Assert.Contains("if (e.IsRepeat && _pressedHotkeyKeys.Contains(key))", code);
         Assert.Contains("DispatcherTimer", code);
         Assert.Contains("_hotkeyCaptureAutoHideTimer", code);
@@ -387,7 +464,7 @@ public sealed class ControlPanelXamlTests
         string overlayCode = File.ReadAllText(GetOverlayWindowCodeBehindPath());
         string pauseToggle = ExtractElementAround(mainXaml, "Settings.PauseOverlay");
         string pauseHandler = ExtractBetween(mainCode, "private void PauseOverlay_Changed", "private void DeleteHotkey_Click");
-        string showCurrentOverlay = ExtractBetween(mainCode, "private async Task ShowCurrentTrackOverlayAsync()", "private void ExitApplication()");
+        string showCurrentOverlay = ExtractBetween(mainCode, "private async Task<bool> ShowCurrentTrackOverlayAsync()", "private void ExitApplication()");
 
         Assert.Contains("Mode=TwoWay", pauseToggle);
         Assert.Contains("UpdateSourceTrigger=PropertyChanged", pauseToggle);
@@ -583,7 +660,7 @@ public sealed class ControlPanelXamlTests
     {
         string mainXaml = File.ReadAllText(GetMainWindowXamlPath());
         string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
-        string header = ExtractBetween(mainXaml, "<TabItem.Header>", "</TabItem.Header>");
+        string header = ExtractHotkeyNavigationCard(mainXaml);
 
         Assert.Contains("x:Name=\"HotkeyCapturePanel\"", header);
         Assert.Contains("x:Name=\"HotkeyCaptureActionsPanel\"", header);
@@ -607,7 +684,7 @@ public sealed class ControlPanelXamlTests
     {
         string mainXaml = File.ReadAllText(GetMainWindowXamlPath());
         string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
-        string header = ExtractBetween(mainXaml, "<TabItem.Header>", "</TabItem.Header>");
+        string header = ExtractHotkeyNavigationCard(mainXaml);
         string hitTestMethod = ExtractBetween(mainCode, "private bool IsClickInsideCurrentHotkeyBox", "private static bool IsModifierKey");
 
         Assert.DoesNotContain("IsHitTestVisible=\"False\"", header);
@@ -696,6 +773,24 @@ public sealed class ControlPanelXamlTests
         Assert.Contains("_trackMonitor.CurrentTrack ?? _viewModel.CurrentTrack", handler);
         Assert.Contains("_overlayWindow.UpdateTrack(track)", handler);
         Assert.Contains("QueueOverlaySettingsAutoSave(debounce: false)", handler);
+    }
+
+    [Fact]
+    public void OverlayPositionEditReportsCompletionToNavigationPromptWithoutReplacingOverlayUi()
+    {
+        string overlayCode = File.ReadAllText(GetOverlayWindowCodeBehindPath());
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+
+        Assert.Contains("public enum OverlayPositionEditResult", overlayCode);
+        Assert.Contains("Action<OverlayPositionEditResult>? positionEditCompleted", overlayCode);
+        Assert.Contains("_positionEditCompletedCallback", overlayCode);
+        Assert.Contains("completedCallback?.Invoke(editResult.Value)", overlayCode);
+        Assert.Contains("OverlayPositionEditResult.Saved", overlayCode);
+        Assert.Contains("OverlayPositionEditResult.Cancelled", overlayCode);
+        Assert.Contains("PositionEditBar.Visibility = Visibility.Visible", overlayCode);
+        Assert.Contains("HandleOverlayPositionEditCompleted", mainCode);
+        Assert.Contains("OverlayPositionEditResult.Saved", mainCode);
+        Assert.Contains("已取消调整", mainCode);
     }
 
     [Fact]
@@ -816,6 +911,28 @@ public sealed class ControlPanelXamlTests
         }
 
         throw new FileNotFoundException("Could not locate MainWindow.xaml.cs from the test output directory.");
+    }
+
+    private static string ExtractHotkeyNavigationCard(string xaml)
+    {
+        return ExtractBetween(xaml, "<views:ExpandableNavigationCard x:Name=\"HotkeyNavigationCard\"", "</views:ExpandableNavigationCard>");
+    }
+
+    private static string GetExpandableNavigationCardPath()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory != null)
+        {
+            string candidate = Path.Combine(directory.FullName, "src", "AppleMusicOverlay", "Views", "ExpandableNavigationCard.cs");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new FileNotFoundException("Could not locate ExpandableNavigationCard.cs from the test output directory.");
     }
 
     private static string GetGamepadInputServicePath()

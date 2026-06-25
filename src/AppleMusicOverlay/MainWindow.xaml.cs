@@ -24,6 +24,9 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
     private const string MaximizeGlyph = "\uE922";
     private const string RestoreGlyph = "\uE923";
     private const double NormalWindowFrameRadius = 20;
+    private static readonly TimeSpan CurrentNavigationPromptDelay = TimeSpan.FromMilliseconds(1000);
+    private static readonly TimeSpan OverlayNavigationPromptDelay = TimeSpan.FromMilliseconds(900);
+    private static readonly TimeSpan OverlayPositionResultPromptDelay = TimeSpan.FromMilliseconds(750);
     private readonly MainViewModel _viewModel;
     private readonly IMediaSessionService _mediaService;
     private readonly IMediaSessionSourceService _sourceService;
@@ -48,7 +51,6 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
     private AppAction? _capturingGamepadAction;
     private GamepadDeviceKind _capturingGamepadKind;
     private GamepadBindingCaptureSession? _gamepadCaptureSession;
-    private bool _isHotkeyCapturePanelShowing;
     private readonly DispatcherTimer _hotkeyCaptureAutoHideTimer = new();
     private readonly DispatcherTimer _gamepadCaptureTimer = new() { Interval = TimeSpan.FromMilliseconds(33) };
     private readonly DispatcherTimer _overlaySettingsSaveDebounceTimer = new() { Interval = TimeSpan.FromMilliseconds(450) };
@@ -87,6 +89,11 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         DataContext = _viewModel;
         DisplayHotkeyBoxValues();
         DisplayGamepadBindingBoxValues();
+        HotkeyNavigationCard.ExpansionCollapsed += (_, _) =>
+        {
+            HotkeyCaptureStatusText.Text = string.Empty;
+            HotkeyCaptureActionsPanel.Visibility = Visibility.Collapsed;
+        };
         _hotkeyCaptureAutoHideTimer.Tick += (_, _) =>
         {
             _hotkeyCaptureAutoHideTimer.Stop();
@@ -195,13 +202,13 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
 
     private async void Refresh_Click(object sender, RoutedEventArgs e)
     {
-        await RefreshSourcesAsync();
+        await RefreshSourcesAsync(showNavigationFeedback: true);
         await _trackMonitor.PollOnceAsync();
     }
 
     private async void RefreshSources_Click(object sender, RoutedEventArgs e)
     {
-        await RefreshSourcesAsync();
+        await RefreshSourcesAsync(showNavigationFeedback: true);
     }
 
     private async void CaptureSourceCombo_SelectionChanged(object sender, System.Windows.Controls.SelectionChangedEventArgs e)
@@ -233,7 +240,10 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
 
     private async void ShowCurrentTrack_Click(object sender, RoutedEventArgs e)
     {
-        await ShowCurrentTrackOverlayAsync();
+        if (await ShowCurrentTrackOverlayAsync())
+        {
+            ShowOverlayNavigationPrompt("已显示悬浮窗", "正在使用当前设置进行预览。", CurrentNavigationPromptDelay);
+        }
     }
 
     private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -361,7 +371,8 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
 
     private void PositionOverlay_Click(object sender, RoutedEventArgs e)
     {
-        _overlayWindow.BeginPositionEdit(_viewModel.Settings, SaveOverlaySettingsNow);
+        ShowPersistentOverlayNavigationPrompt("正在调整位置", "拖动悬浮窗到合适位置，然后选择完成或取消。");
+        _overlayWindow.BeginPositionEdit(_viewModel.Settings, SaveOverlayPositionSettingsNow, HandleOverlayPositionEditCompleted);
     }
 
     private void RefreshGamepads_Click(object sender, RoutedEventArgs e)
@@ -968,7 +979,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         }
 
         _overlaySettingsSaveDebounceTimer.Stop();
-        _ = Dispatcher.InvokeAsync(SaveOverlaySettingsNow, DispatcherPriority.Background);
+        _ = Dispatcher.InvokeAsync(() => SaveOverlaySettingsNow(), DispatcherPriority.Background);
     }
 
     private void FlushOverlaySettingsAutoSave()
@@ -979,12 +990,74 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         }
 
         _overlaySettingsSaveDebounceTimer.Stop();
-        SaveOverlaySettingsNow();
+        SaveOverlaySettingsNow(showNavigationFeedback: false);
     }
 
-    private void SaveOverlaySettingsNow()
+    private void SaveOverlaySettingsNow(bool showNavigationFeedback = true)
     {
         _viewModel.Save();
+        if (showNavigationFeedback)
+        {
+            ShowOverlayNavigationPrompt("设置已保存", "悬浮窗设置已自动更新。", OverlayNavigationPromptDelay);
+        }
+    }
+
+    private void SaveOverlayPositionSettingsNow()
+    {
+        SaveOverlaySettingsNow(showNavigationFeedback: false);
+    }
+
+    private void ShowCurrentNavigationPrompt(string title, string message, TimeSpan autoCollapseDelay)
+    {
+        ClearInactiveTransientNavigationPrompts(CurrentNavigationCard);
+        CurrentNavigationCard.ShowPrompt(title, message, autoCollapseDelay);
+    }
+
+    private void ShowOverlayNavigationPrompt(string title, string message, TimeSpan autoCollapseDelay)
+    {
+        ClearInactiveTransientNavigationPrompts(OverlayNavigationCard);
+        OverlayNavigationCard.ShowPrompt(title, message, autoCollapseDelay);
+    }
+
+    private void ShowPersistentOverlayNavigationPrompt(string title, string message)
+    {
+        ClearInactiveTransientNavigationPrompts(OverlayNavigationCard);
+        OverlayNavigationCard.ShowPersistentPrompt(title, message);
+    }
+
+    private void ClearInactiveTransientNavigationPrompts(ExpandableNavigationCard activeCard)
+    {
+        if (!ReferenceEquals(activeCard, CurrentNavigationCard) && !CurrentNavigationCard.IsPromptPersistent)
+        {
+            CurrentNavigationCard.ClearPrompt();
+        }
+
+        if (!ReferenceEquals(activeCard, OverlayNavigationCard) && !OverlayNavigationCard.IsPromptPersistent)
+        {
+            OverlayNavigationCard.ClearPrompt();
+        }
+    }
+
+    private void ShowCurrentRefreshResult(int sessionCount)
+    {
+        if (sessionCount > 0)
+        {
+            ShowCurrentNavigationPrompt("刷新完成", "已更新当前播放信息。", CurrentNavigationPromptDelay);
+            return;
+        }
+
+        ShowCurrentNavigationPrompt("未检测到音乐", "暂未找到正在播放的媒体会话。", CurrentNavigationPromptDelay);
+    }
+
+    private void HandleOverlayPositionEditCompleted(OverlayPositionEditResult result)
+    {
+        if (result == OverlayPositionEditResult.Saved)
+        {
+            ShowOverlayNavigationPrompt("位置已保存", "悬浮窗位置已自动保存。", OverlayPositionResultPromptDelay);
+            return;
+        }
+
+        ShowOverlayNavigationPrompt("已取消调整", "悬浮窗已恢复到调整前的位置。", OverlayPositionResultPromptDelay);
     }
 
     private void DeleteHotkey_Click(object sender, RoutedEventArgs e)
@@ -1197,7 +1270,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
             HideHotkeyCapturePanel();
         }
 
-        RegisterHotkeys(updateStatus: false);
+        RegisterHotkeys();
     }
 
     private void UpdateHotkeyCapture(TextBox box)
@@ -1506,55 +1579,11 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
 
     private void BeginHotkeyCapturePanelAnimation(bool show)
     {
-        bool wasVisible = HotkeyCapturePanel.Visibility == Visibility.Visible && _isHotkeyCapturePanelShowing;
-        _isHotkeyCapturePanelShowing = show;
-        Duration duration = new(TimeSpan.FromMilliseconds(show ? 220 : 150));
-        IEasingFunction easing = new CubicEase
-        {
-            EasingMode = show ? EasingMode.EaseOut : EasingMode.EaseIn
-        };
-
+        HotkeyNavigationCard.IsExpanded = show;
         if (show)
         {
-            HotkeyCapturePanel.Visibility = Visibility.Visible;
-            HotkeyCaptureContent.Measure(new Size(HotkeyCapturePanel.ActualWidth > 0 ? HotkeyCapturePanel.ActualWidth : 152, double.PositiveInfinity));
+            HotkeyNavigationCard.RefreshExpandedContentHeight();
         }
-
-        double startHeight = wasVisible ? Math.Max(HotkeyCapturePanel.ActualHeight, HotkeyCapturePanel.MaxHeight) : 0;
-        double targetHeight = show ? Math.Ceiling(HotkeyCaptureContent.DesiredSize.Height) : 0;
-        if (show && !wasVisible)
-        {
-            HotkeyCapturePanel.MaxHeight = startHeight;
-        }
-
-        DoubleAnimation opacityAnimation = new(show ? 1 : 0, duration)
-        {
-            EasingFunction = easing
-        };
-        DoubleAnimation heightAnimation = new(startHeight, targetHeight, duration)
-        {
-            EasingFunction = easing
-        };
-
-        if (!show)
-        {
-            heightAnimation.Completed += (_, _) =>
-            {
-                if (!_isHotkeyCapturePanelShowing)
-                {
-                    HotkeyCapturePanel.Visibility = Visibility.Collapsed;
-                    HotkeyCaptureStatusText.Text = string.Empty;
-                    HotkeyCaptureActionsPanel.Visibility = Visibility.Collapsed;
-                    HotkeyCapturePanel.MaxHeight = 0;
-                }
-            };
-        }
-
-        HotkeyCapturePanel.BeginAnimation(FrameworkElement.MaxHeightProperty, heightAnimation);
-        HotkeyCapturePanel.BeginAnimation(OpacityProperty, opacityAnimation);
-        HotkeyCaptureScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(1, duration) { EasingFunction = easing });
-        HotkeyCaptureScale.BeginAnimation(ScaleTransform.ScaleYProperty, new DoubleAnimation(show ? 1 : 0.88, duration) { EasingFunction = easing });
-        HotkeyCaptureTranslate.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(show ? 0 : -8, duration) { EasingFunction = easing });
     }
 
     private void HotkeyPage_PreviewMouseDown(object sender, MouseButtonEventArgs e)
@@ -1749,18 +1778,9 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         };
     }
 
-    private bool RegisterHotkeys(bool updateStatus = true)
+    private bool RegisterHotkeys()
     {
-        bool registered = RegisterHotkeySnapshotDirect(KeyboardHotkeyBindingManager.CreateSnapshot(_viewModel.Settings));
-
-        if (updateStatus)
-        {
-            _viewModel.SetStatus(registered
-                ? "快捷键已保存并生效。"
-                : "部分快捷键未注册，请检查组合键是否被占用。");
-        }
-
-        return registered;
+        return RegisterHotkeySnapshotDirect(KeyboardHotkeyBindingManager.CreateSnapshot(_viewModel.Settings));
     }
 
     public bool TryRegisterSnapshot(IReadOnlyDictionary<AppAction, string> hotkeys)
@@ -1795,8 +1815,13 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         return string.IsNullOrWhiteSpace(hotkeyText) || _hotkeyService.Register(action, hotkeyText);
     }
 
-    private async Task RefreshSourcesAsync()
+    private async Task<int> RefreshSourcesAsync(bool showNavigationFeedback = false)
     {
+        if (showNavigationFeedback)
+        {
+            ShowCurrentNavigationPrompt("正在刷新", "正在重新检测媒体会话和播放信息……", TimeSpan.FromMilliseconds(1600));
+        }
+
         try
         {
             _isRefreshingSources = true;
@@ -1804,10 +1829,22 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
             _viewModel.ReplaceCaptureSources(sessions);
             ApplyPreferredSource();
             _viewModel.SetStatus(sessions.Count == 0 ? "未检测到媒体源" : $"检测到 {sessions.Count} 个媒体源");
+            if (showNavigationFeedback)
+            {
+                ShowCurrentRefreshResult(sessions.Count);
+            }
+
+            return sessions.Count;
         }
         catch
         {
             _viewModel.SetStatus("媒体源刷新失败");
+            if (showNavigationFeedback)
+            {
+                ShowCurrentNavigationPrompt("未检测到音乐", "暂未找到正在播放的媒体会话。", CurrentNavigationPromptDelay);
+            }
+
+            return 0;
         }
         finally
         {
@@ -1850,7 +1887,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         }
     }
 
-    private async Task ShowCurrentTrackOverlayAsync()
+    private async Task<bool> ShowCurrentTrackOverlayAsync()
     {
         TrackInfo? track = _trackMonitor.CurrentTrack ?? _viewModel.CurrentTrack;
         if (track == null)
@@ -1862,10 +1899,11 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         if (track == null)
         {
             _viewModel.SetStatus("未读取到当前播放歌曲");
-            return;
+            return false;
         }
 
         await _overlayWindow.ShowTrackAsync(track);
+        return true;
     }
 
     private void ExitApplication()

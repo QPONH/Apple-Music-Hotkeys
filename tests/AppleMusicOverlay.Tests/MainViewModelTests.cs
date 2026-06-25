@@ -29,4 +29,16 @@ public sealed class MainViewModelTests
 
         Assert.Equal("播放", viewModel.TransportButtonText);
     }
+
+    [Fact]
+    public void SavePersistsSettingsWithoutReplacingLongLivedStatusText()
+    {
+        var settingsPath = Path.Combine(Path.GetTempPath(), "AppleMusicOverlay.Tests", Guid.NewGuid().ToString("N"), "settings.json");
+        var viewModel = new MainViewModel(new OverlaySettingsService(settingsPath));
+        viewModel.ApplyTrack(new TrackInfo("Song", "Artist", null, "Source", TimeSpan.FromMinutes(3), true));
+
+        viewModel.Save();
+
+        Assert.Equal("已连接：Source", viewModel.StatusText);
+    }
 }
