@@ -317,11 +317,40 @@ public sealed class LocalizationService : INotifyPropertyChanged
         ["TrayExit"] = "Exit MusicFloat"
     };
 
+    private static readonly Dictionary<string, string> OverlayFontZhCn = new(StringComparer.Ordinal)
+    {
+        ["OverlayTrackFont"] = "歌曲信息字体",
+        ["OverlayTrackFontDescription"] = "设置悬浮窗中歌名和歌手使用的字体。",
+        ["OverlayTrackFontDefault"] = "默认",
+        ["OverlayTrackFontSpotifyMix"] = "Spotify Mix",
+        ["OverlayTrackFontSfPro"] = "Apple SF Pro",
+        ["OverlayFontUpdatedTitle"] = "字体已更新",
+        ["OverlayFontUpdatedMessage"] = "悬浮窗歌曲信息字体已切换。"
+    };
+
+    private static readonly Dictionary<string, string> OverlayFontEnUs = new(StringComparer.Ordinal)
+    {
+        ["OverlayTrackFont"] = "Track information font",
+        ["OverlayTrackFontDescription"] = "Choose the font used for the song title and artist in the overlay.",
+        ["OverlayTrackFontDefault"] = "Default",
+        ["OverlayTrackFontSpotifyMix"] = "Spotify Mix",
+        ["OverlayTrackFontSfPro"] = "Apple SF Pro",
+        ["OverlayFontUpdatedTitle"] = "Font updated",
+        ["OverlayFontUpdatedMessage"] = "The overlay track information font has been changed."
+    };
+
     private static readonly IReadOnlyDictionary<string, Dictionary<string, string>> ResourceSets =
         new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal)
         {
             [DefaultLanguageCode] = ZhCn,
             [EnglishLanguageCode] = EnUs
+        };
+
+    private static readonly IReadOnlyDictionary<string, Dictionary<string, string>> OverlayFontResourceSets =
+        new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal)
+        {
+            [DefaultLanguageCode] = OverlayFontZhCn,
+            [EnglishLanguageCode] = OverlayFontEnUs
         };
 
     private string _languageCode = DefaultLanguageCode;
@@ -359,7 +388,9 @@ public sealed class LocalizationService : INotifyPropertyChanged
     public static IReadOnlySet<string> GetResourceKeys(string languageCode)
     {
         string normalized = NormalizeLanguageCode(languageCode);
-        return ResourceSets[normalized].Keys.ToHashSet(StringComparer.Ordinal);
+        HashSet<string> keys = ResourceSets[normalized].Keys.ToHashSet(StringComparer.Ordinal);
+        keys.UnionWith(OverlayFontResourceSets[normalized].Keys);
+        return keys;
     }
 
     public void SetLanguage(string? languageCode)
@@ -383,6 +414,16 @@ public sealed class LocalizationService : INotifyPropertyChanged
         if (ResourceSets[_languageCode].TryGetValue(key, out string? value) && !string.IsNullOrWhiteSpace(value))
         {
             return value;
+        }
+
+        if (OverlayFontResourceSets[_languageCode].TryGetValue(key, out value) && !string.IsNullOrWhiteSpace(value))
+        {
+            return value;
+        }
+
+        if (OverlayFontZhCn.TryGetValue(key, out string? overlayFontFallback) && !string.IsNullOrWhiteSpace(overlayFontFallback))
+        {
+            return overlayFontFallback;
         }
 
         return ZhCn.TryGetValue(key, out string? fallback) && !string.IsNullOrWhiteSpace(fallback)

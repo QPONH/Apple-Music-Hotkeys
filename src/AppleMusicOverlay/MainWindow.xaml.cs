@@ -28,6 +28,8 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
     private readonly TrackMonitor _trackMonitor;
     private readonly OverlayWindow _overlayWindow;
     private readonly ShadowWindow _shadowWindow;
+    private readonly InstalledFontService _installedFontService = new();
+    private OverlayTrackFontAvailability _trackFontAvailability = InstalledFontService.DetectForTesting([]);
     private readonly GlobalHotkeyService _hotkeyService;
     private readonly GamepadInputService _gamepadService;
     private readonly GamepadShortcutRuntime _gamepadShortcutRuntime = new();
@@ -38,6 +40,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
     private bool _isSessionEnding;
     private bool _hasCleanedUpForExit;
     private bool _isRefreshingSources;
+    private bool _isRefreshingOverlayTrackFontOptions;
     private TextBox? _capturingHotkeyBox;
     private string? _capturingHotkeyOriginalText;
     private string? _pendingHotkeyText;
@@ -72,6 +75,8 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         _viewModel = new MainViewModel(new OverlaySettingsService());
         Localizer.SetLanguage(_viewModel.Settings.LanguageCode);
         Localizer.LanguageChanged += LocalizationService_LanguageChanged;
+        _trackFontAvailability = _installedFontService.Detect();
+        RefreshOverlayTrackFontOptions(saveInvalidSelection: true);
         LogStartup("ctor: view model ready");
         var mediaService = new SmtcMediaSessionService();
         _mediaService = mediaService;
@@ -80,6 +85,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         LogStartup("ctor: media service ready");
         _trackMonitor = new TrackMonitor(_mediaService);
         _overlayWindow = new OverlayWindow();
+        _overlayWindow.SetTrackFontAvailability(_trackFontAvailability);
         _overlayWindow.ApplySettings(_viewModel.Settings);
         _shadowWindow = new ShadowWindow();
         LogStartup("ctor: overlay ready");
@@ -291,6 +297,8 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         {
             LanguageCombo.SelectedValue = _viewModel.Settings.LanguageCode;
         }
+
+        RefreshOverlayTrackFontOptions(saveInvalidSelection: false);
     }
 
     private void TitleBar_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
@@ -415,6 +423,57 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         _viewModel.Settings.AutoHideOnMouseNear = autoHideToggle.IsChecked == true;
         _overlayWindow.ApplySettings(_viewModel.Settings);
         QueueOverlaySettingsAutoSave(debounce: false);
+    }
+
+    private void OverlayTrackFontCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (_overlayWindow == null || _isRefreshingOverlayTrackFontOptions)
+        {
+            return;
+        }
+
+        string selectedFont = OverlayTrackFontCombo.SelectedValue as string ?? OverlayTrackFontIds.Default;
+        string normalizedFont = _trackFontAvailability.NormalizeSelection(selectedFont);
+        _viewModel.Settings.OverlayTrackFont = normalizedFont;
+        if (!Equals(OverlayTrackFontCombo.SelectedValue, normalizedFont))
+        {
+            OverlayTrackFontCombo.SelectedValue = normalizedFont;
+        }
+
+        _overlayWindow.ApplyTrackFontSetting(_viewModel.Settings);
+        QueueOverlaySettingsAutoSave(debounce: false);
+        ShowOverlayNavigationPrompt("OverlayFontUpdatedTitle", "OverlayFontUpdatedMessage", OverlayNavigationPromptDelay);
+    }
+
+    private void RefreshOverlayTrackFontOptions(bool saveInvalidSelection)
+    {
+        if (OverlayTrackFontCombo == null)
+        {
+            return;
+        }
+
+        string selectedFont = _trackFontAvailability.NormalizeSelection(_viewModel.Settings.OverlayTrackFont);
+        bool correctedSelection = !selectedFont.Equals(_viewModel.Settings.OverlayTrackFont, StringComparison.Ordinal);
+        if (correctedSelection)
+        {
+            _viewModel.Settings.OverlayTrackFont = selectedFont;
+        }
+
+        _isRefreshingOverlayTrackFontOptions = true;
+        try
+        {
+            OverlayTrackFontCombo.ItemsSource = _trackFontAvailability.CreateOptions();
+            OverlayTrackFontCombo.SelectedValue = selectedFont;
+        }
+        finally
+        {
+            _isRefreshingOverlayTrackFontOptions = false;
+        }
+
+        if (correctedSelection && saveInvalidSelection)
+        {
+            _viewModel.Save();
+        }
     }
 
     private void PositionOverlay_Click(object sender, RoutedEventArgs e)

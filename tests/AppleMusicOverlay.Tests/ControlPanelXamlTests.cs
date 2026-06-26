@@ -461,6 +461,126 @@ public sealed class ControlPanelXamlTests
     }
 
     [Fact]
+    public void OverlaySettingsPageExposesTrackInformationFontCombo()
+    {
+        string mainXaml = File.ReadAllText(GetMainWindowXamlPath());
+        string settingsCode = File.ReadAllText(GetOverlaySettingsPath());
+        string normalizerCode = File.ReadAllText(GetOverlaySettingsNormalizerPath());
+
+        Assert.Contains("[OverlayTrackFont]", mainXaml);
+        Assert.Contains("[OverlayTrackFontDescription]", mainXaml);
+        Assert.Contains("x:Name=\"OverlayTrackFontCombo\"", mainXaml);
+        Assert.Contains("DisplayMemberPath=\"DisplayName\"", mainXaml);
+        Assert.Contains("SelectedValuePath=\"Id\"", mainXaml);
+        Assert.Contains("Settings.OverlayTrackFont", mainXaml);
+        Assert.Contains("SelectionChanged=\"OverlayTrackFontCombo_SelectionChanged\"", mainXaml);
+        Assert.Contains("public string OverlayTrackFont", settingsCode);
+        Assert.Contains("OverlayTrackFontIds.NormalizeKnownId", normalizerCode);
+    }
+
+    [Fact]
+    public void OverlayContentSettingsRemainAvailableWhenPauseOverlayIsOff()
+    {
+        string mainXaml = File.ReadAllText(GetMainWindowXamlPath());
+        string pauseDependentSettings = ExtractBetween(
+            mainXaml,
+            "x:Name=\"PauseOverlayDependentSettings\"",
+            "x:Name=\"OverlayContentSettings\"");
+        string overlayContentSettings = ExtractBetween(
+            mainXaml,
+            "x:Name=\"OverlayContentSettings\"",
+            "x:Name=\"HotkeyNavigationCard\"");
+
+        Assert.Contains("IsEnabled=\"{Binding Settings.PauseOverlay}\"", pauseDependentSettings);
+        Assert.Contains("Settings.AutoHideOnMouseNear", pauseDependentSettings);
+        Assert.Contains("PositionOverlay_Click", pauseDependentSettings);
+        Assert.DoesNotContain("Settings.ShowTitle", pauseDependentSettings);
+        Assert.DoesNotContain("Settings.ShowArtist", pauseDependentSettings);
+        Assert.DoesNotContain("OverlayTrackFontCombo", pauseDependentSettings);
+
+        Assert.Contains("Settings.ShowTitle", overlayContentSettings);
+        Assert.Contains("Settings.ShowArtist", overlayContentSettings);
+        Assert.Contains("OverlayTrackFontCombo", overlayContentSettings);
+        Assert.DoesNotContain("IsEnabled=\"{Binding Settings.PauseOverlay}\"", overlayContentSettings);
+        Assert.DoesNotContain("[PauseOverlayRequired]", overlayContentSettings);
+    }
+
+    [Fact]
+    public void ComboBoxDisabledTemplateKeepsDarkThemeSurface()
+    {
+        string mainXaml = File.ReadAllText(GetMainWindowXamlPath());
+        string comboBoxStyle = ExtractBetween(
+            mainXaml,
+            "<Style TargetType=\"{x:Type ComboBox}\">",
+            "<Style TargetType=\"{x:Type CheckBox}\">");
+        string disabledTrigger = ExtractBetween(
+            comboBoxStyle,
+            "<Trigger Property=\"IsEnabled\" Value=\"False\">",
+            "</Trigger>");
+
+        Assert.Contains("<ControlTemplate TargetType=\"{x:Type ToggleButton}\">", comboBoxStyle);
+        Assert.Contains("Background=\"{TemplateBinding Background}\"", comboBoxStyle);
+        Assert.Contains("HorizontalAlignment=\"Stretch\"", comboBoxStyle);
+        Assert.Contains("VerticalAlignment=\"Stretch\"", comboBoxStyle);
+        Assert.Contains("x:Name=\"SelectionText\"", comboBoxStyle);
+        Assert.Contains("x:Name=\"DropDownArrow\"", comboBoxStyle);
+        Assert.Contains("TargetName=\"Input\" Property=\"Background\" Value=\"{StaticResource SurfaceControlBrush}\"", disabledTrigger);
+        Assert.Contains("TargetName=\"Input\" Property=\"BorderBrush\" Value=\"{StaticResource BorderSoftBrush}\"", disabledTrigger);
+        Assert.Contains("TargetName=\"SelectionText\" Property=\"Foreground\" Value=\"{StaticResource TextMutedBrush}\"", disabledTrigger);
+        Assert.Contains("TargetName=\"DropDownArrow\" Property=\"Stroke\" Value=\"{StaticResource TextMutedBrush}\"", disabledTrigger);
+        Assert.DoesNotContain("White", disabledTrigger, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("#FFFFFF", disabledTrigger, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("SystemColors", disabledTrigger);
+    }
+
+    [Fact]
+    public void OverlayTrackFontOnlyUpdatesOverlayTitleAndArtist()
+    {
+        string overlayCode = File.ReadAllText(GetOverlayWindowCodeBehindPath());
+
+        Assert.Contains("ApplyTrackInformationFonts", overlayCode);
+        Assert.Contains("TitleText.FontFamily", overlayCode);
+        Assert.Contains("ArtistText.FontFamily", overlayCode);
+        Assert.DoesNotContain("Application.Current", overlayCode);
+        Assert.DoesNotContain("PositionEditTitleText.FontFamily", overlayCode);
+    }
+
+    [Fact]
+    public void OverlayTrackFontChangeRoutesFeedbackToOverlayCardWithoutRestartingMediaCapture()
+    {
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+        string handler = ExtractBetween(mainCode, "private void OverlayTrackFontCombo_SelectionChanged", "private void RefreshOverlayTrackFontOptions");
+
+        Assert.Contains("OverlayTrackFontCombo_SelectionChanged", mainCode);
+        Assert.Contains("ShowOverlayNavigationPrompt(\"OverlayFontUpdatedTitle\"", handler);
+        Assert.Contains("QueueOverlaySettingsAutoSave(debounce: false)", handler);
+        Assert.Contains("_overlayWindow.ApplyTrackFontSetting", handler);
+        Assert.DoesNotContain("new SmtcMediaSessionService", handler);
+        Assert.DoesNotContain("_trackMonitor = ", handler);
+        Assert.DoesNotContain("RefreshSourcesAsync", handler);
+    }
+
+    [Fact]
+    public void OverlayTrackFontLocalizationKeysExistForChineseAndEnglish()
+    {
+        string localizerCode = File.ReadAllText(GetLocalizationServicePath());
+
+        foreach (string key in new[]
+                 {
+                     "OverlayTrackFont",
+                     "OverlayTrackFontDescription",
+                     "OverlayTrackFontDefault",
+                     "OverlayTrackFontSpotifyMix",
+                     "OverlayTrackFontSfPro",
+                     "OverlayFontUpdatedTitle",
+                     "OverlayFontUpdatedMessage"
+                 })
+        {
+            Assert.Equal(2, CountOccurrences(localizerCode, $"[\"{key}\"]"));
+        }
+    }
+
+    [Fact]
     public void PauseOverlayToggleSynchronizesRuntimeImmediately()
     {
         string mainXaml = File.ReadAllText(GetMainWindowXamlPath());

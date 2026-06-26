@@ -70,6 +70,9 @@ public partial class OverlayWindow : Window
     private CancellationTokenSource? _hideCts;
     private readonly DispatcherTimer _pointerAutoHideTimer = new() { Interval = TimeSpan.FromMilliseconds(70) };
     private OverlaySettings _settings = new();
+    private OverlayTrackFontAvailability _trackFontAvailability = InstalledFontService.DetectForTesting([]);
+    private FontFamily? _defaultTitleFontFamily;
+    private FontFamily? _defaultArtistFontFamily;
     private TrackInfo? _currentTrack;
     private bool _hasCover;
     private bool _hasPositionedWindow;
@@ -100,6 +103,8 @@ public partial class OverlayWindow : Window
     public OverlayWindow()
     {
         InitializeComponent();
+        _defaultTitleFontFamily = TitleText.FontFamily;
+        _defaultArtistFontFamily = ArtistText.FontFamily;
         LocalizationService.Current.LanguageChanged += LocalizationService_LanguageChanged;
         UpdateLocalizedText();
         Visibility = Visibility.Hidden;
@@ -107,6 +112,12 @@ public partial class OverlayWindow : Window
         SourceInitialized += (_, _) => ApplyOverlayWindowStyles();
         PreviewKeyDown += OverlayWindow_PreviewKeyDown;
         Closed += (_, _) => CleanupPositionEdit(restoreOriginalPosition: false, savePosition: false, animateBar: false);
+    }
+
+    public void SetTrackFontAvailability(OverlayTrackFontAvailability availability)
+    {
+        _trackFontAvailability = availability;
+        ApplyTrackInformationFonts();
     }
 
     private void LocalizationService_LanguageChanged(object? sender, EventArgs e)
@@ -140,10 +151,29 @@ public partial class OverlayWindow : Window
         Top = visualCenter.Y - (WindowHeight / 2);
         TitleText.Visibility = _settings.ShowTitle ? Visibility.Visible : Visibility.Collapsed;
         ArtistText.Visibility = _settings.ShowArtist ? Visibility.Visible : Visibility.Collapsed;
+        ApplyTrackInformationFonts();
         ApplyScaleTransform(scale);
         ApplyCoverShadowSettings();
         ApplyPauseOverlayMode(pauseOverlayChanged);
         ApplyPointerAutoHideMode();
+    }
+
+    public void ApplyTrackFontSetting(OverlaySettings settings)
+    {
+        _settings.OverlayTrackFont = OverlayTrackFontIds.NormalizeKnownId(settings.OverlayTrackFont);
+        ApplyTrackInformationFonts();
+    }
+
+    private void ApplyTrackInformationFonts()
+    {
+        string titleFontFamily = _trackFontAvailability.ResolveFontFamilyList(_settings.OverlayTrackFont, isTitle: true);
+        string artistFontFamily = _trackFontAvailability.ResolveFontFamilyList(_settings.OverlayTrackFont, isTitle: false);
+        TitleText.FontFamily = string.IsNullOrWhiteSpace(titleFontFamily)
+            ? _defaultTitleFontFamily
+            : new FontFamily(titleFontFamily);
+        ArtistText.FontFamily = string.IsNullOrWhiteSpace(artistFontFamily)
+            ? _defaultArtistFontFamily
+            : new FontFamily(artistFontFamily);
     }
 
     public Task ShowTrackAsync(TrackInfo track)
@@ -1237,6 +1267,7 @@ public partial class OverlayWindow : Window
             AutoStart = settings.AutoStart,
             PauseOverlay = settings.PauseOverlay,
             AutoHideOnMouseNear = settings.AutoHideOnMouseNear,
+            OverlayTrackFont = settings.OverlayTrackFont,
             CaptureSourceAppUserModelId = settings.CaptureSourceAppUserModelId,
             KeyboardPrevious = settings.KeyboardPrevious,
             KeyboardNext = settings.KeyboardNext,

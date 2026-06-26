@@ -24,6 +24,7 @@ public static class OverlaySettingsNormalizer
         settings.XboxGamepadBindings = NormalizeGamepadBindingSet(settings.XboxGamepadBindings);
         settings.DualSenseGamepadBindings = NormalizeGamepadBindingSet(settings.DualSenseGamepadBindings);
         settings.CompatibleGamepadBindings = NormalizeGamepadBindingSet(settings.CompatibleGamepadBindings);
+        settings.OverlayTrackFont = OverlayTrackFontIds.NormalizeKnownId(settings.OverlayTrackFont);
         settings.LanguageCode = LocalizationService.NormalizeLanguageCode(settings.LanguageCode);
         settings.CaptureSourceAppUserModelId = settings.CaptureSourceAppUserModelId?.Trim() ?? string.Empty;
         return settings;

@@ -16,6 +16,7 @@ public sealed class OverlaySettings
     public bool AutoStart { get; set; } = false;
     public bool PauseOverlay { get; set; } = false;
     public bool AutoHideOnMouseNear { get; set; } = false;
+    public string OverlayTrackFont { get; set; } = "default";
     public string LanguageCode { get; set; } = "zh-CN";
     public string CaptureSourceAppUserModelId { get; set; } = string.Empty;
     public string KeyboardPrevious { get; set; } = "Ctrl+Shift+Left";

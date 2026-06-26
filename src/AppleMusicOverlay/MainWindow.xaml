@@ -287,14 +287,24 @@
                                           Focusable="False"
                                           IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
                                           ClickMode="Press">
+                                <ToggleButton.Template>
+                                    <ControlTemplate TargetType="{x:Type ToggleButton}">
+                                        <Border Background="{TemplateBinding Background}">
+                                            <ContentPresenter HorizontalAlignment="Stretch"
+                                                              VerticalAlignment="Stretch" />
+                                        </Border>
+                                    </ControlTemplate>
+                                </ToggleButton.Template>
                                 <Grid Margin="{TemplateBinding Padding}">
-                                    <TextBlock Margin="0,0,28,0"
+                                    <TextBlock x:Name="SelectionText"
+                                               Margin="0,0,28,0"
                                                VerticalAlignment="Center"
                                                HorizontalAlignment="Left"
                                                Foreground="{TemplateBinding Foreground}"
                                                Text="{Binding SelectedItem.DisplayName, RelativeSource={RelativeSource TemplatedParent}}"
                                                TextTrimming="CharacterEllipsis" />
-                                    <Path Width="10"
+                                    <Path x:Name="DropDownArrow"
+                                          Width="10"
                                           Height="6"
                                           HorizontalAlignment="Right"
                                           VerticalAlignment="Center"
@@ -341,6 +351,12 @@
                             </Trigger>
                             <Trigger Property="IsKeyboardFocusWithin" Value="True">
                                 <Setter TargetName="Input" Property="BorderBrush" Value="{StaticResource BorderFocusBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter TargetName="Input" Property="Background" Value="{StaticResource SurfaceControlBrush}" />
+                                <Setter TargetName="Input" Property="BorderBrush" Value="{StaticResource BorderSoftBrush}" />
+                                <Setter TargetName="SelectionText" Property="Foreground" Value="{StaticResource TextMutedBrush}" />
+                                <Setter TargetName="DropDownArrow" Property="Stroke" Value="{StaticResource TextMutedBrush}" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
@@ -1171,8 +1187,7 @@
                                         <Border Margin="0,14"
                                                 Background="{StaticResource BorderSoftBrush}"
                                                 Height="1" />
-                                        <Grid IsEnabled="{Binding Settings.PauseOverlay}"
-                                              ToolTip="{Binding [PauseOverlayRequired], Source={x:Static services:LocalizationService.Current}}">
+                                        <Grid>
                                             <Grid.RowDefinitions>
                                                 <RowDefinition Height="Auto" />
                                                 <RowDefinition Height="14" />
@@ -1180,57 +1195,70 @@
                                                 <RowDefinition Height="14" />
                                                 <RowDefinition Height="Auto" />
                                             </Grid.RowDefinitions>
-                                            <Grid>
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                </Grid.ColumnDefinitions>
-                                                <StackPanel>
-                                                    <TextBlock Text="{Binding [AutoHideOnMouseNear], Source={x:Static services:LocalizationService.Current}}"
-                                                               Style="{StaticResource SectionTitleStyle}" />
-                                                    <TextBlock Text="{Binding [AutoHideOnMouseNearDescription], Source={x:Static services:LocalizationService.Current}}"
-                                                               Margin="0,5,0,0"
-                                                               Style="{StaticResource BodyTextStyle}" />
-                                                    <TextBlock Text="{Binding [PauseOverlayRequired], Source={x:Static services:LocalizationService.Current}}"
-                                                               Margin="0,5,0,0"
-                                                               Style="{StaticResource CaptionTextStyle}" />
-                                                </StackPanel>
-                                                <CheckBox Grid.Column="1"
-                                                          VerticalAlignment="Center"
-                                                          IsChecked="{Binding Settings.AutoHideOnMouseNear, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                          Checked="MouseAutoHide_Changed"
-                                                          Unchecked="MouseAutoHide_Changed" />
-                                            </Grid>
-                                            <Grid Grid.Row="2">
-                                                <Grid.ColumnDefinitions>
-                                                    <ColumnDefinition Width="*" />
-                                                    <ColumnDefinition Width="Auto" />
-                                                </Grid.ColumnDefinitions>
-                                                <StackPanel>
-                                                    <TextBlock Text="{Binding [OverlayPosition], Source={x:Static services:LocalizationService.Current}}"
-                                                               Style="{StaticResource SectionTitleStyle}" />
-                                                    <TextBlock Text="{Binding [OverlayPositionDescription], Source={x:Static services:LocalizationService.Current}}"
-                                                               Margin="0,5,0,0"
-                                                               Style="{StaticResource BodyTextStyle}" />
-                                                    <TextBlock Text="{Binding [PauseOverlayRequired], Source={x:Static services:LocalizationService.Current}}"
-                                                               Margin="0,5,0,0"
-                                                               Style="{StaticResource CaptionTextStyle}" />
-                                                </StackPanel>
-                                                <Button Grid.Column="1"
-                                                        Content="{Binding [AdjustPosition], Source={x:Static services:LocalizationService.Current}}"
-                                                        Width="126"
-                                                        Style="{StaticResource SecondaryButtonStyle}"
-                                                        VerticalAlignment="Center"
-                                                        Click="PositionOverlay_Click" />
+                                            <Grid x:Name="PauseOverlayDependentSettings"
+                                                  Grid.RowSpan="3"
+                                                  IsEnabled="{Binding Settings.PauseOverlay}"
+                                                  ToolTip="{Binding [PauseOverlayRequired], Source={x:Static services:LocalizationService.Current}}">
+                                                <Grid.RowDefinitions>
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="14" />
+                                                    <RowDefinition Height="Auto" />
+                                                </Grid.RowDefinitions>
+                                                <Grid>
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel>
+                                                        <TextBlock Text="{Binding [AutoHideOnMouseNear], Source={x:Static services:LocalizationService.Current}}"
+                                                                   Style="{StaticResource SectionTitleStyle}" />
+                                                        <TextBlock Text="{Binding [AutoHideOnMouseNearDescription], Source={x:Static services:LocalizationService.Current}}"
+                                                                   Margin="0,5,0,0"
+                                                                   Style="{StaticResource BodyTextStyle}" />
+                                                        <TextBlock Text="{Binding [PauseOverlayRequired], Source={x:Static services:LocalizationService.Current}}"
+                                                                   Margin="0,5,0,0"
+                                                                   Style="{StaticResource CaptionTextStyle}" />
+                                                    </StackPanel>
+                                                    <CheckBox Grid.Column="1"
+                                                              VerticalAlignment="Center"
+                                                              IsChecked="{Binding Settings.AutoHideOnMouseNear, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                              Checked="MouseAutoHide_Changed"
+                                                              Unchecked="MouseAutoHide_Changed" />
+                                                </Grid>
+                                                <Grid Grid.Row="2">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="Auto" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel>
+                                                        <TextBlock Text="{Binding [OverlayPosition], Source={x:Static services:LocalizationService.Current}}"
+                                                                   Style="{StaticResource SectionTitleStyle}" />
+                                                        <TextBlock Text="{Binding [OverlayPositionDescription], Source={x:Static services:LocalizationService.Current}}"
+                                                                   Margin="0,5,0,0"
+                                                                   Style="{StaticResource BodyTextStyle}" />
+                                                        <TextBlock Text="{Binding [PauseOverlayRequired], Source={x:Static services:LocalizationService.Current}}"
+                                                                   Margin="0,5,0,0"
+                                                                   Style="{StaticResource CaptionTextStyle}" />
+                                                    </StackPanel>
+                                                    <Button Grid.Column="1"
+                                                            Content="{Binding [AdjustPosition], Source={x:Static services:LocalizationService.Current}}"
+                                                            Width="126"
+                                                            Style="{StaticResource SecondaryButtonStyle}"
+                                                            VerticalAlignment="Center"
+                                                            Click="PositionOverlay_Click" />
+                                                </Grid>
                                             </Grid>
                                             <Border Grid.Row="3"
                                                     Margin="0,14"
                                                     Background="{StaticResource BorderSoftBrush}"
                                                     Height="1" />
-                                            <Grid Grid.Row="4">
+                                            <Grid x:Name="OverlayContentSettings"
+                                                  Grid.Row="4">
                                                 <Grid.RowDefinitions>
                                                     <RowDefinition Height="Auto" />
                                                     <RowDefinition Height="14" />
+                                                    <RowDefinition Height="Auto" />
+                                                    <RowDefinition Height="18" />
                                                     <RowDefinition Height="Auto" />
                                                 </Grid.RowDefinitions>
                                                 <CheckBox Content="{Binding [ShowTitle], Source={x:Static services:LocalizationService.Current}}"
@@ -1242,6 +1270,28 @@
                                                           IsChecked="{Binding Settings.ShowArtist}"
                                                           Checked="OverlayTextOption_Changed"
                                                           Unchecked="OverlayTextOption_Changed" />
+                                                <Grid Grid.Row="4">
+                                                    <Grid.ColumnDefinitions>
+                                                        <ColumnDefinition Width="*" />
+                                                        <ColumnDefinition Width="330" />
+                                                    </Grid.ColumnDefinitions>
+                                                    <StackPanel VerticalAlignment="Center">
+                                                        <TextBlock Text="{Binding [OverlayTrackFont], Source={x:Static services:LocalizationService.Current}}"
+                                                                   Style="{StaticResource BodyTextStyle}" />
+                                                        <TextBlock Text="{Binding [OverlayTrackFontDescription], Source={x:Static services:LocalizationService.Current}}"
+                                                                   Margin="0,5,0,0"
+                                                                   Style="{StaticResource CaptionTextStyle}" />
+                                                    </StackPanel>
+                                                    <ComboBox x:Name="OverlayTrackFontCombo"
+                                                              Grid.Column="1"
+                                                              Width="330"
+                                                              HorizontalAlignment="Right"
+                                                              VerticalAlignment="Center"
+                                                              DisplayMemberPath="DisplayName"
+                                                              SelectedValuePath="Id"
+                                                              SelectedValue="{Binding Settings.OverlayTrackFont, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                              SelectionChanged="OverlayTrackFontCombo_SelectionChanged" />
+                                                </Grid>
                                             </Grid>
                                         </Grid>
                                     </StackPanel>
