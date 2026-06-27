@@ -41,15 +41,20 @@ MusicFloat provides a dark desktop control panel with pages for current playback
 
 Download the latest portable Windows x64 build from the [GitHub Releases](https://github.com/Adudumax/MusicFloat/releases/latest) page.
 
-The release ZIP is self-contained. You do not need to install the .NET Desktop Runtime separately.
+No installer is required for MusicFloat itself, but the .NET 8 Desktop Runtime (x64) must be installed.
+
+MusicFloat requires the .NET 8 Desktop Runtime (x64). Download it from Microsoft: https://dotnet.microsoft.com/en-us/download/dotnet/8.0/runtime
+
+On the download page, choose **.NET Desktop Runtime 8.x — Windows x64**.
 
 ## Quick Start
 
-1. Download `MusicFloat-v1.0.0-win-x64-portable.zip`.
-2. Extract the ZIP to a folder you control.
-3. Run `MusicFloat.exe`.
-4. Start playback in a supported SMTC media player.
-5. Use the control panel to refresh sources, test the overlay, configure overlay behavior, and bind shortcuts.
+1. Install the .NET 8 Desktop Runtime (x64) if it is not already installed.
+2. Download `MusicFloat-v1.0.0-win-x64.zip`.
+3. Extract the ZIP to a folder you control.
+4. Run `MusicFloat.exe`.
+5. Start playback in a supported SMTC media player.
+6. Use the control panel to refresh sources, test the overlay, configure overlay behavior, and bind shortcuts.
 
 ## Keyboard and Gamepad Controls
 
@@ -83,14 +88,14 @@ Run from source:
 dotnet run --project src/AppleMusicOverlay/AppleMusicOverlay.csproj
 ```
 
-Create a portable self-contained Windows x64 build:
+Create a portable framework-dependent Windows x64 build:
 
 ```powershell
 dotnet publish src/AppleMusicOverlay/AppleMusicOverlay.csproj `
   -c Release `
   -r win-x64 `
-  --self-contained true `
-  -p:PublishSingleFile=false `
+  --self-contained false `
+  -p:PublishSingleFile=true `
   -p:PublishTrimmed=false
 ```
 
