@@ -104,29 +104,36 @@ public sealed class SmtcMediaSessionService : IMediaSessionService, IMediaSessio
         }
 
         GlobalSystemMediaTransportControlsSession? current = manager.GetCurrentSession();
-        var candidates = new List<MediaSessionCandidate>(sessions.Count);
-        var sessionByIndex = new Dictionary<int, GlobalSystemMediaTransportControlsSession>();
+        IReadOnlyList<MediaSessionCandidate> candidates =
+            await SmtcSessionCandidateReader.ReadCandidatesAsync(
+                sessions,
+                current,
+                ReadCandidateAsync,
+                cancellationToken);
 
-        for (int index = 0; index < sessions.Count; index++)
-        {
-            GlobalSystemMediaTransportControlsSession session = sessions[index];
-            GlobalSystemMediaTransportControlsSessionMediaProperties properties =
-                await session.TryGetMediaPropertiesAsync().AsTask(cancellationToken);
-            GlobalSystemMediaTransportControlsSessionPlaybackInfo playback = session.GetPlaybackInfo();
+        Dictionary<int, GlobalSystemMediaTransportControlsSession> sessionByIndex = candidates
+            .ToDictionary(candidate => candidate.Index, candidate => sessions[candidate.Index]);
+        GlobalSystemMediaTransportControlsSession? readableCurrent = candidates.Any(candidate => candidate.IsCurrent)
+            ? current
+            : null;
 
-            var candidate = new MediaSessionCandidate(
-                NormalizeText(session.SourceAppUserModelId, "Unknown Source"),
-                NormalizeText(properties.Title, "Unknown Track"),
-                NormalizeText(properties.Artist, "Unknown Artist"),
-                playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing,
-                ReferenceEquals(session, current),
-                index);
+        return new SessionSnapshot(sessionByIndex, candidates, readableCurrent);
+    }
 
-            candidates.Add(candidate);
-            sessionByIndex[index] = session;
-        }
+    private static async Task<SmtcSessionReadResult> ReadCandidateAsync(
+        GlobalSystemMediaTransportControlsSession session,
+        int index,
+        CancellationToken cancellationToken)
+    {
+        GlobalSystemMediaTransportControlsSessionMediaProperties properties =
+            await session.TryGetMediaPropertiesAsync().AsTask(cancellationToken);
+        GlobalSystemMediaTransportControlsSessionPlaybackInfo playback = session.GetPlaybackInfo();
 
-        return new SessionSnapshot(sessionByIndex, candidates, current);
+        return new SmtcSessionReadResult(
+            NormalizeText(session.SourceAppUserModelId, "Unknown Source"),
+            NormalizeText(properties.Title, "Unknown Track"),
+            NormalizeText(properties.Artist, "Unknown Artist"),
+            playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing);
     }
 
     private static async Task<byte[]?> ReadCoverBytesAsync(IRandomAccessStreamReference? thumbnail, CancellationToken cancellationToken)

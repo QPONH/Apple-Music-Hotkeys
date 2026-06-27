@@ -1,4 +1,5 @@
 using System.IO;
+using System.Diagnostics;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
@@ -2172,8 +2173,10 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         }
     }
 
+    [Conditional("DEBUG")]
     private static void LogStartup(string message)
     {
+#if DEBUG
         try
         {
             string path = Path.Combine(Path.GetTempPath(), "musicfloat-startup.log");
@@ -2182,5 +2185,6 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         catch
         {
         }
+#endif
     }
 }
