@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/assets/musicfloat-banner.png" alt="MusicFloat banner">
+</p>
+
 <h1 align="center">MusicFloat</h1>
 
 <p align="center">
