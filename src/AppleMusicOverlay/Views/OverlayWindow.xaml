@@ -161,7 +161,7 @@
                             Width="172"
                             Height="172"
                             Background="#FF000000"
-                            CornerRadius="7"
+                            CornerRadius="13"
                             IsHitTestVisible="False">
                         <Border.Effect>
                             <DropShadowEffect x:Name="AmbientShadowEffect"
@@ -179,7 +179,7 @@
                             Width="172"
                             Height="172"
                             Background="#FF000000"
-                            CornerRadius="7"
+                            CornerRadius="13"
                             IsHitTestVisible="False">
                         <Border.Effect>
                             <DropShadowEffect x:Name="KeyShadowEffect"
@@ -196,7 +196,7 @@
                             Canvas.Top="40"
                             Width="176"
                             Height="176"
-                            CornerRadius="9"
+                            CornerRadius="13"
                             ClipToBounds="True"
                             MouseLeftButtonDown="CoverClip_MouseLeftButtonDown"
                             MouseMove="CoverClip_MouseMove"
@@ -213,9 +213,9 @@
                            Canvas.Top="228"
                            Width="248"
                            Foreground="#F7F7FA"
-                           FontFamily="Segoe UI Variable Display, Segoe UI"
-                           FontSize="13"
-                           FontWeight="DemiBold"
+                           FontFamily="Segoe UI Variable Display, Segoe UI, Microsoft YaHei UI"
+                           FontSize="14.2"
+                           FontWeight="SemiBold"
                            TextTrimming="CharacterEllipsis"
                            TextAlignment="Center">
                     <TextBlock.Effect>
@@ -231,8 +231,8 @@
                            Canvas.Top="249"
                            Width="248"
                            Foreground="#C8CEDA"
-                           FontFamily="Segoe UI Variable Text, Segoe UI"
-                           FontSize="11"
+                           FontFamily="Segoe UI Variable Text, Segoe UI, Microsoft YaHei UI"
+                           FontSize="12"
                            TextTrimming="CharacterEllipsis"
                            TextAlignment="Center">
                     <TextBlock.Effect>

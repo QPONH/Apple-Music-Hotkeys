@@ -1,5 +1,6 @@
 using AppleMusicOverlay.Models;
 using AppleMusicOverlay.Services;
+using System.Globalization;
 
 namespace AppleMusicOverlay.Tests;
 
@@ -160,5 +161,35 @@ public sealed class OverlaySettingsTests
         OverlaySettings loaded = service.Load();
 
         Assert.Equal("en-US", loaded.LanguageCode);
+    }
+
+    [Theory]
+    [InlineData("en-US", "en-US")]
+    [InlineData("fr-FR", "en-US")]
+    [InlineData("zh-CN", "zh-CN")]
+    [InlineData("zh-HK", "zh-CN")]
+    public void SettingsServiceUsesSystemLanguageForFirstLaunch(string cultureName, string expectedLanguageCode)
+    {
+        CultureInfo originalCulture = CultureInfo.CurrentCulture;
+        CultureInfo originalUiCulture = CultureInfo.CurrentUICulture;
+        try
+        {
+            CultureInfo culture = CultureInfo.GetCultureInfo(cultureName);
+            CultureInfo.CurrentCulture = culture;
+            CultureInfo.CurrentUICulture = culture;
+            string dir = Path.Combine(Path.GetTempPath(), "AppleMusicOverlay.Tests", Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            string path = Path.Combine(dir, "settings.json");
+            var service = new OverlaySettingsService(path);
+
+            OverlaySettings loaded = service.Load();
+
+            Assert.Equal(expectedLanguageCode, loaded.LanguageCode);
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCulture;
+            CultureInfo.CurrentUICulture = originalUiCulture;
+        }
     }
 }

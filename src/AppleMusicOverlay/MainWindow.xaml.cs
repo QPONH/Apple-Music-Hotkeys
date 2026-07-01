@@ -23,11 +23,22 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
     private static readonly TimeSpan CurrentNavigationPromptDelay = TimeSpan.FromMilliseconds(1000);
     private static readonly TimeSpan OverlayNavigationPromptDelay = TimeSpan.FromMilliseconds(900);
     private static readonly TimeSpan OverlayPositionResultPromptDelay = TimeSpan.FromMilliseconds(750);
+
+    private enum OverlayRenderMode
+    {
+        Hidden,
+        LayeredRuntime,
+        WpfSettingsPreview,
+        WpfPositionEdit
+    }
+
     private readonly MainViewModel _viewModel;
     private readonly IMediaSessionService _mediaService;
     private readonly IMediaSessionSourceService _sourceService;
     private readonly TrackMonitor _trackMonitor;
     private readonly OverlayWindow _overlayWindow;
+    private readonly LayeredOverlayWindow _layeredOverlayWindow;
+    private TrackInfo? _layeredOverlayTrack;
     private readonly ShadowWindow _shadowWindow;
     private readonly InstalledFontService _installedFontService = new();
     private OverlayTrackFontAvailability _trackFontAvailability = InstalledFontService.DetectForTesting([]);
@@ -53,7 +64,9 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
     private readonly DispatcherTimer _hotkeyCaptureAutoHideTimer = new();
     private readonly DispatcherTimer _gamepadCaptureTimer = new() { Interval = TimeSpan.FromMilliseconds(33) };
     private readonly DispatcherTimer _overlaySettingsSaveDebounceTimer = new() { Interval = TimeSpan.FromMilliseconds(450) };
+    private readonly DispatcherTimer _settingsPreviewSettleTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(300) };
     private readonly HashSet<Key> _pressedHotkeyKeys = new();
+    private OverlayRenderMode _overlayRenderMode = OverlayRenderMode.Hidden;
     private DateTimeOffset _lastGamepadCaptureUpdate = DateTimeOffset.Now;
     private DateTimeOffset _lastGamepadRuntimeUpdate = DateTimeOffset.Now;
     private bool _gamepadRuntimeCaptureActive;
@@ -88,6 +101,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         _overlayWindow = new OverlayWindow();
         _overlayWindow.SetTrackFontAvailability(_trackFontAvailability);
         _overlayWindow.ApplySettings(_viewModel.Settings);
+        _layeredOverlayWindow = new LayeredOverlayWindow(Dispatcher);
         _shadowWindow = new ShadowWindow();
         LogStartup("ctor: overlay ready");
         _hotkeyService = new GlobalHotkeyService(this);
@@ -120,6 +134,11 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
             _overlaySettingsSaveDebounceTimer.Stop();
             SaveOverlaySettingsNow();
         };
+        _settingsPreviewSettleTimer.Tick += (_, _) =>
+        {
+            _settingsPreviewSettleTimer.Stop();
+            CompleteSettingsPreviewLayeredHandoff();
+        };
 
         Activated += (_, _) =>
         {
@@ -150,8 +169,8 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         Closed += MainWindow_Closed;
         PreviewMouseDown += MainWindow_PreviewMouseDown;
         _trackMonitor.TrackRead += (_, track) => PostToDispatcher(() => _viewModel.ApplyTrack(track));
-        _trackMonitor.TrackChanged += (_, track) => PostToDispatcher(() => _ = _overlayWindow.ShowTrackAsync(track));
-        _trackMonitor.TrackRefreshed += (_, track) => PostToDispatcher(() => _overlayWindow.UpdateTrack(track));
+        _trackMonitor.TrackChanged += (_, track) => PostToDispatcher(() => _ = ShowOverlayTrackAsync(track));
+        _trackMonitor.TrackRefreshed += (_, track) => PostToDispatcher(() => UpdateOverlayTrack(track));
         _hotkeyService.HotkeyPressed += HotkeyService_HotkeyPressed;
         UpdateMaximizeButtonGlyph();
         ApplyWindowShellState();
@@ -371,7 +390,16 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         }
 
         UpdateDisplaySecondsValueText();
-        _overlayWindow.ApplySettings(_viewModel.Settings);
+        _overlayWindow.ApplySettings(_viewModel.Settings, animateScale: false);
+        if (!ReferenceEquals(sender, DisplaySecondsSlider))
+        {
+            ShowWpfSettingsPreview(animateScale: false);
+        }
+        else if (_overlayRenderMode == OverlayRenderMode.WpfSettingsPreview)
+        {
+            QueueSettingsPreviewLayeredHandoff();
+        }
+
         QueueOverlaySettingsAutoSave(debounce: true);
     }
 
@@ -386,7 +414,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         TrackInfo? track = _trackMonitor.CurrentTrack ?? _viewModel.CurrentTrack;
         if (track != null)
         {
-            _overlayWindow.UpdateTrack(track);
+            ShowWpfSettingsPreview(animateScale: false);
         }
 
         QueueOverlaySettingsAutoSave(debounce: false);
@@ -407,8 +435,16 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
             TrackInfo? track = _trackMonitor.CurrentTrack ?? _viewModel.CurrentTrack;
             if (track != null)
             {
-                _ = _overlayWindow.ShowTrackAsync(track);
+                _ = ShowOverlayTrackAsync(track);
             }
+        }
+        else
+        {
+            _layeredOverlayWindow.HideImmediately();
+            _layeredOverlayTrack = null;
+            _overlayRenderMode = OverlayRenderMode.Hidden;
+            _settingsPreviewSettleTimer.Stop();
+            _overlayWindow.HideOverlayVisualImmediately();
         }
 
         QueueOverlaySettingsAutoSave(debounce: false);
@@ -423,6 +459,15 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
 
         _viewModel.Settings.AutoHideOnMouseNear = autoHideToggle.IsChecked == true;
         _overlayWindow.ApplySettings(_viewModel.Settings);
+        if (_overlayRenderMode == OverlayRenderMode.WpfSettingsPreview)
+        {
+            QueueSettingsPreviewLayeredHandoff();
+        }
+        else
+        {
+            RefreshLayeredOverlaySnapshot();
+        }
+
         QueueOverlaySettingsAutoSave(debounce: false);
     }
 
@@ -442,6 +487,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         }
 
         _overlayWindow.ApplyTrackFontSetting(_viewModel.Settings);
+        ShowWpfSettingsPreview(animateScale: false);
         QueueOverlaySettingsAutoSave(debounce: false);
         ShowOverlayNavigationPrompt("OverlayFontUpdatedTitle", "OverlayFontUpdatedMessage", OverlayNavigationPromptDelay);
     }
@@ -480,6 +526,10 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
     private void PositionOverlay_Click(object sender, RoutedEventArgs e)
     {
         ShowPersistentOverlayNavigationPrompt("OverlayAdjustingTitle", "OverlayAdjustingMessage");
+        _settingsPreviewSettleTimer.Stop();
+        _overlayRenderMode = OverlayRenderMode.WpfPositionEdit;
+        _layeredOverlayWindow.HideImmediately();
+        _layeredOverlayTrack = null;
         _overlayWindow.BeginPositionEdit(_viewModel.Settings, SaveOverlayPositionSettingsNow, HandleOverlayPositionEditCompleted);
     }
 
@@ -1178,6 +1228,9 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
 
     private void HandleOverlayPositionEditCompleted(OverlayPositionEditResult result)
     {
+        _overlayRenderMode = OverlayRenderMode.LayeredRuntime;
+        RefreshLayeredOverlaySnapshot();
+
         if (result == OverlayPositionEditResult.Saved)
         {
             ShowOverlayNavigationPrompt("OverlayPositionSavedTitle", "OverlayPositionSavedMessage", OverlayPositionResultPromptDelay);
@@ -2036,8 +2089,136 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
             return false;
         }
 
-        await _overlayWindow.ShowTrackAsync(track);
+        await ShowOverlayTrackAsync(track);
         return true;
+    }
+
+    private async Task ShowOverlayTrackAsync(TrackInfo track)
+    {
+        _layeredOverlayTrack = track;
+        if (_overlayRenderMode == OverlayRenderMode.WpfSettingsPreview)
+        {
+            _overlayWindow.ShowSettingsPreview(track, _viewModel.Settings, animateScale: false);
+            QueueSettingsPreviewLayeredHandoff();
+            return;
+        }
+
+        _overlayWindow.ApplySettings(_viewModel.Settings);
+        OverlaySnapshot snapshot = _overlayWindow.CreateSnapshot(track);
+        _overlayWindow.HideOverlayVisualImmediately();
+        await _layeredOverlayWindow.ShowSnapshotAsync(snapshot, _viewModel.Settings.DisplaySeconds, _viewModel.Settings.PauseOverlay);
+        _overlayRenderMode = OverlayRenderMode.LayeredRuntime;
+        ConfigureLayeredOverlayRuntime(snapshot);
+    }
+
+    private void UpdateOverlayTrack(TrackInfo track)
+    {
+        _layeredOverlayTrack = track;
+        if (_overlayRenderMode == OverlayRenderMode.WpfSettingsPreview)
+        {
+            _overlayWindow.ShowSettingsPreview(track, _viewModel.Settings, animateScale: false);
+            QueueSettingsPreviewLayeredHandoff();
+            return;
+        }
+
+        _overlayWindow.ApplySettings(_viewModel.Settings);
+        OverlaySnapshot snapshot = _overlayWindow.CreateSnapshot(track);
+        if (_layeredOverlayWindow.IsVisible || _viewModel.Settings.PauseOverlay)
+        {
+            _overlayWindow.HideOverlayVisualImmediately();
+            _layeredOverlayWindow.UpdateSnapshot(snapshot);
+            _overlayRenderMode = OverlayRenderMode.LayeredRuntime;
+            ConfigureLayeredOverlayRuntime(snapshot);
+            return;
+        }
+
+        _overlayRenderMode = OverlayRenderMode.Hidden;
+        _overlayWindow.UpdateTrack(track);
+    }
+
+    private void ShowWpfSettingsPreview(bool animateScale)
+    {
+        TrackInfo? track = _layeredOverlayTrack ?? _trackMonitor.CurrentTrack ?? _viewModel.CurrentTrack;
+        if (track == null)
+        {
+            _overlayWindow.ApplySettings(_viewModel.Settings, animateScale);
+            return;
+        }
+
+        _layeredOverlayTrack = track;
+        _overlayRenderMode = OverlayRenderMode.WpfSettingsPreview;
+        _overlayWindow.ShowSettingsPreview(track, _viewModel.Settings, animateScale);
+        _layeredOverlayWindow.HideImmediately();
+        _layeredOverlayWindow.ConfigurePointerAutoHide(enabled: false);
+        QueueSettingsPreviewLayeredHandoff();
+    }
+
+    private void QueueSettingsPreviewLayeredHandoff()
+    {
+        _settingsPreviewSettleTimer.Stop();
+        _settingsPreviewSettleTimer.Start();
+    }
+
+    private void CompleteSettingsPreviewLayeredHandoff()
+    {
+        if (_overlayRenderMode != OverlayRenderMode.WpfSettingsPreview)
+        {
+            return;
+        }
+
+        TrackInfo? track = _layeredOverlayTrack ?? _trackMonitor.CurrentTrack ?? _viewModel.CurrentTrack;
+        if (track == null)
+        {
+            _overlayRenderMode = OverlayRenderMode.Hidden;
+            _layeredOverlayWindow.ConfigurePointerAutoHide(enabled: false);
+            _overlayWindow.HideOverlayVisualImmediately();
+            return;
+        }
+
+        _layeredOverlayTrack = track;
+        _overlayWindow.ApplySettings(_viewModel.Settings);
+        OverlaySnapshot snapshot = _overlayWindow.CreateSnapshot(track);
+        _layeredOverlayWindow.ShowSnapshotImmediately(snapshot, _viewModel.Settings.DisplaySeconds, _viewModel.Settings.PauseOverlay);
+        _overlayWindow.HideOverlayVisualImmediately();
+        _overlayRenderMode = OverlayRenderMode.LayeredRuntime;
+        ConfigureLayeredOverlayRuntime(snapshot);
+    }
+
+    private void RefreshLayeredOverlaySnapshot()
+    {
+        TrackInfo? track = _layeredOverlayTrack ?? _trackMonitor.CurrentTrack ?? _viewModel.CurrentTrack;
+        if (track == null)
+        {
+            _layeredOverlayWindow.ConfigurePointerAutoHide(enabled: false);
+            return;
+        }
+
+        if (!_layeredOverlayWindow.IsVisible && !_viewModel.Settings.PauseOverlay)
+        {
+            _overlayWindow.ApplySettings(_viewModel.Settings);
+            return;
+        }
+
+        _layeredOverlayTrack = track;
+        _overlayWindow.ApplySettings(_viewModel.Settings);
+        OverlaySnapshot snapshot = _overlayWindow.CreateSnapshot(track);
+        _overlayWindow.HideOverlayVisualImmediately();
+        if (_layeredOverlayWindow.IsVisible)
+        {
+            _layeredOverlayWindow.UpdateSnapshot(snapshot);
+        }
+        else
+        {
+            _ = _layeredOverlayWindow.ShowSnapshotAsync(snapshot, _viewModel.Settings.DisplaySeconds, keepVisible: true);
+        }
+
+        _overlayRenderMode = OverlayRenderMode.LayeredRuntime;
+        ConfigureLayeredOverlayRuntime(snapshot);
+    }
+
+    private void ConfigureLayeredOverlayRuntime(OverlaySnapshot snapshot)
+    {
+        _layeredOverlayWindow.ConfigurePointerAutoHide(_viewModel.Settings.PauseOverlay && _viewModel.Settings.AutoHideOnMouseNear);
     }
 
     private void ExitApplication()
@@ -2099,6 +2280,8 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         _hotkeyCaptureAutoHideTimer.Stop();
         _gamepadCaptureTimer.Stop();
         _overlaySettingsSaveDebounceTimer.Stop();
+        _settingsPreviewSettleTimer.Stop();
+        _overlayRenderMode = OverlayRenderMode.Hidden;
 
         if (!_isSessionEnding)
         {
@@ -2110,6 +2293,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         SafeDispose(_gamepadService);
         _trayIconService.PrepareForExit();
         SafeDispose(_trayIconService);
+        SafeDispose(_layeredOverlayWindow);
         SafeClose(_overlayWindow);
         SafeClose(_shadowWindow);
     }

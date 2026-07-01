@@ -385,6 +385,13 @@ public sealed class LocalizationService : INotifyPropertyChanged
         return ResourceSets.ContainsKey(normalized) ? normalized : DefaultLanguageCode;
     }
 
+    public static string GetPreferredStartupLanguageCode(CultureInfo culture)
+    {
+        return culture.Name.StartsWith("zh", StringComparison.OrdinalIgnoreCase)
+            ? DefaultLanguageCode
+            : EnglishLanguageCode;
+    }
+
     public static IReadOnlySet<string> GetResourceKeys(string languageCode)
     {
         string normalized = NormalizeLanguageCode(languageCode);

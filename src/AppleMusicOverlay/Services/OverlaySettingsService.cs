@@ -1,4 +1,5 @@
 using System.IO;
+using System.Globalization;
 using System.Text.Json;
 using AppleMusicOverlay.Models;
 
@@ -29,16 +30,16 @@ public sealed class OverlaySettingsService
         {
             if (!File.Exists(_filePath))
             {
-                return new OverlaySettings();
+                return CreateDefaultSettings();
             }
 
             string json = File.ReadAllText(_filePath);
             OverlaySettings? settings = JsonSerializer.Deserialize<OverlaySettings>(json, JsonOptions);
-            return OverlaySettingsNormalizer.Normalize(settings ?? new OverlaySettings());
+            return OverlaySettingsNormalizer.Normalize(settings ?? CreateDefaultSettings());
         }
         catch
         {
-            return new OverlaySettings();
+            return CreateDefaultSettings();
         }
     }
 
@@ -53,5 +54,13 @@ public sealed class OverlaySettingsService
 
         string json = JsonSerializer.Serialize(normalized, JsonOptions);
         File.WriteAllText(_filePath, json);
+    }
+
+    private static OverlaySettings CreateDefaultSettings()
+    {
+        return new OverlaySettings
+        {
+            LanguageCode = LocalizationService.GetPreferredStartupLanguageCode(CultureInfo.CurrentUICulture)
+        };
     }
 }

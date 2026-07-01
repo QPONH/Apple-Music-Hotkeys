@@ -8,6 +8,7 @@ using System.Windows.Media;
 using System.Windows.Media.Animation;
 using System.Windows.Media.Effects;
 using System.Windows.Media.Imaging;
+using System.Windows.Interop;
 using System.Windows.Threading;
 using AppleMusicOverlay.Models;
 using AppleMusicOverlay.Services;
@@ -32,6 +33,7 @@ public partial class OverlayWindow : Window
     private const double WindowWidth = MaxVisualHorizontalExtent * 2 * MaxOverlayScale;
     private const double WindowHeight = MaxVisualVerticalExtent * 2 * MaxOverlayScale;
     private const double CoverSize = 176;
+    private const double CoverCornerRadius = 13;
     private const double ShadowCasterInset = 2;
     private const double ShadowCasterSize = CoverSize - (ShadowCasterInset * 2);
     private const double MaxAmbientShadowBlur = 32;
@@ -79,6 +81,7 @@ public partial class OverlayWindow : Window
     private bool _isPointerAutoHidden;
     private bool _pointerAutoHideTargetHidden;
     private int _displayRevision;
+    private bool _isSettingsPreviewing;
     private bool _isPositionEditing;
     private bool _isPositionPointerDown;
     private bool _isPositionDragging;
@@ -136,7 +139,7 @@ public partial class OverlayWindow : Window
         PositionEditDoneButton.Content = LocalizationService.Current.Text("Done");
     }
 
-    public void ApplySettings(OverlaySettings settings)
+    public void ApplySettings(OverlaySettings settings, bool animateScale = true)
     {
         OverlaySettings normalized = OverlaySettingsNormalizer.Normalize(CloneSettings(settings));
         bool pauseOverlayChanged = _settings.PauseOverlay != normalized.PauseOverlay;
@@ -152,7 +155,7 @@ public partial class OverlayWindow : Window
         TitleText.Visibility = _settings.ShowTitle ? Visibility.Visible : Visibility.Collapsed;
         ArtistText.Visibility = _settings.ShowArtist ? Visibility.Visible : Visibility.Collapsed;
         ApplyTrackInformationFonts();
-        ApplyScaleTransform(scale);
+        ApplyScaleTransform(scale, animateScale);
         ApplyCoverShadowSettings();
         ApplyPauseOverlayMode(pauseOverlayChanged);
         ApplyPointerAutoHideMode();
@@ -183,6 +186,7 @@ public partial class OverlayWindow : Window
             _displayRevision++;
         }
 
+        _isSettingsPreviewing = false;
         _hideCts?.Cancel();
         _hideCts = new CancellationTokenSource();
         SetTrackContent(track);
@@ -201,6 +205,84 @@ public partial class OverlayWindow : Window
         }
 
         return Task.CompletedTask;
+    }
+
+    public void ShowSettingsPreview(TrackInfo track, OverlaySettings settings, bool animateScale)
+    {
+        unchecked
+        {
+            _displayRevision++;
+        }
+
+        _isSettingsPreviewing = true;
+        _hideCts?.Cancel();
+        ApplySettings(settings, animateScale);
+        SetTrackContent(track);
+        RestorePointerAutoHideVisual(force: true);
+        StopPointerAutoHideTracking(restoreVisual: true);
+        PositionEditBar.Visibility = Visibility.Collapsed;
+        PositionEditBar.Opacity = 0;
+        OverlayRoot.BeginAnimation(OpacityProperty, null);
+        RootScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+        RootScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+        RootTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+        VisualGroup.BeginAnimation(OpacityProperty, null);
+        OverlayRoot.Opacity = 1;
+        RootScale.ScaleX = 1;
+        RootScale.ScaleY = 1;
+        RootTranslate.Y = 0;
+        VisualGroup.Opacity = 1;
+        Show();
+        Visibility = Visibility.Visible;
+        ApplyOverlayWindowStyles();
+    }
+
+    public OverlaySnapshot CreateSnapshot(TrackInfo track)
+    {
+        EnsureSnapshotSource();
+        SetTrackContent(track);
+        PrepareSnapshotVisualState();
+        UpdateLayout();
+
+        PresentationSource? source = PresentationSource.FromVisual(this);
+        Matrix toDevice = source?.CompositionTarget?.TransformToDevice ?? GetDpiTransformForWindow();
+        double dpiScaleX = toDevice.M11 > 0 ? toDevice.M11 : 1;
+        double dpiScaleY = toDevice.M22 > 0 ? toDevice.M22 : 1;
+        double dpiX = 96 * dpiScaleX;
+        double dpiY = 96 * dpiScaleY;
+        int pixelWidth = Math.Max(1, (int)Math.Ceiling(WindowWidth * dpiScaleX));
+        int pixelHeight = Math.Max(1, (int)Math.Ceiling(WindowHeight * dpiScaleY));
+
+        var bitmap = new RenderTargetBitmap(pixelWidth, pixelHeight, dpiX, dpiY, PixelFormats.Pbgra32);
+        bitmap.Render(WindowCanvas);
+        int stride = pixelWidth * 4;
+        byte[] pixels = new byte[stride * pixelHeight];
+        bitmap.CopyPixels(pixels, stride, 0);
+
+        Point screenTopLeft = toDevice.Transform(new Point(Left, Top));
+        Rect coverRect = GetCoverVisibleRectInWindow(_settings.ScalePercent / 100.0);
+        Point coverTopLeft = toDevice.Transform(new Point(Left + coverRect.Left, Top + coverRect.Top));
+        Point coverBottomRight = toDevice.Transform(new Point(Left + coverRect.Right, Top + coverRect.Bottom));
+        return new OverlaySnapshot(
+            pixels,
+            pixelWidth,
+            pixelHeight,
+            (int)Math.Round(screenTopLeft.X),
+            (int)Math.Round(screenTopLeft.Y),
+            (int)Math.Round(Math.Min(coverTopLeft.X, coverBottomRight.X)),
+            (int)Math.Round(Math.Min(coverTopLeft.Y, coverBottomRight.Y)),
+            (int)Math.Round(Math.Max(coverTopLeft.X, coverBottomRight.X)),
+            (int)Math.Round(Math.Max(coverTopLeft.Y, coverBottomRight.Y)),
+            dpiScaleX,
+            dpiScaleY);
+    }
+
+    public void HideOverlayVisualImmediately()
+    {
+        _isSettingsPreviewing = false;
+        _hideCts?.Cancel();
+        StopPointerAutoHideTracking(restoreVisual: true);
+        Hide();
     }
 
     public void UpdateTrack(TrackInfo track)
@@ -284,6 +366,60 @@ public partial class OverlayWindow : Window
         RootTranslate.BeginAnimation(TranslateTransform.YProperty, new DoubleAnimation(0, -4, ExitDuration) { EasingFunction = ease });
     }
 
+    private void EnsureSnapshotSource()
+    {
+        var helper = new WindowInteropHelper(this);
+        if (helper.Handle == IntPtr.Zero)
+        {
+            helper.EnsureHandle();
+        }
+    }
+
+    private Matrix GetDpiTransformForWindow()
+    {
+        var helper = new WindowInteropHelper(this);
+        IntPtr hwnd = helper.Handle == IntPtr.Zero ? helper.EnsureHandle() : helper.Handle;
+        if (hwnd == IntPtr.Zero)
+        {
+            return Matrix.Identity;
+        }
+
+        uint dpi = GetDpiForWindow(hwnd);
+        double scale = dpi > 0 ? dpi / 96.0 : 1;
+        return new Matrix(scale, 0, 0, scale, 0, 0);
+    }
+
+    private void PrepareSnapshotVisualState()
+    {
+        _hideCts?.Cancel();
+        StopPointerAutoHideTracking(restoreVisual: true);
+        RestorePointerAutoHideVisual(force: true);
+        PositionEditBar.Visibility = Visibility.Collapsed;
+        PositionEditBar.Opacity = 0;
+        Width = WindowWidth;
+        Height = WindowHeight;
+
+        OverlayRoot.BeginAnimation(OpacityProperty, null);
+        RootScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+        RootScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+        RootTranslate.BeginAnimation(TranslateTransform.YProperty, null);
+        VisualScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+        VisualScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+        VisualGroup.BeginAnimation(OpacityProperty, null);
+
+        OverlayRoot.Opacity = 1;
+        RootScale.ScaleX = 1;
+        RootScale.ScaleY = 1;
+        RootTranslate.Y = 0;
+        VisualGroup.Opacity = 1;
+        double scale = _settings.ScalePercent / 100.0;
+        VisualScale.ScaleX = scale;
+        VisualScale.ScaleY = scale;
+
+        WindowCanvas.Measure(new Size(WindowWidth, WindowHeight));
+        WindowCanvas.Arrange(new Rect(0, 0, WindowWidth, WindowHeight));
+    }
+
     private void ApplyCoverShadowSettings()
     {
         double t = _settings.CoverShadowSizePercent / 100.0;
@@ -337,7 +473,7 @@ public partial class OverlayWindow : Window
 
     private void ApplyPointerAutoHideMode()
     {
-        if (_isPositionEditing)
+        if (_isPositionEditing || _isSettingsPreviewing)
         {
             StopPointerAutoHideTracking(restoreVisual: true);
             return;
@@ -453,6 +589,7 @@ public partial class OverlayWindow : Window
             return;
         }
 
+        _isSettingsPreviewing = false;
         ApplySettings(settings);
         if (!IsVisible || Visibility != Visibility.Visible)
         {
@@ -1241,8 +1378,17 @@ public partial class OverlayWindow : Window
             visualTop + (WindowHeight / 2) - visibleContent.Top);
     }
 
-    private void ApplyScaleTransform(double scale)
+    private void ApplyScaleTransform(double scale, bool animate)
     {
+        if (!animate)
+        {
+            VisualScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+            VisualScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+            VisualScale.ScaleX = scale;
+            VisualScale.ScaleY = scale;
+            return;
+        }
+
         var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
         var duration = TimeSpan.FromMilliseconds(110);
         VisualScale.BeginAnimation(ScaleTransform.ScaleXProperty, new DoubleAnimation(scale, duration) { EasingFunction = ease });
@@ -1302,7 +1448,7 @@ public partial class OverlayWindow : Window
 
     private void CoverImage_SizeChanged(object sender, SizeChangedEventArgs e)
     {
-        CoverImage.Clip = new RectangleGeometry(new Rect(0, 0, e.NewSize.Width, e.NewSize.Height), 9, 9);
+        CoverImage.Clip = new RectangleGeometry(new Rect(0, 0, e.NewSize.Width, e.NewSize.Height), CoverCornerRadius, CoverCornerRadius);
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -1332,6 +1478,9 @@ public partial class OverlayWindow : Window
 
     [DllImport("user32.dll")]
     private static extern bool GetCursorPos(out NativePoint lpPoint);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(IntPtr hwnd);
 
     [DllImport("user32.dll")]
     private static extern IntPtr MonitorFromRect(ref NativeRect rect, int flags);
