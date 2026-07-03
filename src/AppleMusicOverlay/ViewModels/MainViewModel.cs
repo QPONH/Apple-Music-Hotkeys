@@ -61,6 +61,12 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public void ApplyTrack(TrackInfo? track)
     {
+        if (HasSameVisibleTrackState(_currentTrack, track))
+        {
+            _currentTrack = track;
+            return;
+        }
+
         CurrentTrack = track;
         if (track == null)
         {
@@ -129,6 +135,19 @@ public sealed class MainViewModel : INotifyPropertyChanged
     private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+    }
+
+    private static bool HasSameVisibleTrackState(TrackInfo? current, TrackInfo? next)
+    {
+        if (current == null || next == null)
+        {
+            return current == next;
+        }
+
+        return current.Title == next.Title &&
+               current.Artist == next.Artist &&
+               current.SourceAppId == next.SourceAppId &&
+               current.IsPlaying == next.IsPlaying;
     }
 }
 

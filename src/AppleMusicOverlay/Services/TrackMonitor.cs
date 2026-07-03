@@ -6,15 +6,21 @@ namespace AppleMusicOverlay.Services;
 public sealed class TrackMonitor : IDisposable
 {
     private static readonly TimeSpan SettleProbeInterval = TimeSpan.FromMilliseconds(40);
+    private const int StableCoverRefreshPolls = 30;
     private readonly IMediaSessionService _mediaSessionService;
+    private readonly IMediaSessionChangeNotifier? _changeNotifier;
+    private readonly object _wakeLock = new();
     private readonly TimeSpan _pollInterval;
+    private readonly TimeSpan _stablePollInterval;
     private readonly TimeSpan _settleDelay;
     private CancellationTokenSource? _cts;
     private Task? _loopTask;
+    private TaskCompletionSource _wakeSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private string? _lastTrackKey;
     private string? _lastCoverKey;
     private string? _pendingTrackKey;
     private TrackInfo? _lastStableTrack;
+    private int _stableMetadataOnlyPolls;
     private bool _disposed;
 
     public event EventHandler<TrackInfo?>? TrackRead;
@@ -28,10 +34,13 @@ public sealed class TrackMonitor : IDisposable
     public TrackMonitor(
         IMediaSessionService mediaSessionService,
         TimeSpan? pollInterval = null,
+        TimeSpan? stablePollInterval = null,
         TimeSpan? settleDelay = null)
     {
         _mediaSessionService = mediaSessionService;
+        _changeNotifier = mediaSessionService as IMediaSessionChangeNotifier;
         _pollInterval = pollInterval ?? TimeSpan.FromMilliseconds(300);
+        _stablePollInterval = stablePollInterval ?? TimeSpan.FromSeconds(1);
         _settleDelay = settleDelay ?? TimeSpan.FromMilliseconds(120);
     }
 
@@ -44,6 +53,11 @@ public sealed class TrackMonitor : IDisposable
         }
 
         _cts = new CancellationTokenSource();
+        if (_changeNotifier != null)
+        {
+            _changeNotifier.MediaSessionChanged += ChangeNotifier_MediaSessionChanged;
+        }
+
         _loopTask = Task.Run(() => RunAsync(_cts.Token));
     }
 
@@ -51,9 +65,10 @@ public sealed class TrackMonitor : IDisposable
     {
         ThrowIfDisposed();
         TrackInfo? track;
+        bool includeCover = ShouldIncludeCoverOnNextRead();
         try
         {
-            track = await _mediaSessionService.GetCurrentTrackAsync(cancellationToken);
+            track = await ReadCurrentTrackAsync(includeCover, cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -74,6 +89,17 @@ public sealed class TrackMonitor : IDisposable
         }
 
         track = NormalizeTrack(track);
+        bool alreadySettledTrack = false;
+        if (!includeCover && HasTrackIdentityChanged(track))
+        {
+            track = NormalizeTrack(await ReadSettledTrackAsync(track, cancellationToken));
+            alreadySettledTrack = true;
+        }
+        else
+        {
+            track = RestoreStableCoverIfMetadataOnly(track);
+        }
+
         string trackKey = TrackIdentity.Create(track);
         string coverKey = CreateCoverKey(track);
         bool pendingTrackReady = trackKey == _pendingTrackKey && HasCover(track);
@@ -90,7 +116,11 @@ public sealed class TrackMonitor : IDisposable
 
         if (trackChanged)
         {
-            track = NormalizeTrack(await SettleTrackAsync(track, _lastCoverKey, cancellationToken));
+            if (!alreadySettledTrack)
+            {
+                track = NormalizeTrack(await SettleTrackAsync(track, _lastCoverKey, cancellationToken));
+            }
+
             if (!IsUsableTrack(track))
             {
                 TrackRead?.Invoke(this, _lastStableTrack);
@@ -155,6 +185,11 @@ public sealed class TrackMonitor : IDisposable
         }
 
         _cts?.Cancel();
+        if (_changeNotifier != null)
+        {
+            _changeNotifier.MediaSessionChanged -= ChangeNotifier_MediaSessionChanged;
+        }
+
         _cts?.Dispose();
         _cts = null;
         _loopTask = null;
@@ -167,7 +202,18 @@ public sealed class TrackMonitor : IDisposable
         {
             try
             {
-                await Task.Delay(_pollInterval, cancellationToken);
+                Task delayTask = Task.Delay(GetNextPollInterval(), cancellationToken);
+                Task wakeTask = GetWakeSignalTask();
+                Task completedTask = await Task.WhenAny(delayTask, wakeTask);
+                if (completedTask == delayTask)
+                {
+                    await delayTask;
+                }
+                else
+                {
+                    ResetWakeSignal(wakeTask);
+                }
+
                 await PollOnceAsync(cancellationToken);
             }
             catch (OperationCanceledException)
@@ -214,7 +260,7 @@ public sealed class TrackMonitor : IDisposable
     {
         try
         {
-            TrackInfo? settledTrack = await _mediaSessionService.GetCurrentTrackAsync(cancellationToken);
+            TrackInfo? settledTrack = await ReadCurrentTrackAsync(includeCover: true, cancellationToken);
             if (settledTrack != null)
             {
                 return settledTrack;
@@ -231,6 +277,55 @@ public sealed class TrackMonitor : IDisposable
         return initialTrack;
     }
 
+    private Task<TrackInfo?> ReadCurrentTrackAsync(bool includeCover, CancellationToken cancellationToken)
+    {
+        _stableMetadataOnlyPolls = includeCover ? 0 : _stableMetadataOnlyPolls + 1;
+        return _mediaSessionService.GetCurrentTrackAsync(
+            includeCover ? MediaSessionReadOptions.Full : MediaSessionReadOptions.MetadataOnly,
+            cancellationToken);
+    }
+
+    private bool ShouldIncludeCoverOnNextRead()
+    {
+        return _lastStableTrack == null ||
+               _pendingTrackKey != null ||
+               _stableMetadataOnlyPolls >= StableCoverRefreshPolls;
+    }
+
+    private TimeSpan GetNextPollInterval()
+    {
+        return _lastStableTrack != null && _pendingTrackKey == null
+            ? _stablePollInterval
+            : _pollInterval;
+    }
+
+    private Task GetWakeSignalTask()
+    {
+        lock (_wakeLock)
+        {
+            return _wakeSignal.Task;
+        }
+    }
+
+    private void ResetWakeSignal(Task completedWakeTask)
+    {
+        lock (_wakeLock)
+        {
+            if (ReferenceEquals(_wakeSignal.Task, completedWakeTask))
+            {
+                _wakeSignal = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            }
+        }
+    }
+
+    private void ChangeNotifier_MediaSessionChanged(object? sender, EventArgs e)
+    {
+        lock (_wakeLock)
+        {
+            _wakeSignal.TrySetResult();
+        }
+    }
+
     private static string CreateCoverKey(TrackInfo track)
     {
         if (track.CoverBytes is not { Length: > 0 } coverBytes)
@@ -245,6 +340,29 @@ public sealed class TrackMonitor : IDisposable
     {
         _lastStableTrack = track;
         TrackRead?.Invoke(this, track);
+    }
+
+    private TrackInfo RestoreStableCoverIfMetadataOnly(TrackInfo track)
+    {
+        if (track.CoverBytes is { Length: > 0 } ||
+            _lastStableTrack?.CoverBytes is not { Length: > 0 } stableCover)
+        {
+            return track;
+        }
+
+        string trackKey = TrackIdentity.Create(track);
+        if (!trackKey.Equals(_lastTrackKey, StringComparison.Ordinal))
+        {
+            return track;
+        }
+
+        return track with { CoverBytes = stableCover };
+    }
+
+    private bool HasTrackIdentityChanged(TrackInfo track)
+    {
+        return _lastTrackKey == null ||
+               !TrackIdentity.Create(track).Equals(_lastTrackKey, StringComparison.Ordinal);
     }
 
     private static TrackInfo NormalizeTrack(TrackInfo track)

@@ -198,6 +198,59 @@ public sealed class TrackMonitorTests
         Assert.Equal(0, service.ReadCount);
     }
 
+    [Fact]
+    public async Task PollOnceSkipsCoverReadAfterStableTrackIsKnown()
+    {
+        var track = new TrackInfo("Song", "Artist", [1], "AppleMusic", TimeSpan.FromMinutes(3), true);
+        var service = new ReadOptionsMediaSessionService(track, track, track);
+        var monitor = new TrackMonitor(service, settleDelay: TimeSpan.Zero);
+
+        await monitor.PollOnceAsync();
+        await monitor.PollOnceAsync();
+
+        Assert.Equal([true, true, false], service.IncludeCoverRequests);
+    }
+
+    [Fact]
+    public async Task PollOnceRefetchesCoverImmediatelyWhenMetadataOnlyReadFindsNewTrack()
+    {
+        var first = new TrackInfo("First", "Artist", [1], "AppleMusic", TimeSpan.FromMinutes(3), true);
+        var second = new TrackInfo("Second", "Artist", [2], "AppleMusic", TimeSpan.FromMinutes(3), true);
+        var service = new ReadOptionsMediaSessionService(first, first, second, second);
+        var monitor = new TrackMonitor(service, settleDelay: TimeSpan.Zero);
+        var changes = new List<TrackInfo>();
+        monitor.TrackChanged += (_, track) => changes.Add(track);
+
+        await monitor.PollOnceAsync();
+        await monitor.PollOnceAsync();
+
+        Assert.Equal([first, second], changes);
+        Assert.Equal([true, true, false, true], service.IncludeCoverRequests);
+    }
+
+    [Fact]
+    public async Task StartPollsImmediatelyWhenMediaSessionSignalsTrackChange()
+    {
+        var first = new TrackInfo("First", "Artist", [1], "AppleMusic", TimeSpan.FromMinutes(3), true);
+        var second = new TrackInfo("Second", "Artist", [2], "AppleMusic", TimeSpan.FromMinutes(3), true);
+        var service = new NotifyingReadOptionsMediaSessionService(first, first, second, second);
+        using var monitor = new TrackMonitor(
+            service,
+            pollInterval: TimeSpan.FromSeconds(30),
+            stablePollInterval: TimeSpan.FromSeconds(30),
+            settleDelay: TimeSpan.Zero);
+        var changes = new List<TrackInfo>();
+        monitor.TrackChanged += (_, track) => changes.Add(track);
+
+        await monitor.PollOnceAsync();
+        monitor.Start();
+        service.RaiseMediaSessionChanged();
+        await service.WaitForReadCountAsync(4, TimeSpan.FromSeconds(1));
+
+        Assert.Equal([first, second], changes);
+        Assert.Equal([true, true, false, true], service.IncludeCoverRequests);
+    }
+
     private sealed class FakeMediaSessionService : IMediaSessionService
     {
         private readonly Queue<TrackInfo?> _tracks;
@@ -248,5 +301,100 @@ public sealed class TrackMonitorTests
         public Task PreviousAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 
         public Task TogglePlayPauseAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
+    private sealed class ReadOptionsMediaSessionService : IMediaSessionService
+    {
+        private readonly Queue<TrackInfo?> _tracks;
+
+        public ReadOptionsMediaSessionService(params TrackInfo?[] tracks)
+        {
+            _tracks = new Queue<TrackInfo?>(tracks);
+        }
+
+        public List<bool> IncludeCoverRequests { get; } = new();
+
+        public Task<TrackInfo?> GetCurrentTrackAsync(CancellationToken cancellationToken = default)
+        {
+            IncludeCoverRequests.Add(true);
+            return DequeueAsync(includeCover: true);
+        }
+
+        public Task<TrackInfo?> GetCurrentTrackAsync(MediaSessionReadOptions options, CancellationToken cancellationToken = default)
+        {
+            IncludeCoverRequests.Add(options.IncludeCover);
+            return DequeueAsync(options.IncludeCover);
+        }
+
+        public Task NextAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task PreviousAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task TogglePlayPauseAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        private Task<TrackInfo?> DequeueAsync(bool includeCover)
+        {
+            TrackInfo? track = _tracks.Count == 0 ? null : _tracks.Dequeue();
+            return Task.FromResult(track == null || includeCover ? track : track with { CoverBytes = null });
+        }
+    }
+
+    private sealed class NotifyingReadOptionsMediaSessionService : IMediaSessionService, IMediaSessionChangeNotifier
+    {
+        private readonly Queue<TrackInfo?> _tracks;
+        private TaskCompletionSource<int> _readCountChanged = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public NotifyingReadOptionsMediaSessionService(params TrackInfo?[] tracks)
+        {
+            _tracks = new Queue<TrackInfo?>(tracks);
+        }
+
+        public event EventHandler? MediaSessionChanged;
+
+        public List<bool> IncludeCoverRequests { get; } = new();
+
+        public int ReadCount { get; private set; }
+
+        public Task<TrackInfo?> GetCurrentTrackAsync(CancellationToken cancellationToken = default)
+        {
+            IncludeCoverRequests.Add(true);
+            return DequeueAsync(includeCover: true);
+        }
+
+        public Task<TrackInfo?> GetCurrentTrackAsync(MediaSessionReadOptions options, CancellationToken cancellationToken = default)
+        {
+            IncludeCoverRequests.Add(options.IncludeCover);
+            return DequeueAsync(options.IncludeCover);
+        }
+
+        public Task NextAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task PreviousAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public Task TogglePlayPauseAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+
+        public void RaiseMediaSessionChanged()
+        {
+            MediaSessionChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        public async Task WaitForReadCountAsync(int expectedReadCount, TimeSpan timeout)
+        {
+            using var cts = new CancellationTokenSource(timeout);
+            while (ReadCount < expectedReadCount)
+            {
+                Task waitTask = _readCountChanged.Task;
+                await waitTask.WaitAsync(cts.Token);
+            }
+        }
+
+        private Task<TrackInfo?> DequeueAsync(bool includeCover)
+        {
+            ReadCount++;
+            _readCountChanged.TrySetResult(ReadCount);
+            _readCountChanged = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+            TrackInfo? track = _tracks.Count == 0 ? null : _tracks.Dequeue();
+            return Task.FromResult(track == null || includeCover ? track : track with { CoverBytes = null });
+        }
     }
 }

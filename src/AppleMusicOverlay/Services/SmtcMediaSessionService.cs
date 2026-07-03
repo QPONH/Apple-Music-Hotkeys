@@ -4,11 +4,22 @@ using Windows.Storage.Streams;
 
 namespace AppleMusicOverlay.Services;
 
-public sealed class SmtcMediaSessionService : IMediaSessionService, IMediaSessionSourceService
+public sealed class SmtcMediaSessionService : IMediaSessionService, IMediaSessionSourceService, IMediaSessionChangeNotifier
 {
+    private readonly object _syncRoot = new();
+    private readonly HashSet<GlobalSystemMediaTransportControlsSession> _observedSessions = new();
+    private GlobalSystemMediaTransportControlsSessionManager? _manager;
+
+    public event EventHandler? MediaSessionChanged;
+
     public string PreferredSourceAppUserModelId { get; set; } = string.Empty;
 
-    public async Task<TrackInfo?> GetCurrentTrackAsync(CancellationToken cancellationToken = default)
+    public Task<TrackInfo?> GetCurrentTrackAsync(CancellationToken cancellationToken = default)
+    {
+        return GetCurrentTrackAsync(MediaSessionReadOptions.Full, cancellationToken);
+    }
+
+    public async Task<TrackInfo?> GetCurrentTrackAsync(MediaSessionReadOptions options, CancellationToken cancellationToken = default)
     {
         GlobalSystemMediaTransportControlsSession? session = await GetSessionAsync(cancellationToken);
         if (session == null)
@@ -23,7 +34,9 @@ public sealed class SmtcMediaSessionService : IMediaSessionService, IMediaSessio
 
         string title = NormalizeText(properties.Title, "Unknown Track");
         string artist = NormalizeText(properties.Artist, "Unknown Artist");
-        byte[]? coverBytes = await TryReadCoverBytesAsync(properties.Thumbnail, cancellationToken);
+        byte[]? coverBytes = options.IncludeCover
+            ? await TryReadCoverBytesAsync(properties.Thumbnail, cancellationToken)
+            : null;
 
         return new TrackInfo(
             title,
@@ -89,12 +102,12 @@ public sealed class SmtcMediaSessionService : IMediaSessionService, IMediaSessio
         return snapshot.Current ?? snapshot.Sessions.Values.FirstOrDefault();
     }
 
-    private static async Task<SessionSnapshot> GetSnapshotAsync(CancellationToken cancellationToken)
+    private async Task<SessionSnapshot> GetSnapshotAsync(CancellationToken cancellationToken)
     {
-        GlobalSystemMediaTransportControlsSessionManager manager =
-            await GlobalSystemMediaTransportControlsSessionManager.RequestAsync().AsTask(cancellationToken);
+        GlobalSystemMediaTransportControlsSessionManager manager = await GetManagerAsync(cancellationToken);
 
         IReadOnlyList<GlobalSystemMediaTransportControlsSession> sessions = manager.GetSessions();
+        ObserveSessions(sessions);
         if (sessions.Count == 0)
         {
             return new SessionSnapshot(
@@ -118,6 +131,51 @@ public sealed class SmtcMediaSessionService : IMediaSessionService, IMediaSessio
             : null;
 
         return new SessionSnapshot(sessionByIndex, candidates, readableCurrent);
+    }
+
+    private async Task<GlobalSystemMediaTransportControlsSessionManager> GetManagerAsync(CancellationToken cancellationToken)
+    {
+        if (_manager != null)
+        {
+            return _manager;
+        }
+
+        GlobalSystemMediaTransportControlsSessionManager manager =
+            await GlobalSystemMediaTransportControlsSessionManager.RequestAsync().AsTask(cancellationToken);
+        lock (_syncRoot)
+        {
+            if (_manager != null)
+            {
+                return _manager;
+            }
+
+            _manager = manager;
+            _manager.SessionsChanged += (_, _) => RaiseMediaSessionChanged();
+            _manager.CurrentSessionChanged += (_, _) => RaiseMediaSessionChanged();
+            return _manager;
+        }
+    }
+
+    private void ObserveSessions(IReadOnlyList<GlobalSystemMediaTransportControlsSession> sessions)
+    {
+        lock (_syncRoot)
+        {
+            foreach (GlobalSystemMediaTransportControlsSession session in sessions)
+            {
+                if (!_observedSessions.Add(session))
+                {
+                    continue;
+                }
+
+                session.MediaPropertiesChanged += (_, _) => RaiseMediaSessionChanged();
+                session.PlaybackInfoChanged += (_, _) => RaiseMediaSessionChanged();
+            }
+        }
+    }
+
+    private void RaiseMediaSessionChanged()
+    {
+        MediaSessionChanged?.Invoke(this, EventArgs.Empty);
     }
 
     private static async Task<SmtcSessionReadResult> ReadCandidateAsync(
@@ -152,7 +210,8 @@ public sealed class SmtcMediaSessionService : IMediaSessionService, IMediaSessio
         var buffer = new Windows.Storage.Streams.Buffer((uint)stream.Size);
         IBuffer readBuffer = await stream.ReadAsync(buffer, (uint)stream.Size, InputStreamOptions.None).AsTask(cancellationToken);
         byte[] bytes = new byte[readBuffer.Length];
-        DataReader.FromBuffer(readBuffer).ReadBytes(bytes);
+        using DataReader reader = DataReader.FromBuffer(readBuffer);
+        reader.ReadBytes(bytes);
         return bytes;
     }
 

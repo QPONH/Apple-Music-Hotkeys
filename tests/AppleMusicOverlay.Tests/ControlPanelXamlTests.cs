@@ -372,6 +372,15 @@ public sealed class ControlPanelXamlTests
     }
 
     [Fact]
+    public void OverlayCoverDecodeIsBoundedToDisplayedScale()
+    {
+        string overlayCode = File.ReadAllText(GetOverlayWindowCodeBehindPath());
+
+        Assert.Contains("MaxDecodedCoverPixelWidth", overlayCode);
+        Assert.Contains("bitmap.DecodePixelWidth = MaxDecodedCoverPixelWidth", overlayCode);
+    }
+
+    [Fact]
     public void OverlayRuntimeUsesLayeredBitmapHostWhileKeepingWpfVisualSource()
     {
         string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());

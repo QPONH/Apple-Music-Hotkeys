@@ -34,6 +34,7 @@ public partial class OverlayWindow : Window
     private const double WindowHeight = MaxVisualVerticalExtent * 2 * MaxOverlayScale;
     private const double CoverSize = 176;
     private const double CoverCornerRadius = 13;
+    private const int MaxDecodedCoverPixelWidth = 768;
     private const double ShadowCasterInset = 2;
     private const double ShadowCasterSize = CoverSize - (ShadowCasterInset * 2);
     private const double MaxAmbientShadowBlur = 32;
@@ -1432,6 +1433,7 @@ public partial class OverlayWindow : Window
                 using var stream = new MemoryStream(track.CoverBytes);
                 bitmap.BeginInit();
                 bitmap.CacheOption = BitmapCacheOption.OnLoad;
+                bitmap.DecodePixelWidth = MaxDecodedCoverPixelWidth;
                 bitmap.StreamSource = stream;
                 bitmap.EndInit();
                 bitmap.Freeze();

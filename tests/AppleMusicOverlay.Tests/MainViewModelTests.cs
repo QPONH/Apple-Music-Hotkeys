@@ -41,4 +41,20 @@ public sealed class MainViewModelTests
 
         Assert.Equal("已连接：Source", viewModel.StatusText);
     }
+
+    [Fact]
+    public void ApplyTrackDoesNotRefreshBindingsWhenVisibleTrackStateIsUnchanged()
+    {
+        var settingsPath = Path.Combine(Path.GetTempPath(), "AppleMusicOverlay.Tests", Guid.NewGuid().ToString("N"), "settings.json");
+        var viewModel = new MainViewModel(new OverlaySettingsService(settingsPath));
+        var track = new TrackInfo("Song", "Artist", [1], "Source", TimeSpan.FromMinutes(3), true);
+        var changedProperties = new List<string?>();
+        viewModel.PropertyChanged += (_, args) => changedProperties.Add(args.PropertyName);
+
+        viewModel.ApplyTrack(track);
+        changedProperties.Clear();
+        viewModel.ApplyTrack(track with { CoverBytes = [2] });
+
+        Assert.Empty(changedProperties);
+    }
 }
