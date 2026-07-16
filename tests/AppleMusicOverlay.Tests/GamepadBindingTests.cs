@@ -151,6 +151,24 @@ public sealed class GamepadBindingTests
     }
 
     [Fact]
+    public void SupportedActionsIncludeFavoriteTrack()
+    {
+        Assert.Contains(AppAction.FavoriteCurrentTrack, GamepadBindingActions.SupportedActions);
+    }
+
+    [Fact]
+    public void FavoriteTrackBindingCanBeStoredAndRead()
+    {
+        var bindings = new GamepadBindingSet();
+        GamepadBinding binding = GamepadBinding.FromButtons([GamepadButton.LeftShoulder, GamepadButton.FaceNorth]);
+
+        bindings.SetBinding(AppAction.FavoriteCurrentTrack, binding);
+
+        Assert.Equal(binding.Key, bindings.GetBinding(AppAction.FavoriteCurrentTrack).Key);
+        Assert.Equal(AppAction.FavoriteCurrentTrack, bindings.FindAction(binding));
+    }
+
+    [Fact]
     public void ButtonReaderUsesTriggerHysteresis()
     {
         var reader = new GamepadButtonReader();

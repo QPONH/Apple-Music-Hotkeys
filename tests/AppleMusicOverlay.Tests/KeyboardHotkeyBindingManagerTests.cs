@@ -42,6 +42,30 @@ public sealed class KeyboardHotkeyBindingManagerTests
     }
 
     [Fact]
+    public void CreateSnapshotIncludesFavoriteTrackDefaultBinding()
+    {
+        var settings = new OverlaySettings();
+
+        Dictionary<AppAction, string> snapshot = KeyboardHotkeyBindingManager.CreateSnapshot(settings);
+
+        Assert.True(snapshot.ContainsKey(AppAction.FavoriteCurrentTrack));
+        Assert.Equal(string.Empty, snapshot[AppAction.FavoriteCurrentTrack]);
+    }
+
+    [Fact]
+    public void ApplyStoresFavoriteTrackHotkey()
+    {
+        var settings = new OverlaySettings();
+        var registrar = new RecordingHotkeyRegistrar(success: true);
+
+        HotkeyApplyResult result = KeyboardHotkeyBindingManager.Apply(settings, AppAction.FavoriteCurrentTrack, "Ctrl+Alt+F", registrar);
+
+        Assert.True(result.Success);
+        Assert.Equal("Ctrl+Alt+F", settings.KeyboardFavorite);
+        Assert.Equal("Ctrl+Alt+F", registrar.LastAttempt[AppAction.FavoriteCurrentTrack]);
+    }
+
+    [Fact]
     public void ClearBindingSavesEmptyTextAfterRegistrationSucceeds()
     {
         var settings = new OverlaySettings

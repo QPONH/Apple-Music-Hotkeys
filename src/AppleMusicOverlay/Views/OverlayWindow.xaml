@@ -242,6 +242,83 @@
                                           Color="#111827" />
                     </TextBlock.Effect>
                 </TextBlock>
+
+                <Grid x:Name="FavoriteStatusHost"
+                      Canvas.Left="194"
+                      Canvas.Top="236"
+                      Width="22"
+                      Height="22"
+                      Visibility="Collapsed"
+                      IsHitTestVisible="False"
+                      RenderTransformOrigin="0.5,0.5">
+                    <Grid.RenderTransform>
+                        <ScaleTransform x:Name="FavoriteStatusScale"
+                                        ScaleX="1"
+                                        ScaleY="1" />
+                    </Grid.RenderTransform>
+                    <TextBlock x:Name="FavoriteDepthStar"
+                               Text="&#xE735;"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Foreground="#687383"
+                               FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                               FontSize="20"
+                               Opacity="0">
+                        <TextBlock.RenderTransform>
+                            <TranslateTransform Y="1" />
+                        </TextBlock.RenderTransform>
+                    </TextBlock>
+                    <TextBlock x:Name="FavoriteOuterGlowStar"
+                               Text="&#xE735;"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Foreground="#E8EEF6"
+                               FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                               FontSize="20"
+                               Opacity="0">
+                        <TextBlock.Effect>
+                            <DropShadowEffect BlurRadius="11"
+                                              ShadowDepth="0"
+                                              Opacity="0.82"
+                                              Color="#DDE8F5" />
+                        </TextBlock.Effect>
+                    </TextBlock>
+                    <TextBlock x:Name="FavoriteOutlineStar"
+                               Text="&#xE734;"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Foreground="#E0E4EA"
+                               FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                               FontSize="20"
+                               Opacity="0.78" />
+                    <TextBlock x:Name="FavoriteFilledStar"
+                               Text="&#xE735;"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               Foreground="#E0E4EA"
+                               FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                               FontSize="20"
+                               Opacity="0" />
+                    <TextBlock x:Name="FavoriteInnerLightStar"
+                               Text="&#xE735;"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center"
+                               FontFamily="Segoe Fluent Icons, Segoe MDL2 Assets"
+                               FontSize="20"
+                               Opacity="0">
+                        <TextBlock.Foreground>
+                            <LinearGradientBrush StartPoint="0.5,0"
+                                                 EndPoint="0.5,1">
+                                <GradientStop Color="#FFFFFFFF"
+                                              Offset="0" />
+                                <GradientStop Color="#80FFFFFF"
+                                              Offset="0.42" />
+                                <GradientStop Color="#00FFFFFF"
+                                              Offset="1" />
+                            </LinearGradientBrush>
+                        </TextBlock.Foreground>
+                    </TextBlock>
+                </Grid>
             </Canvas>
 
             <Border x:Name="PositionEditBar"

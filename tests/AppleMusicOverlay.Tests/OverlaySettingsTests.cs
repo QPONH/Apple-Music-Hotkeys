@@ -18,6 +18,7 @@ public sealed class OverlaySettingsTests
         Assert.Equal(5, settings.DisplaySeconds);
         Assert.Equal(80d, settings.CoverShadowSizePercent);
         Assert.False(settings.AutoHideOnMouseNear);
+        Assert.True(settings.ShowOverlayOnTrackChange);
         Assert.Equal("default", settings.OverlayTrackFont);
         Assert.Equal(string.Empty, settings.CaptureSourceAppUserModelId);
         Assert.Equal("zh-CN", settings.LanguageCode);
@@ -103,6 +104,7 @@ public sealed class OverlaySettingsTests
             KeyboardNext = "Ctrl+Shift+Right",
             PauseOverlay = true,
             AutoHideOnMouseNear = true,
+            ShowOverlayOnTrackChange = false,
             OverlayTrackFont = "sf-pro"
         };
 
@@ -114,7 +116,22 @@ public sealed class OverlaySettingsTests
         Assert.Equal("Ctrl+Shift+Right", loaded.KeyboardNext);
         Assert.True(loaded.PauseOverlay);
         Assert.True(loaded.AutoHideOnMouseNear);
+        Assert.False(loaded.ShowOverlayOnTrackChange);
         Assert.Equal("sf-pro", loaded.OverlayTrackFont);
+    }
+
+    [Fact]
+    public void SettingsServiceUsesAutomaticTrackChangeOverlayForLegacyJson()
+    {
+        string dir = Path.Combine(Path.GetTempPath(), "AppleMusicOverlay.Tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        string path = Path.Combine(dir, "settings.json");
+        File.WriteAllText(path, "{\"PauseOverlay\":false}");
+
+        var service = new OverlaySettingsService(path);
+        OverlaySettings loaded = service.Load();
+
+        Assert.True(loaded.ShowOverlayOnTrackChange);
     }
 
     [Theory]

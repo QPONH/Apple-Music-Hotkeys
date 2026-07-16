@@ -43,19 +43,21 @@ public sealed class LocalizationService : INotifyPropertyChanged
         ["UnknownMedia"] = "未知媒体",
         ["UndetectedSuffix"] = "未检测到",
         ["OverlayPageTitle"] = "悬浮窗设置",
-        ["OverlayPageDescription"] = "这里只调整封面悬浮窗的显示参数，不改变悬浮窗本身的 UI 或动效。",
+        ["OverlayPageDescription"] = "\u8c03\u6574\u60ac\u6d6e\u7a97\u7684\u663e\u793a\u3001\u5185\u5bb9\u548c\u884c\u4e3a\u3002",
         ["CoverShadowSize"] = "封面阴影大小",
         ["CoverShadowSizeDescription"] = "调整封面投影向外扩散的范围，保持柔和渐隐。",
         ["DisplaySeconds"] = "显示时长",
-        ["DisplaySecondsDescription"] = "控制切歌提示停留多久。",
+        ["DisplaySecondsDescription"] = "\u63a7\u5236\u4e34\u65f6\u60ac\u6d6e\u7a97\u505c\u7559\u591a\u4e45\u3002",
         ["SecondsSuffix"] = "{0:0} 秒",
         ["ScalePercent"] = "缩放大小",
         ["ScalePercentDescription"] = "按百分比调整悬浮窗尺寸。",
         ["DisplayBehavior"] = "显示行为",
-        ["DisplayBehaviorDescription"] = "控制悬浮窗是否常驻显示。",
+        ["DisplayBehaviorDescription"] = "\u63a7\u5236\u60ac\u6d6e\u7a97\u4f55\u65f6\u663e\u793a\u3002",
         ["PinnedBadge"] = "常驻",
         ["PauseOverlay"] = "常驻显示悬浮窗",
-        ["PauseOverlayRequired"] = "开启常驻显示悬浮窗后可用",
+        ["ShowOverlayOnTrackChange"] = "\u5207\u6b4c\u65f6\u81ea\u52a8\u663e\u793a\u60ac\u6d6e\u7a97",
+        ["ShowOverlayOnTrackChangeDescription"] = "\u5f53\u524d\u6b4c\u66f2\u53d1\u751f\u5207\u6362\u65f6\u81ea\u52a8\u663e\u793a\u60ac\u6d6e\u7a97\u3002",
+        ["PauseOverlayRequired"] = "\u81ea\u52a8\u9690\u85cf\u548c\u4f4d\u7f6e\u8c03\u6574\u4ec5\u9002\u7528\u4e8e\u5e38\u9a7b\u6a21\u5f0f\u3002",
         ["AutoHideOnMouseNear"] = "鼠标靠近时自动隐藏",
         ["AutoHideOnMouseNearDescription"] = "鼠标靠近封面时，悬浮窗会暂时淡出。",
         ["OverlayPosition"] = "悬浮窗位置",
@@ -194,19 +196,21 @@ public sealed class LocalizationService : INotifyPropertyChanged
         ["UnknownMedia"] = "Unknown media",
         ["UndetectedSuffix"] = "not detected",
         ["OverlayPageTitle"] = "Overlay Settings",
-        ["OverlayPageDescription"] = "Adjust only the cover overlay display parameters without changing its UI or motion.",
+        ["OverlayPageDescription"] = "Adjust the overlay's appearance, content, and behavior.",
         ["CoverShadowSize"] = "Cover shadow size",
         ["CoverShadowSizeDescription"] = "Adjust how far the cover shadow spreads while keeping the fade soft.",
         ["DisplaySeconds"] = "Display duration",
-        ["DisplaySecondsDescription"] = "Controls how long the song-change overlay stays visible.",
+        ["DisplaySecondsDescription"] = "Controls how long a temporary overlay stays visible.",
         ["SecondsSuffix"] = "{0:0} sec",
         ["ScalePercent"] = "Scale",
         ["ScalePercentDescription"] = "Resize the overlay by percentage.",
         ["DisplayBehavior"] = "Display behavior",
-        ["DisplayBehaviorDescription"] = "Controls whether the overlay stays visible.",
+        ["DisplayBehaviorDescription"] = "Controls when the overlay appears.",
         ["PinnedBadge"] = "Pinned",
         ["PauseOverlay"] = "Keep overlay visible",
-        ["PauseOverlayRequired"] = "Available after keeping the overlay visible",
+        ["ShowOverlayOnTrackChange"] = "Show overlay on track change",
+        ["ShowOverlayOnTrackChangeDescription"] = "Show the overlay automatically when the current track changes.",
+        ["PauseOverlayRequired"] = "Auto-hide and position adjustment are available only in persistent mode.",
         ["AutoHideOnMouseNear"] = "Auto-hide near pointer",
         ["AutoHideOnMouseNearDescription"] = "Temporarily fades the overlay when the pointer approaches the cover.",
         ["OverlayPosition"] = "Overlay position",
@@ -339,6 +343,42 @@ public sealed class LocalizationService : INotifyPropertyChanged
         ["OverlayFontUpdatedMessage"] = "The overlay track information font has been changed."
     };
 
+    private static readonly Dictionary<string, string> FavoriteActionZhCn = new(StringComparer.Ordinal)
+    {
+        ["FavoriteCurrentTrack"] = "\u6536\u85cf\u5f53\u524d\u6b4c\u66f2",
+        ["FavoriteCurrentTrackDescription"] = "\u5c06\u5f53\u524d\u64ad\u653e\u7684 Apple Music \u6b4c\u66f2\u52a0\u5165\u6536\u85cf\u3002",
+        ["FavoriteNoTrackTitle"] = "\u672a\u68c0\u6d4b\u5230\u6b4c\u66f2",
+        ["FavoriteNoTrackMessage"] = "\u8bf7\u5148\u5728 Apple Music \u4e2d\u64ad\u653e\u4e00\u9996\u6b4c\u66f2\u3002",
+        ["FavoriteUnsupportedTitle"] = "\u5f53\u524d\u6765\u6e90\u4e0d\u652f\u6301\u6536\u85cf",
+        ["FavoriteUnsupportedMessage"] = "\u6b64\u529f\u80fd\u76ee\u524d\u4ec5\u652f\u6301 Apple Music\u3002",
+        ["FavoriteInProgressTitle"] = "\u6b63\u5728\u6536\u85cf",
+        ["FavoriteInProgressMessage"] = "\u6b63\u5728\u5c06\u5f53\u524d\u6b4c\u66f2\u52a0\u5165\u6536\u85cf\u2026\u2026",
+        ["FavoriteAddedTitle"] = "\u5df2\u52a0\u5165\u6536\u85cf",
+        ["FavoriteAddedMessage"] = "\u5f53\u524d\u6b4c\u66f2\u5df2\u6dfb\u52a0\u5230 Apple Music \u6536\u85cf\u3002",
+        ["FavoriteAlreadyTitle"] = "\u5f53\u524d\u6b4c\u66f2\u5df2\u6536\u85cf",
+        ["FavoriteAlreadyMessage"] = "\u65e0\u9700\u91cd\u590d\u6dfb\u52a0\u3002",
+        ["FavoriteFailedTitle"] = "\u6536\u85cf\u5931\u8d25",
+        ["FavoriteFailedMessage"] = "\u672a\u80fd\u5b8c\u6210\u64cd\u4f5c\uff0c\u8bf7\u786e\u8ba4 Apple Music \u4ecd\u5728\u8fd0\u884c\u3002"
+    };
+
+    private static readonly Dictionary<string, string> FavoriteActionEnUs = new(StringComparer.Ordinal)
+    {
+        ["FavoriteCurrentTrack"] = "Favorite current song",
+        ["FavoriteCurrentTrackDescription"] = "Add the currently playing Apple Music song to Favorites.",
+        ["FavoriteNoTrackTitle"] = "No song detected",
+        ["FavoriteNoTrackMessage"] = "Play a song in Apple Music first.",
+        ["FavoriteUnsupportedTitle"] = "Favorites not supported",
+        ["FavoriteUnsupportedMessage"] = "This feature currently supports Apple Music only.",
+        ["FavoriteInProgressTitle"] = "Adding to Favorites",
+        ["FavoriteInProgressMessage"] = "Adding the current song to Apple Music Favorites...",
+        ["FavoriteAddedTitle"] = "Added to Favorites",
+        ["FavoriteAddedMessage"] = "The current song has been added to Apple Music Favorites.",
+        ["FavoriteAlreadyTitle"] = "Already Favorited",
+        ["FavoriteAlreadyMessage"] = "No duplicate action was needed.",
+        ["FavoriteFailedTitle"] = "Favorite failed",
+        ["FavoriteFailedMessage"] = "MusicFloat could not complete the action. Check that Apple Music is still running."
+    };
+
     private static readonly IReadOnlyDictionary<string, Dictionary<string, string>> ResourceSets =
         new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal)
         {
@@ -351,6 +391,13 @@ public sealed class LocalizationService : INotifyPropertyChanged
         {
             [DefaultLanguageCode] = OverlayFontZhCn,
             [EnglishLanguageCode] = OverlayFontEnUs
+        };
+
+    private static readonly IReadOnlyDictionary<string, Dictionary<string, string>> FavoriteActionResourceSets =
+        new Dictionary<string, Dictionary<string, string>>(StringComparer.Ordinal)
+        {
+            [DefaultLanguageCode] = FavoriteActionZhCn,
+            [EnglishLanguageCode] = FavoriteActionEnUs
         };
 
     private string _languageCode = DefaultLanguageCode;
@@ -397,6 +444,7 @@ public sealed class LocalizationService : INotifyPropertyChanged
         string normalized = NormalizeLanguageCode(languageCode);
         HashSet<string> keys = ResourceSets[normalized].Keys.ToHashSet(StringComparer.Ordinal);
         keys.UnionWith(OverlayFontResourceSets[normalized].Keys);
+        keys.UnionWith(FavoriteActionResourceSets[normalized].Keys);
         return keys;
     }
 
@@ -428,9 +476,19 @@ public sealed class LocalizationService : INotifyPropertyChanged
             return value;
         }
 
+        if (FavoriteActionResourceSets[_languageCode].TryGetValue(key, out value) && !string.IsNullOrWhiteSpace(value))
+        {
+            return value;
+        }
+
         if (OverlayFontZhCn.TryGetValue(key, out string? overlayFontFallback) && !string.IsNullOrWhiteSpace(overlayFontFallback))
         {
             return overlayFontFallback;
+        }
+
+        if (FavoriteActionZhCn.TryGetValue(key, out string? favoriteActionFallback) && !string.IsNullOrWhiteSpace(favoriteActionFallback))
+        {
+            return favoriteActionFallback;
         }
 
         return ZhCn.TryGetValue(key, out string? fallback) && !string.IsNullOrWhiteSpace(fallback)

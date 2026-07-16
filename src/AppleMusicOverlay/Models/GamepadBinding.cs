@@ -25,6 +25,7 @@ public sealed class GamepadBindingSet
     public GamepadBinding Next { get; set; } = new();
     public GamepadBinding Toggle { get; set; } = new();
     public GamepadBinding ShowCurrent { get; set; } = new();
+    public GamepadBinding Favorite { get; set; } = new();
 
     public GamepadBinding GetBinding(AppAction action)
     {
@@ -34,6 +35,7 @@ public sealed class GamepadBindingSet
             AppAction.NextTrack => Next,
             AppAction.TogglePlayPause => Toggle,
             AppAction.ShowCurrentTrack => ShowCurrent,
+            AppAction.FavoriteCurrentTrack => Favorite,
             _ => GamepadBinding.Empty
         };
     }
@@ -53,6 +55,9 @@ public sealed class GamepadBindingSet
                 break;
             case AppAction.ShowCurrentTrack:
                 ShowCurrent = binding;
+                break;
+            case AppAction.FavoriteCurrentTrack:
+                Favorite = binding;
                 break;
         }
     }
@@ -89,7 +94,8 @@ public static class GamepadBindingActions
         AppAction.PreviousTrack,
         AppAction.NextTrack,
         AppAction.TogglePlayPause,
-        AppAction.ShowCurrentTrack
+        AppAction.ShowCurrentTrack,
+        AppAction.FavoriteCurrentTrack
     ];
 
     public static string GetLabel(AppAction action)
@@ -101,6 +107,7 @@ public static class GamepadBindingActions
             AppAction.NextTrack => localizer.Text("NextTrack"),
             AppAction.TogglePlayPause => localizer.Text("TogglePlayPause"),
             AppAction.ShowCurrentTrack => localizer.Text("ShowOverlay"),
+            AppAction.FavoriteCurrentTrack => localizer.Text("FavoriteCurrentTrack"),
             _ => localizer.Text("OtherAction")
         };
     }

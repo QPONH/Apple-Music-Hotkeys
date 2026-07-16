@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Windows;
 using System.Windows.Threading;
+using AppleMusicOverlay.Services;
 
 namespace AppleMusicOverlay.Views;
 
@@ -16,6 +18,11 @@ public sealed record OverlaySnapshot(
     int CoverScreenBottom,
     double DpiScaleX,
     double DpiScaleY);
+
+public sealed record OverlaySnapshotTransition(
+    OverlaySnapshot Snapshot,
+    TimeSpan Duration,
+    bool EaseIn);
 
 public sealed class LayeredOverlayWindow : IDisposable
 {
@@ -43,6 +50,7 @@ public sealed class LayeredOverlayWindow : IDisposable
     private readonly Dispatcher _dispatcher;
     private readonly DispatcherTimer _pointerAutoHideTimer;
     private IntPtr _hwnd;
+    private DirectCompositionOverlayPresenter? _compositionPresenter;
     private CancellationTokenSource? _lifetimeCts;
     private OverlaySnapshot? _currentSnapshot;
     private LayeredFrame? _currentFrame;
@@ -50,6 +58,7 @@ public sealed class LayeredOverlayWindow : IDisposable
     private byte _visibleOpacity = 255;
     private bool _autoHideEnabled;
     private bool _isPointerAutoHidden;
+    private bool _compositionDisabled;
     private int _revision;
 
     public LayeredOverlayWindow()
@@ -72,6 +81,12 @@ public sealed class LayeredOverlayWindow : IDisposable
     public Task ShowSnapshotAsync(OverlaySnapshot snapshot, int displaySeconds, bool keepVisible)
     {
         VerifyDispatcherAccess();
+        if (!SystemParameters.ClientAreaAnimation)
+        {
+            ShowSnapshotImmediately(snapshot, displaySeconds, keepVisible);
+            return Task.CompletedTask;
+        }
+
         EnsureWindow();
         unchecked
         {
@@ -82,9 +97,35 @@ public sealed class LayeredOverlayWindow : IDisposable
         _lifetimeCts?.Cancel();
         _lifetimeCts = new CancellationTokenSource();
         SetSnapshot(snapshot);
-        _currentOpacity = 0;
         _visibleOpacity = 255;
         _isPointerAutoHidden = false;
+        UpdateLayeredWindow(snapshot, 255);
+
+        if (TryEnsureCompositionPresenter())
+        {
+            DirectCompositionOverlayPresenter presenter = _compositionPresenter!;
+            bool shown = presenter.IsVisible && !presenter.IsHiding
+                ? presenter.Refresh(snapshot)
+                : presenter.Show(
+                    snapshot,
+                    OverlayWindowMotion.CreateEnter(
+                        presenter.IsVisible ? presenter.CurrentState : OverlayWindowMotion.Hidden));
+            if (shown)
+            {
+                _currentOpacity = 255;
+                CancellationToken compositionToken = _lifetimeCts.Token;
+                if (!keepVisible)
+                {
+                    _ = HideAfterDelayAsync(displaySeconds, revision, compositionToken);
+                }
+
+                return Task.CompletedTask;
+            }
+
+            DisableComposition(restoreSource: false);
+        }
+
+        _currentOpacity = 0;
         UpdateLayeredWindow(snapshot, _currentOpacity, EnterStartOffsetY);
         ShowWindow(_hwnd, SW_SHOWNOACTIVATE);
         SetWindowPos(_hwnd, HwndTopmost, snapshot.ScreenLeft, snapshot.ScreenTop, snapshot.PixelWidth, snapshot.PixelHeight, SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -123,6 +164,23 @@ public sealed class LayeredOverlayWindow : IDisposable
         _currentOpacity = 255;
         _visibleOpacity = 255;
         _isPointerAutoHidden = false;
+        UpdateLayeredWindow(snapshot, 255);
+        if (TryEnsureCompositionPresenter() &&
+            _compositionPresenter!.ShowImmediately(snapshot, OverlayWindowMotion.Visible))
+        {
+            if (!keepVisible)
+            {
+                _ = HideAfterDelayAsync(displaySeconds, revision, _lifetimeCts.Token);
+            }
+
+            return;
+        }
+
+        if (_compositionPresenter != null)
+        {
+            DisableComposition(restoreSource: false);
+        }
+
         UpdateLayeredWindow(snapshot, _currentOpacity);
         ShowWindow(_hwnd, SW_SHOWNOACTIVATE);
         SetWindowPos(_hwnd, HwndTopmost, snapshot.ScreenLeft, snapshot.ScreenTop, snapshot.PixelWidth, snapshot.PixelHeight, SWP_NOACTIVATE | SWP_SHOWWINDOW);
@@ -144,7 +202,196 @@ public sealed class LayeredOverlayWindow : IDisposable
         SetSnapshot(snapshot);
         _visibleOpacity = _currentOpacity == 0 ? (byte)255 : _currentOpacity;
         _currentOpacity = _isPointerAutoHidden ? (byte)0 : _visibleOpacity;
+        if (_compositionPresenter?.IsVisible == true)
+        {
+            UpdateLayeredWindow(snapshot, 255);
+            if (_compositionPresenter.Refresh(snapshot))
+            {
+                if (_isPointerAutoHidden)
+                {
+                    _ = _compositionPresenter.SetOpacity(0);
+                }
+
+                return;
+            }
+
+            DisableComposition();
+        }
+
         UpdateLayeredWindow(snapshot, _currentOpacity);
+    }
+
+    public async Task TransitionSnapshotAsync(
+        OverlaySnapshot snapshot,
+        int displaySeconds,
+        bool keepVisible,
+        TimeSpan duration)
+    {
+        VerifyDispatcherAccess();
+        if (_hwnd == IntPtr.Zero || _currentSnapshot == null || _currentFrame == null ||
+            _currentSnapshot.PixelWidth != snapshot.PixelWidth ||
+            _currentSnapshot.PixelHeight != snapshot.PixelHeight)
+        {
+            ShowSnapshotImmediately(snapshot, displaySeconds, keepVisible);
+            return;
+        }
+
+        unchecked
+        {
+            _revision++;
+        }
+
+        int revision = _revision;
+        _lifetimeCts?.Cancel();
+        _lifetimeCts?.Dispose();
+        _lifetimeCts = new CancellationTokenSource();
+        CancellationToken token = _lifetimeCts.Token;
+        byte[] previousPixels = _currentSnapshot.Pixels;
+        byte[] workingPixels = (byte[])previousPixels.Clone();
+        int[] changedByteIndices = FindChangedByteIndices(previousPixels, snapshot.Pixels);
+        _currentSnapshot = snapshot;
+
+        try
+        {
+            var stopwatch = Stopwatch.StartNew();
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+                if (revision != _revision || _currentSnapshot == null)
+                {
+                    return;
+                }
+
+                double progress = duration <= TimeSpan.Zero
+                    ? 1
+                    : Math.Clamp(stopwatch.Elapsed.TotalMilliseconds / duration.TotalMilliseconds, 0, 1);
+                double eased = progress < 1 ? EaseOutCubic(progress) : 1;
+                foreach (int index in changedByteIndices)
+                {
+                    workingPixels[index] = (byte)Math.Round(
+                        previousPixels[index] + ((snapshot.Pixels[index] - previousPixels[index]) * eased));
+                }
+
+                _currentFrame.TryUpdatePixels(workingPixels);
+                byte opacity = _isPointerAutoHidden ? (byte)0 : _currentOpacity;
+                UpdateVisibleRaster(snapshot, opacity);
+                if (progress >= 1)
+                {
+                    break;
+                }
+
+                await Task.Delay(16, token);
+            }
+
+            SetSnapshot(snapshot);
+            if (!keepVisible)
+            {
+                _ = HideAfterDelayAsync(displaySeconds, revision, token);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    public async Task TransitionSnapshotSequenceAsync(
+        IReadOnlyList<OverlaySnapshotTransition> transitions,
+        int displaySeconds,
+        bool keepVisible)
+    {
+        VerifyDispatcherAccess();
+        if (transitions.Count == 0)
+        {
+            return;
+        }
+
+        OverlaySnapshot finalSnapshot = transitions[^1].Snapshot;
+        if (_hwnd == IntPtr.Zero || _currentSnapshot == null || _currentFrame == null ||
+            transitions.Any(transition =>
+                transition.Snapshot.PixelWidth != _currentSnapshot.PixelWidth ||
+                transition.Snapshot.PixelHeight != _currentSnapshot.PixelHeight))
+        {
+            ShowSnapshotImmediately(finalSnapshot, displaySeconds, keepVisible);
+            return;
+        }
+
+        OverlaySnapshot startingSnapshot = _currentSnapshot;
+        var changedIndices = new int[transitions.Count][];
+        byte[] previousTargetPixels = startingSnapshot.Pixels;
+        for (int index = 0; index < transitions.Count; index++)
+        {
+            byte[] targetPixels = transitions[index].Snapshot.Pixels;
+            changedIndices[index] = FindChangedByteIndices(previousTargetPixels, targetPixels);
+            previousTargetPixels = targetPixels;
+        }
+
+        unchecked
+        {
+            _revision++;
+        }
+
+        int revision = _revision;
+        _lifetimeCts?.Cancel();
+        _lifetimeCts?.Dispose();
+        _lifetimeCts = new CancellationTokenSource();
+        CancellationToken token = _lifetimeCts.Token;
+        byte[] workingPixels = (byte[])startingSnapshot.Pixels.Clone();
+        _currentSnapshot = finalSnapshot;
+
+        try
+        {
+            byte[] segmentStartPixels = startingSnapshot.Pixels;
+            for (int segment = 0; segment < transitions.Count; segment++)
+            {
+                OverlaySnapshotTransition transition = transitions[segment];
+                var stopwatch = Stopwatch.StartNew();
+                while (true)
+                {
+                    token.ThrowIfCancellationRequested();
+                    if (revision != _revision || _currentSnapshot == null)
+                    {
+                        return;
+                    }
+
+                    double progress = transition.Duration <= TimeSpan.Zero
+                        ? 1
+                        : Math.Clamp(
+                            stopwatch.Elapsed.TotalMilliseconds / transition.Duration.TotalMilliseconds,
+                            0,
+                            1);
+                    double eased = progress < 1
+                        ? transition.EaseIn ? EaseInCubic(progress) : EaseOutCubic(progress)
+                        : 1;
+                    foreach (int byteIndex in changedIndices[segment])
+                    {
+                        workingPixels[byteIndex] = (byte)Math.Round(
+                            segmentStartPixels[byteIndex] +
+                            ((transition.Snapshot.Pixels[byteIndex] - segmentStartPixels[byteIndex]) * eased));
+                    }
+
+                    _currentFrame.TryUpdatePixels(workingPixels);
+                    byte opacity = _isPointerAutoHidden ? (byte)0 : _currentOpacity;
+                    UpdateVisibleRaster(transition.Snapshot, opacity);
+                    if (progress >= 1)
+                    {
+                        break;
+                    }
+
+                    await Task.Delay(12, token);
+                }
+
+                segmentStartPixels = transition.Snapshot.Pixels;
+            }
+
+            SetSnapshot(finalSnapshot);
+            if (!keepVisible)
+            {
+                _ = HideAfterDelayAsync(displaySeconds, revision, token);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
     }
 
     public void ConfigurePointerAutoHide(bool enabled)
@@ -169,12 +416,7 @@ public sealed class LayeredOverlayWindow : IDisposable
 
         if (_isPointerAutoHidden)
         {
-            _isPointerAutoHidden = false;
-            _currentOpacity = _visibleOpacity;
-            if (_currentSnapshot != null)
-            {
-                UpdateLayeredWindow(_currentSnapshot, _currentOpacity);
-            }
+            SetPointerAutoHidden(hidden: false);
         }
     }
 
@@ -188,16 +430,23 @@ public sealed class LayeredOverlayWindow : IDisposable
 
         _lifetimeCts?.Cancel();
         _pointerAutoHideTimer.Stop();
+        if (_hwnd != IntPtr.Zero)
+        {
+            ShowWindow(_hwnd, SW_HIDE);
+        }
+
+        if (_compositionPresenter != null)
+        {
+            _compositionPresenter.Hide();
+            _compositionPresenter.DwmUncloakSource();
+        }
+
         _currentSnapshot = null;
         _currentFrame?.Dispose();
         _currentFrame = null;
         _currentOpacity = 0;
         _visibleOpacity = 255;
         _isPointerAutoHidden = false;
-        if (_hwnd != IntPtr.Zero)
-        {
-            ShowWindow(_hwnd, SW_HIDE);
-        }
     }
 
     public void Dispose()
@@ -214,6 +463,8 @@ public sealed class LayeredOverlayWindow : IDisposable
         _pointerAutoHideTimer.Stop();
         _currentFrame?.Dispose();
         _currentFrame = null;
+        _compositionPresenter?.Dispose();
+        _compositionPresenter = null;
         if (_hwnd != IntPtr.Zero)
         {
             DestroyWindow(_hwnd);
@@ -240,6 +491,24 @@ public sealed class LayeredOverlayWindow : IDisposable
             await Task.Delay(TimeSpan.FromSeconds(displaySeconds), token);
             if (revision == _revision && _currentSnapshot != null)
             {
+                if (_compositionPresenter?.IsVisible == true && SystemParameters.ClientAreaAnimation)
+                {
+                    OverlayWindowMotionPlan exitMotion = OverlayWindowMotion.CreateExit(
+                        _compositionPresenter.CurrentState);
+                    if (_compositionPresenter.StartMotion(exitMotion))
+                    {
+                        await Task.Delay(exitMotion.Duration, token);
+                        if (revision == _revision)
+                        {
+                            HideImmediately();
+                        }
+
+                        return;
+                    }
+
+                    DisableComposition();
+                }
+
                 await AnimateSnapshotAsync(
                     _currentOpacity,
                     0,
@@ -340,6 +609,16 @@ public sealed class LayeredOverlayWindow : IDisposable
 
         _isPointerAutoHidden = hidden;
         _currentOpacity = hidden ? (byte)0 : _visibleOpacity;
+        if (_compositionPresenter?.IsVisible == true)
+        {
+            if (_compositionPresenter.SetOpacity(_currentOpacity / 255d))
+            {
+                return;
+            }
+
+            DisableComposition();
+        }
+
         UpdateLayeredWindow(_currentSnapshot, _currentOpacity);
     }
 
@@ -360,6 +639,92 @@ public sealed class LayeredOverlayWindow : IDisposable
     private static double EaseInCubic(double progress)
     {
         return progress * progress * progress;
+    }
+
+    private static int[] FindChangedByteIndices(byte[] previousPixels, byte[] nextPixels)
+    {
+        if (previousPixels.Length != nextPixels.Length)
+        {
+            return [];
+        }
+
+        var changed = new List<int>();
+        for (int index = 0; index < previousPixels.Length; index++)
+        {
+            if (previousPixels[index] != nextPixels[index])
+            {
+                changed.Add(index);
+            }
+        }
+
+        return [.. changed];
+    }
+
+    private bool TryEnsureCompositionPresenter()
+    {
+        if (_compositionDisabled || _hwnd == IntPtr.Zero)
+        {
+            return false;
+        }
+
+        if (_compositionPresenter != null)
+        {
+            return true;
+        }
+
+        if (DirectCompositionOverlayPresenter.TryCreate(_hwnd, out DirectCompositionOverlayPresenter? presenter))
+        {
+            _compositionPresenter = presenter;
+            return true;
+        }
+
+        _compositionDisabled = true;
+        return false;
+    }
+
+    private void DisableComposition(bool restoreSource = true)
+    {
+        DirectCompositionOverlayPresenter? presenter = _compositionPresenter;
+        _compositionPresenter = null;
+        _compositionDisabled = true;
+        if (presenter == null)
+        {
+            return;
+        }
+
+        bool shouldRestore = restoreSource &&
+                             presenter.IsVisible &&
+                             _hwnd != IntPtr.Zero &&
+                             _currentSnapshot != null;
+        if (_hwnd != IntPtr.Zero)
+        {
+            ShowWindow(_hwnd, SW_HIDE);
+        }
+
+        presenter.Hide();
+        presenter.DwmUncloakSource();
+        presenter.Dispose();
+
+        if (shouldRestore && _currentSnapshot != null)
+        {
+            byte opacity = _isPointerAutoHidden ? (byte)0 : _currentOpacity;
+            UpdateLayeredWindow(_currentSnapshot, opacity);
+            ShowWindow(_hwnd, SW_SHOWNOACTIVATE);
+            SetWindowPos(
+                _hwnd,
+                HwndTopmost,
+                _currentSnapshot.ScreenLeft,
+                _currentSnapshot.ScreenTop,
+                _currentSnapshot.PixelWidth,
+                _currentSnapshot.PixelHeight,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW);
+        }
+    }
+
+    private void UpdateVisibleRaster(OverlaySnapshot snapshot, byte fallbackOpacity)
+    {
+        byte opacity = _compositionPresenter?.IsVisible == true ? (byte)255 : fallbackOpacity;
+        UpdateLayeredWindow(snapshot, opacity);
     }
 
     private void EnsureWindow()
@@ -479,6 +844,18 @@ public sealed class LayeredOverlayWindow : IDisposable
             }
 
             Marshal.Copy(snapshot.Pixels, 0, _bits, snapshot.Pixels.Length);
+            return true;
+        }
+
+        public bool TryUpdatePixels(byte[] pixels)
+        {
+            if (MemoryDc == IntPtr.Zero || Bitmap == IntPtr.Zero || _bits == IntPtr.Zero ||
+                pixels.Length != _pixelWidth * _pixelHeight * 4)
+            {
+                return false;
+            }
+
+            Marshal.Copy(pixels, 0, _bits, pixels.Length);
             return true;
         }
 

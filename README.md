@@ -20,19 +20,22 @@
 
 MusicFloat is a local Windows desktop app for players that expose metadata through Windows System Media Transport Controls (SMTC). It shows a compact floating overlay, lets you control playback, and stays out of the game process: no injection, no DirectX hooks, no driver overlay, and no process patching.
 
-The app executable and project are still named `AppleMusicOverlay` internally for compatibility with the existing codebase.
+The project remains named `AppleMusicOverlay` internally for compatibility with the existing codebase. Official release packages expose `MusicFloat.exe`.
 
 ## Preview
 
-MusicFloat provides a dark desktop control panel with pages for current playback, overlay settings, shortcuts, and common options. The floating overlay displays the current cover art, song title, and artist when supported by the active media session.
+MusicFloat provides a dark desktop control panel with pages for current playback, overlay settings, shortcuts, and common options. The floating overlay displays cover art, title, artist, and, for the Apple Music Windows app, the current Favorite state.
 
 ## Features
 
 - Reads title, artist, playback state, source, and cover art from Windows SMTC.
-- Shows a floating overlay when the song changes or when triggered manually.
-- Supports configurable overlay visibility, duration, size, position, title/artist visibility, and track information font.
-- Supports keyboard shortcuts for previous track, next track, play/pause, and showing the current track overlay.
-- Supports gamepad shortcut binding and triggering for the same playback and overlay actions.
+- Shows a floating overlay when the track changes or when triggered manually.
+- Lets users disable automatic track-change popups while keeping manual overlay shortcuts available.
+- Supports configurable overlay visibility, duration, size, position, shadow, title and artist visibility, and track information font.
+- Supports keyboard and gamepad shortcuts for previous track, next track, play/pause, and showing the current track overlay.
+- Adds the currently playing song to Favorites in the Apple Music Windows app through a configurable keyboard or gamepad shortcut.
+- Detects an already-favorited Apple Music song without removing it or toggling its state.
+- Displays Apple Music Favorite state in the overlay and provides immediate star feedback when a Favorite shortcut is used.
 - Provides capture source selection when multiple SMTC media sessions are available.
 - Runs locally with a tray icon and optional close-to-tray behavior.
 - Uses system-installed fonts only. MusicFloat does not bundle, download, copy, or redistribute Spotify Mix, Apple SF Pro, or other proprietary fonts.
@@ -45,12 +48,12 @@ No installer is required for MusicFloat itself, but the .NET 8 Desktop Runtime (
 
 MusicFloat requires the .NET 8 Desktop Runtime (x64). Download it from Microsoft: https://dotnet.microsoft.com/en-us/download/dotnet/8.0/runtime
 
-On the download page, choose **.NET Desktop Runtime 8.x — Windows x64**.
+On the download page, choose **.NET Desktop Runtime 8.x - Windows x64**.
 
 ## Quick Start
 
 1. Install the .NET 8 Desktop Runtime (x64) if it is not already installed.
-2. Download `MusicFloat-v1.0.0-win-x64.zip`.
+2. Download the latest `MusicFloat-vX.Y.Z-win-x64.zip` release asset.
 3. Extract the ZIP to a folder you control.
 4. Run `MusicFloat.exe`.
 5. Start playback in a supported SMTC media player.
@@ -58,14 +61,15 @@ On the download page, choose **.NET Desktop Runtime 8.x — Windows x64**.
 
 ## Keyboard and Gamepad Controls
 
-MusicFloat supports keyboard and gamepad shortcuts for:
+MusicFloat supports configurable keyboard and gamepad shortcuts for:
 
 - Previous track
 - Next track
 - Play / pause
 - Show current track overlay
+- Favorite the current song in the Apple Music Windows app
 
-Shortcuts are configurable in the app. Gamepad support depends on devices exposed through Windows gamepad APIs.
+Gamepad support depends on devices exposed through Windows gamepad APIs. Shortcut conflict detection, replacement, and automatic saving are handled in the app.
 
 ## Build from Source
 
@@ -88,7 +92,7 @@ Run from source:
 dotnet run --project src/AppleMusicOverlay/AppleMusicOverlay.csproj
 ```
 
-Create a portable framework-dependent Windows x64 build:
+Create a framework-dependent, single-file Windows x64 build named `MusicFloat.exe`:
 
 ```powershell
 dotnet publish src/AppleMusicOverlay/AppleMusicOverlay.csproj `
@@ -96,16 +100,20 @@ dotnet publish src/AppleMusicOverlay/AppleMusicOverlay.csproj `
   -r win-x64 `
   --self-contained false `
   -p:PublishSingleFile=true `
-  -p:PublishTrimmed=false
+  -p:PublishTrimmed=false `
+  -p:DebugType=None `
+  -p:DebugSymbols=false `
+  -p:AssemblyName=MusicFloat
 ```
 
 ## Known Limitations
 
 - MusicFloat depends on Windows SMTC. If Windows does not expose a media session for a player, MusicFloat cannot read or control it.
-- Metadata quality depends on the player. Some players may provide missing, delayed, or generic title/artist/cover information.
+- Metadata quality depends on the player. Some players may provide missing, delayed, or generic title, artist, or cover information.
 - The overlay is a normal Windows desktop overlay. It does not inject into games and may be hidden by exclusive fullscreen modes.
 - Optional track information fonts only appear when already installed on the user's system.
-- Favorite or library-management actions are not included because SMTC does not expose those operations.
+- The Favorite shortcut currently supports the Apple Music Windows app only. It relies on the app's Windows UI Automation accessibility tree because SMTC does not expose Favorite operations.
+- Apple Music must remain running and signed in for Favorite state detection and Favorite actions to work.
 
 ## License
 

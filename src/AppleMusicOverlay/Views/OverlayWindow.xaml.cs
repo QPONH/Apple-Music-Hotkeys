@@ -69,6 +69,8 @@ public partial class OverlayWindow : Window
     private static readonly Duration ContentFadeOutDuration = TimeSpan.FromMilliseconds(70);
     private static readonly Duration ContentFadeInDuration = TimeSpan.FromMilliseconds(130);
     private static readonly CubicEase PositionEditEase = new() { EasingMode = EasingMode.EaseOut };
+    private static readonly Brush FavoriteNormalFillBrush = CreateFrozenBrush(Color.FromRgb(224, 228, 234));
+    private static readonly Brush FavoriteActiveFillBrush = CreateFavoriteActiveFillBrush();
 
     private CancellationTokenSource? _hideCts;
     private readonly DispatcherTimer _pointerAutoHideTimer = new() { Interval = TimeSpan.FromMilliseconds(70) };
@@ -78,6 +80,7 @@ public partial class OverlayWindow : Window
     private FontFamily? _defaultArtistFontFamily;
     private TrackInfo? _currentTrack;
     private bool _hasCover;
+    private OverlayFavoriteVisualState _currentFavoriteState = OverlayFavoriteVisualState.Unavailable;
     private bool _hasPositionedWindow;
     private bool _isPointerAutoHidden;
     private bool _pointerAutoHideTargetHidden;
@@ -103,6 +106,7 @@ public partial class OverlayWindow : Window
     private Action<OverlayPositionEditResult>? _positionEditCompletedCallback;
     private bool _isPositionLifted;
     private bool _isPositionEditBarFollowing;
+    private int _favoriteMotionRevision;
 
     public OverlayWindow()
     {
@@ -140,7 +144,10 @@ public partial class OverlayWindow : Window
         PositionEditDoneButton.Content = LocalizationService.Current.Text("Done");
     }
 
-    public void ApplySettings(OverlaySettings settings, bool animateScale = true)
+    public void ApplySettings(
+        OverlaySettings settings,
+        bool animateScale = true,
+        bool applyPauseOverlayMode = true)
     {
         OverlaySettings normalized = OverlaySettingsNormalizer.Normalize(CloneSettings(settings));
         bool pauseOverlayChanged = _settings.PauseOverlay != normalized.PauseOverlay;
@@ -155,16 +162,26 @@ public partial class OverlayWindow : Window
         Top = visualCenter.Y - (WindowHeight / 2);
         TitleText.Visibility = _settings.ShowTitle ? Visibility.Visible : Visibility.Collapsed;
         ArtistText.Visibility = _settings.ShowArtist ? Visibility.Visible : Visibility.Collapsed;
+        ApplyTrackContentLayout(_currentFavoriteState);
         ApplyTrackInformationFonts();
         ApplyScaleTransform(scale, animateScale);
         ApplyCoverShadowSettings();
-        ApplyPauseOverlayMode(pauseOverlayChanged);
+        if (applyPauseOverlayMode)
+        {
+            ApplyPauseOverlayMode(pauseOverlayChanged);
+        }
+
         ApplyPointerAutoHideMode();
+        if (_isPositionEditing)
+        {
+            UpdatePositionEditBarPlacement();
+        }
     }
 
     public void ApplyTrackFontSetting(OverlaySettings settings)
     {
         _settings.OverlayTrackFont = OverlayTrackFontIds.NormalizeKnownId(settings.OverlayTrackFont);
+        ApplyTrackContentLayout(_currentFavoriteState);
         ApplyTrackInformationFonts();
     }
 
@@ -180,7 +197,9 @@ public partial class OverlayWindow : Window
             : new FontFamily(artistFontFamily);
     }
 
-    public Task ShowTrackAsync(TrackInfo track)
+    public Task ShowTrackAsync(
+        TrackInfo track,
+        OverlayFavoriteVisualState favoriteState = OverlayFavoriteVisualState.Unavailable)
     {
         unchecked
         {
@@ -190,7 +209,7 @@ public partial class OverlayWindow : Window
         _isSettingsPreviewing = false;
         _hideCts?.Cancel();
         _hideCts = new CancellationTokenSource();
-        SetTrackContent(track);
+        SetTrackContent(track, favoriteState);
         RestorePointerAutoHideVisual(force: true);
         VisualGroup.Opacity = 1;
         Show();
@@ -208,7 +227,11 @@ public partial class OverlayWindow : Window
         return Task.CompletedTask;
     }
 
-    public void ShowSettingsPreview(TrackInfo track, OverlaySettings settings, bool animateScale)
+    public void ShowSettingsPreview(
+        TrackInfo track,
+        OverlaySettings settings,
+        bool animateScale,
+        OverlayFavoriteVisualState favoriteState = OverlayFavoriteVisualState.Unavailable)
     {
         unchecked
         {
@@ -218,7 +241,7 @@ public partial class OverlayWindow : Window
         _isSettingsPreviewing = true;
         _hideCts?.Cancel();
         ApplySettings(settings, animateScale);
-        SetTrackContent(track);
+        SetTrackContent(track, favoriteState);
         RestorePointerAutoHideVisual(force: true);
         StopPointerAutoHideTracking(restoreVisual: true);
         PositionEditBar.Visibility = Visibility.Collapsed;
@@ -238,10 +261,38 @@ public partial class OverlayWindow : Window
         ApplyOverlayWindowStyles();
     }
 
-    public OverlaySnapshot CreateSnapshot(TrackInfo track)
+    public OverlaySnapshot CreateSnapshot(
+        TrackInfo track,
+        OverlayFavoriteVisualState favoriteState = OverlayFavoriteVisualState.Unavailable,
+        OverlayFavoriteMotionFrame? favoriteMotionFrame = null)
     {
         EnsureSnapshotSource();
-        SetTrackContent(track);
+        SetTrackContent(track, favoriteState);
+        if (favoriteMotionFrame is { } motionFrame)
+        {
+            ApplyFavoriteMotionFrame(motionFrame);
+        }
+
+        return CaptureSnapshot();
+    }
+
+    public IReadOnlyList<OverlaySnapshot> CreateFavoriteMotionSnapshots(TrackInfo track)
+    {
+        EnsureSnapshotSource();
+        SetTrackContent(track, OverlayFavoriteVisualState.Favorite);
+        var snapshots = new List<OverlaySnapshot>(OverlayFavoriteMotion.Frames.Count);
+        foreach (OverlayFavoriteMotionFrame frame in OverlayFavoriteMotion.Frames)
+        {
+            ApplyFavoriteMotionFrame(frame);
+            snapshots.Add(CaptureSnapshot());
+        }
+
+        ApplyTrackContentLayout(OverlayFavoriteVisualState.Favorite);
+        return snapshots;
+    }
+
+    private OverlaySnapshot CaptureSnapshot()
+    {
         PrepareSnapshotVisualState();
         UpdateLayout();
 
@@ -286,22 +337,31 @@ public partial class OverlayWindow : Window
         Hide();
     }
 
-    public void UpdateTrack(TrackInfo track)
+    public void UpdateTrack(
+        TrackInfo track,
+        OverlayFavoriteVisualState favoriteState = OverlayFavoriteVisualState.Unavailable)
     {
         if (IsVisible && Visibility == Visibility.Visible && OverlayRoot.Opacity > 0.6)
         {
-            BeginContentSwapAnimation(track);
+            BeginContentSwapAnimation(track, favoriteState);
             return;
         }
 
-        SetTrackContent(track);
+        SetTrackContent(track, favoriteState);
     }
 
-    private void SetTrackContent(TrackInfo track)
+    private void SetTrackContent(TrackInfo track, OverlayFavoriteVisualState favoriteState)
     {
+        unchecked
+        {
+            _favoriteMotionRevision++;
+        }
+
         _currentTrack = track;
+        _currentFavoriteState = favoriteState;
         TitleText.Text = track.Title;
         ArtistText.Text = track.Artist;
+        ApplyTrackContentLayout(favoriteState);
         BitmapSource? cover = CreateCover(track);
         CoverImage.Source = cover;
         _hasCover = cover != null;
@@ -310,16 +370,170 @@ public partial class OverlayWindow : Window
         ApplyPointerAutoHideMode();
     }
 
-    private void BeginContentSwapAnimation(TrackInfo track)
+    private void BeginContentSwapAnimation(TrackInfo track, OverlayFavoriteVisualState favoriteState)
     {
         var ease = new CubicEase { EasingMode = EasingMode.EaseOut };
         var fadeOut = new DoubleAnimation(1, 0.86, ContentFadeOutDuration) { EasingFunction = ease };
         fadeOut.Completed += (_, _) =>
         {
-            SetTrackContent(track);
+            SetTrackContent(track, favoriteState);
             VisualGroup.BeginAnimation(OpacityProperty, new DoubleAnimation(0.86, 1, ContentFadeInDuration) { EasingFunction = ease });
         };
         VisualGroup.BeginAnimation(OpacityProperty, fadeOut);
+    }
+
+    private void ApplyTrackContentLayout(OverlayFavoriteVisualState favoriteState)
+    {
+        OverlayTrackContentLayout layout = OverlayFavoritePresentation.CreateLayout(
+            favoriteState,
+            _settings.ShowTitle,
+            _settings.ShowArtist);
+        Canvas.SetLeft(TitleText, layout.TextLeft);
+        double artistOpticalOffset = OverlayFavoritePresentation.GetArtistOpticalOffset(
+            _settings.OverlayTrackFont,
+            layout.CenterText);
+        Canvas.SetLeft(ArtistText, layout.TextLeft + artistOpticalOffset);
+        Canvas.SetTop(TitleText, layout.TitleTop);
+        Canvas.SetTop(ArtistText, layout.ArtistTop);
+        TitleText.Width = layout.TextWidth;
+        ArtistText.Width = Math.Max(0, layout.TextWidth - artistOpticalOffset);
+        TextAlignment alignment = layout.CenterText ? TextAlignment.Center : TextAlignment.Left;
+        TitleText.TextAlignment = alignment;
+        ArtistText.TextAlignment = alignment;
+
+        FavoriteStatusHost.Visibility = layout.ShowFavoriteStar ? Visibility.Visible : Visibility.Collapsed;
+        ResetFavoriteMotionVisuals();
+        if (!layout.ShowFavoriteStar)
+        {
+            FavoriteOutlineStar.Opacity = 0;
+            FavoriteFilledStar.Opacity = 0;
+            return;
+        }
+
+        Canvas.SetLeft(FavoriteStatusHost, layout.StarLeft);
+        Canvas.SetTop(FavoriteStatusHost, layout.StarTop);
+        FavoriteStatusHost.Width = layout.StarSize;
+        FavoriteStatusHost.Height = layout.StarSize;
+        FavoriteOutlineStar.Opacity = favoriteState == OverlayFavoriteVisualState.NotFavorite ? 0.78 : 0;
+        FavoriteFilledStar.Opacity = favoriteState == OverlayFavoriteVisualState.Favorite ? 0.96 : 0;
+    }
+
+    public async Task PlayFavoriteStarMotionAsync(TrackInfo track)
+    {
+        SetTrackContent(track, OverlayFavoriteVisualState.Favorite);
+        int revision = _favoriteMotionRevision;
+        FavoriteOutlineStar.Opacity = 0.78;
+        FavoriteFilledStar.Opacity = 0;
+        FavoriteFilledStar.Foreground = FavoriteActiveFillBrush;
+
+        TimeSpan totalDuration = OverlayFavoriteMotion.Frames.Aggregate(
+            TimeSpan.Zero,
+            (total, frame) => total + frame.Duration);
+
+        FavoriteStatusScale.BeginAnimation(
+            ScaleTransform.ScaleXProperty,
+            CreateFavoritePropertyAnimation(1, frame => frame.Scale));
+        FavoriteStatusScale.BeginAnimation(
+            ScaleTransform.ScaleYProperty,
+            CreateFavoritePropertyAnimation(1, frame => frame.Scale));
+        FavoriteOutlineStar.BeginAnimation(
+            OpacityProperty,
+            CreateFavoritePropertyAnimation(0.78, frame => frame.OutlineOpacity));
+        FavoriteFilledStar.BeginAnimation(
+            OpacityProperty,
+            CreateFavoritePropertyAnimation(0, frame => frame.FillOpacity));
+        FavoriteOuterGlowStar.BeginAnimation(
+            OpacityProperty,
+            CreateFavoritePropertyAnimation(0, frame => frame.GlowOpacity));
+        FavoriteInnerLightStar.BeginAnimation(
+            OpacityProperty,
+            CreateFavoritePropertyAnimation(0, frame => frame.InnerLightOpacity));
+        FavoriteDepthStar.BeginAnimation(
+            OpacityProperty,
+            CreateFavoritePropertyAnimation(0, frame => frame.DepthOpacity));
+
+        await Task.Delay(totalDuration);
+        if (revision == _favoriteMotionRevision &&
+            _currentTrack != null &&
+            TrackIdentity.Create(_currentTrack).Equals(TrackIdentity.Create(track), StringComparison.Ordinal))
+        {
+            ApplyTrackContentLayout(OverlayFavoriteVisualState.Favorite);
+        }
+    }
+
+    private void ApplyFavoriteMotionFrame(OverlayFavoriteMotionFrame frame)
+    {
+        FavoriteStatusScale.ScaleX = frame.Scale;
+        FavoriteStatusScale.ScaleY = frame.Scale;
+        FavoriteOuterGlowStar.Opacity = frame.GlowOpacity;
+        FavoriteInnerLightStar.Opacity = frame.InnerLightOpacity;
+        FavoriteDepthStar.Opacity = frame.DepthOpacity;
+        FavoriteOutlineStar.Opacity = frame.OutlineOpacity;
+        FavoriteFilledStar.Foreground = frame.UseActiveFill ? FavoriteActiveFillBrush : FavoriteNormalFillBrush;
+        FavoriteFilledStar.Opacity = frame.FillOpacity;
+    }
+
+    private void ResetFavoriteMotionVisuals()
+    {
+        FavoriteStatusScale.BeginAnimation(ScaleTransform.ScaleXProperty, null);
+        FavoriteStatusScale.BeginAnimation(ScaleTransform.ScaleYProperty, null);
+        FavoriteOutlineStar.BeginAnimation(OpacityProperty, null);
+        FavoriteFilledStar.BeginAnimation(OpacityProperty, null);
+        FavoriteOuterGlowStar.BeginAnimation(OpacityProperty, null);
+        FavoriteInnerLightStar.BeginAnimation(OpacityProperty, null);
+        FavoriteDepthStar.BeginAnimation(OpacityProperty, null);
+        FavoriteStatusScale.ScaleX = 1;
+        FavoriteStatusScale.ScaleY = 1;
+        FavoriteOuterGlowStar.Opacity = 0;
+        FavoriteInnerLightStar.Opacity = 0;
+        FavoriteDepthStar.Opacity = 0;
+        FavoriteFilledStar.Foreground = FavoriteNormalFillBrush;
+    }
+
+    private static DoubleAnimationUsingKeyFrames CreateFavoritePropertyAnimation(
+        double initialValue,
+        Func<OverlayFavoriteMotionFrame, double> valueSelector)
+    {
+        var animation = new DoubleAnimationUsingKeyFrames();
+        animation.KeyFrames.Add(new LinearDoubleKeyFrame(initialValue, KeyTime.FromTimeSpan(TimeSpan.Zero)));
+        TimeSpan keyTime = TimeSpan.Zero;
+        foreach (OverlayFavoriteMotionFrame frame in OverlayFavoriteMotion.Frames)
+        {
+            keyTime += frame.Duration;
+            animation.KeyFrames.Add(new EasingDoubleKeyFrame(
+                valueSelector(frame),
+                KeyTime.FromTimeSpan(keyTime),
+                new CubicEase
+                {
+                    EasingMode = frame.Easing == OverlayFavoriteMotionEasing.EaseIn
+                        ? EasingMode.EaseIn
+                        : EasingMode.EaseOut
+                }));
+        }
+
+        return animation;
+    }
+
+    private static Brush CreateFrozenBrush(Color color)
+    {
+        var brush = new SolidColorBrush(color);
+        brush.Freeze();
+        return brush;
+    }
+
+    private static Brush CreateFavoriteActiveFillBrush()
+    {
+        var brush = new LinearGradientBrush(
+            new GradientStopCollection
+            {
+                new(Color.FromRgb(255, 255, 255), 0),
+                new(Color.FromRgb(229, 234, 241), 0.48),
+                new(Color.FromRgb(174, 184, 198), 1)
+            },
+            new Point(0.5, 0),
+            new Point(0.5, 1));
+        brush.Freeze();
+        return brush;
     }
 
     private async Task HideAfterDelayAsync(CancellationToken cancellationToken)
@@ -423,6 +637,7 @@ public partial class OverlayWindow : Window
 
     private void ApplyCoverShadowSettings()
     {
+        ClearCoverShadowAnimations();
         double t = _settings.CoverShadowSizePercent / 100.0;
         if (!_hasCover)
         {
@@ -446,6 +661,15 @@ public partial class OverlayWindow : Window
         KeyShadowEffect.Opacity = MaxKeyShadowOpacity * t;
     }
 
+    private void ClearCoverShadowAnimations()
+    {
+        AmbientShadowEffect.BeginAnimation(DropShadowEffect.BlurRadiusProperty, null);
+        AmbientShadowEffect.BeginAnimation(DropShadowEffect.OpacityProperty, null);
+        KeyShadowEffect.BeginAnimation(DropShadowEffect.BlurRadiusProperty, null);
+        KeyShadowEffect.BeginAnimation(DropShadowEffect.ShadowDepthProperty, null);
+        KeyShadowEffect.BeginAnimation(DropShadowEffect.OpacityProperty, null);
+    }
+
     private void ApplyPauseOverlayMode(bool pauseOverlayChanged)
     {
         if (!pauseOverlayChanged || _currentTrack == null)
@@ -456,7 +680,7 @@ public partial class OverlayWindow : Window
         _hideCts?.Cancel();
         if (_settings.PauseOverlay)
         {
-            ShowTrackAsync(_currentTrack);
+            ShowTrackAsync(_currentTrack, _currentFavoriteState);
             return;
         }
 
@@ -587,6 +811,20 @@ public partial class OverlayWindow : Window
     {
         if (_isPositionEditing)
         {
+            _isSettingsPreviewing = false;
+            ApplySettings(settings, animateScale: false);
+            _hideCts?.Cancel();
+            RestorePointerAutoHideVisual(force: true);
+            StopPointerAutoHideTracking(restoreVisual: true);
+            AutoHideGroup.IsHitTestVisible = true;
+            if (!IsVisible || Visibility != Visibility.Visible)
+            {
+                Show();
+                Visibility = Visibility.Visible;
+            }
+
+            ApplyOverlayWindowStyles();
+            ShowPositionEditBar();
             return;
         }
 
@@ -1103,6 +1341,7 @@ public partial class OverlayWindow : Window
         Rect? bounds = TryGetElementRectInWindow(CoverClip);
         AddTextBounds(ref bounds, TitleText);
         AddTextBounds(ref bounds, ArtistText);
+        AddElementBounds(ref bounds, FavoriteStatusHost);
         return bounds ?? GetFallbackVisibleContentRectInWindow(scale);
     }
 
@@ -1219,14 +1458,23 @@ public partial class OverlayWindow : Window
     private Rect GetFallbackVisibleContentRectInWindow(double scale)
     {
         Rect bounds = new(40, 40, CoverSize, CoverSize);
+        OverlayTrackContentLayout layout = OverlayFavoritePresentation.CreateLayout(
+            _currentFavoriteState,
+            _settings.ShowTitle,
+            _settings.ShowArtist);
         if (_settings.ShowTitle)
         {
-            bounds = Rect.Union(bounds, new Rect(4, 228, 248, 18));
+            bounds = Rect.Union(bounds, new Rect(layout.TextLeft, layout.TitleTop, layout.TextWidth, 18));
         }
 
         if (_settings.ShowArtist)
         {
-            bounds = Rect.Union(bounds, new Rect(4, 249, 248, 16));
+            bounds = Rect.Union(bounds, new Rect(layout.TextLeft, layout.ArtistTop, layout.TextWidth, 16));
+        }
+
+        if (layout.ShowFavoriteStar)
+        {
+            bounds = Rect.Union(bounds, new Rect(layout.StarLeft, layout.StarTop, layout.StarSize, layout.StarSize));
         }
 
         return TransformLogicalRectToWindow(bounds, scale);
@@ -1413,6 +1661,7 @@ public partial class OverlayWindow : Window
             CloseToTray = settings.CloseToTray,
             AutoStart = settings.AutoStart,
             PauseOverlay = settings.PauseOverlay,
+            ShowOverlayOnTrackChange = settings.ShowOverlayOnTrackChange,
             AutoHideOnMouseNear = settings.AutoHideOnMouseNear,
             OverlayTrackFont = settings.OverlayTrackFont,
             CaptureSourceAppUserModelId = settings.CaptureSourceAppUserModelId,

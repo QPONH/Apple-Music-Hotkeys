@@ -6,5 +6,5 @@ public enum AppAction
     NextTrack = 1,
     TogglePlayPause = 2,
     ShowCurrentTrack = 3,
-    FavoriteTrack = 4
+    FavoriteCurrentTrack = 4
 }

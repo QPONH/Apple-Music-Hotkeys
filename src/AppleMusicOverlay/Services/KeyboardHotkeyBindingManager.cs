@@ -83,7 +83,8 @@ public static class KeyboardHotkeyBindingManager
             [AppAction.PreviousTrack] = NormalizeHotkeyText(settings.KeyboardPrevious),
             [AppAction.NextTrack] = NormalizeHotkeyText(settings.KeyboardNext),
             [AppAction.TogglePlayPause] = NormalizeHotkeyText(settings.KeyboardToggle),
-            [AppAction.ShowCurrentTrack] = NormalizeHotkeyText(settings.KeyboardTestOverlay)
+            [AppAction.ShowCurrentTrack] = NormalizeHotkeyText(settings.KeyboardTestOverlay),
+            [AppAction.FavoriteCurrentTrack] = NormalizeHotkeyText(settings.KeyboardFavorite)
         };
     }
 
@@ -154,6 +155,9 @@ public static class KeyboardHotkeyBindingManager
                 break;
             case AppAction.ShowCurrentTrack:
                 settings.KeyboardTestOverlay = hotkeyText;
+                break;
+            case AppAction.FavoriteCurrentTrack:
+                settings.KeyboardFavorite = hotkeyText;
                 break;
         }
     }

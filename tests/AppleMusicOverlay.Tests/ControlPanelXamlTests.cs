@@ -279,8 +279,8 @@ public sealed class ControlPanelXamlTests
         string code = File.ReadAllText(GetMainWindowCodeBehindPath());
         string keyboardHotkeySection = ExtractBetween(xaml, "<TextBox x:Name=\"KeyboardPreviousBox\"", "<Border x:Name=\"GamepadHotkeyCard\"");
 
-        Assert.Equal(4, CountOccurrences(keyboardHotkeySection, "IsReadOnly=\"True\""));
-        Assert.Equal(4, CountOccurrences(keyboardHotkeySection, "Focusable=\"False\""));
+        Assert.Equal(5, CountOccurrences(keyboardHotkeySection, "IsReadOnly=\"True\""));
+        Assert.Equal(5, CountOccurrences(keyboardHotkeySection, "Focusable=\"False\""));
         Assert.Contains("if (e.IsRepeat && _pressedHotkeyKeys.Contains(key))", code);
         Assert.Contains("DispatcherTimer", code);
         Assert.Contains("_hotkeyCaptureAutoHideTimer", code);
@@ -295,8 +295,8 @@ public sealed class ControlPanelXamlTests
         string xaml = File.ReadAllText(GetMainWindowXamlPath());
         string code = File.ReadAllText(GetMainWindowCodeBehindPath());
 
-        Assert.Equal(4, CountOccurrences(xaml, "Click=\"DeleteHotkey_Click\""));
-        Assert.Equal(4, CountOccurrences(xaml, "Content=\"{Binding [Delete]"));
+        Assert.Equal(5, CountOccurrences(xaml, "Click=\"DeleteHotkey_Click\""));
+        Assert.Equal(5, CountOccurrences(xaml, "Content=\"{Binding [Delete]"));
         Assert.Contains("DeleteHotkey_Click", code);
         Assert.Contains("HotkeyUnsetText", code);
         Assert.Contains("KeyboardHotkeyBindingManager.Apply", code);
@@ -390,10 +390,12 @@ public sealed class ControlPanelXamlTests
         Assert.Contains("private readonly LayeredOverlayWindow _layeredOverlayWindow", mainCode);
         Assert.Contains("_trackMonitor.TrackChanged += (_, track) => PostToDispatcher(() => _ = ShowOverlayTrackAsync(track))", mainCode);
         Assert.Contains("_trackMonitor.TrackRefreshed += (_, track) => PostToDispatcher(() => UpdateOverlayTrack(track))", mainCode);
-        Assert.Contains("await ShowOverlayTrackAsync(track)", mainCode);
+        Assert.Contains("await ShowResolvedOverlayTrackAsync(track, immediateState)", mainCode);
+        Assert.Contains("private async Task ShowOverlayTrackAsync(TrackInfo track)", mainCode);
         Assert.Contains("_layeredOverlayWindow.HideImmediately()", mainCode);
         Assert.Contains("SafeDispose(_layeredOverlayWindow)", mainCode);
-        Assert.Contains("public OverlaySnapshot CreateSnapshot(TrackInfo track)", overlayCode);
+        Assert.Contains("public OverlaySnapshot CreateSnapshot(", overlayCode);
+        Assert.Contains("OverlayFavoriteVisualState favoriteState = OverlayFavoriteVisualState.Unavailable", overlayCode);
         Assert.Contains("RenderTargetBitmap", overlayCode);
         Assert.Contains("x:Name=\"VisualGroup\"", File.ReadAllText(GetOverlayWindowXamlPath()));
         Assert.Contains("UpdateLayeredWindow", layeredHostCode);
@@ -436,7 +438,7 @@ public sealed class ControlPanelXamlTests
         Assert.Contains("_settingsPreviewSettleTimer", mainCode);
         Assert.Contains("Interval = TimeSpan.FromMilliseconds(300)", mainCode);
         Assert.Contains("private void ShowWpfSettingsPreview(bool animateScale)", mainCode);
-        Assert.Contains("_overlayWindow.ShowSettingsPreview(track, _viewModel.Settings, animateScale)", mainCode);
+        Assert.Contains("_overlayWindow.ShowSettingsPreview(track, _viewModel.Settings, animateScale, _layeredOverlayFavoriteState)", mainCode);
         Assert.Contains("_layeredOverlayWindow.HideImmediately();", ExtractBetween(mainCode, "private void ShowWpfSettingsPreview", "private void QueueSettingsPreviewLayeredHandoff"));
         Assert.Contains("QueueSettingsPreviewLayeredHandoff();", mainCode);
         Assert.Contains("private void CompleteSettingsPreviewLayeredHandoff()", mainCode);
@@ -445,12 +447,12 @@ public sealed class ControlPanelXamlTests
 
         string showTrack = ExtractBetween(mainCode, "private async Task ShowOverlayTrackAsync", "private void UpdateOverlayTrack");
         Assert.Contains("if (_overlayRenderMode == OverlayRenderMode.WpfSettingsPreview)", showTrack);
-        Assert.Contains("_overlayWindow.ShowSettingsPreview(track, _viewModel.Settings, animateScale: false)", showTrack);
+        Assert.Contains("_overlayWindow.ShowSettingsPreview(track, _viewModel.Settings, animateScale: false, favoriteState)", showTrack);
         Assert.Contains("return;", showTrack);
 
         string updateTrack = ExtractBetween(mainCode, "private void UpdateOverlayTrack", "private void CompleteSettingsPreviewLayeredHandoff");
         Assert.Contains("if (_overlayRenderMode == OverlayRenderMode.WpfSettingsPreview)", updateTrack);
-        Assert.Contains("_overlayWindow.ShowSettingsPreview(track, _viewModel.Settings, animateScale: false)", updateTrack);
+        Assert.Contains("_overlayWindow.ShowSettingsPreview(track, _viewModel.Settings, animateScale: false, _layeredOverlayFavoriteState)", updateTrack);
 
         string fontHandler = ExtractBetween(mainCode, "private void OverlayTrackFontCombo_SelectionChanged", "private void RefreshOverlayTrackFontOptions");
         Assert.Contains("ShowWpfSettingsPreview(animateScale: false);", fontHandler);
@@ -464,7 +466,8 @@ public sealed class ControlPanelXamlTests
         Assert.Contains("_overlayRenderMode = OverlayRenderMode.LayeredRuntime", positionCompleted);
         Assert.Contains("RefreshLayeredOverlaySnapshot();", positionCompleted);
 
-        Assert.Contains("public void ShowSettingsPreview(TrackInfo track, OverlaySettings settings, bool animateScale)", overlayCode);
+        Assert.Contains("public void ShowSettingsPreview(", overlayCode);
+        Assert.Contains("OverlayFavoriteVisualState favoriteState = OverlayFavoriteVisualState.Unavailable", overlayCode);
         Assert.Contains("_isSettingsPreviewing", overlayCode);
         Assert.Contains("if (_isPositionEditing || _isSettingsPreviewing)", overlayCode);
         Assert.Contains("ShowSnapshotImmediately", layeredHostCode);
@@ -651,6 +654,30 @@ public sealed class ControlPanelXamlTests
     }
 
     [Fact]
+    public void FavoriteStarHasDedicatedMotionLayersWithoutChangingOverlayMotion()
+    {
+        string overlayXaml = File.ReadAllText(GetOverlayWindowXamlPath());
+        string overlayCode = File.ReadAllText(GetOverlayWindowCodeBehindPath());
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+        string starHost = ExtractBetween(
+            overlayXaml,
+            "<Grid x:Name=\"FavoriteStatusHost\"",
+            "</Grid>");
+
+        Assert.Contains("x:Name=\"FavoriteStatusScale\"", starHost);
+        Assert.Contains("x:Name=\"FavoriteDepthStar\"", starHost);
+        Assert.Contains("x:Name=\"FavoriteOuterGlowStar\"", starHost);
+        Assert.Contains("x:Name=\"FavoriteInnerLightStar\"", starHost);
+        Assert.Contains("RenderTransformOrigin=\"0.5,0.5\"", starHost);
+        Assert.Contains("ApplyFavoriteMotionFrame", overlayCode);
+        Assert.Contains("CreateFavoriteMotionSnapshots", overlayCode);
+        Assert.Contains("PlayFavoriteStarMotionAsync", mainCode);
+        Assert.Contains("TransitionSnapshotSequenceAsync", mainCode);
+        Assert.Contains("BeginEnterAnimation", overlayCode);
+        Assert.Contains("BeginExitAnimation", overlayCode);
+    }
+
+    [Fact]
     public void OverlayTrackFontChangeRoutesFeedbackToOverlayCardWithoutRestartingMediaCapture()
     {
         string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
@@ -702,19 +729,36 @@ public sealed class ControlPanelXamlTests
         Assert.Contains("sender is not CheckBox pauseOverlayToggle", pauseHandler);
         Assert.Contains("bool isPaused = pauseOverlayToggle.IsChecked == true", pauseHandler);
         Assert.Contains("_viewModel.Settings.PauseOverlay = isPaused", pauseHandler);
-        Assert.Contains("_overlayWindow.ApplySettings(_viewModel.Settings)", pauseHandler);
+        Assert.Contains(
+            "_overlayWindow.ApplySettings(_viewModel.Settings, applyPauseOverlayMode: false)",
+            pauseHandler);
         Assert.Contains("_trackMonitor.CurrentTrack ?? _viewModel.CurrentTrack", pauseHandler);
         Assert.Contains("_ = ShowOverlayTrackAsync(track)", pauseHandler);
         Assert.Contains("_layeredOverlayWindow.HideImmediately()", pauseHandler);
         Assert.Contains("if (isPaused)", pauseHandler);
         Assert.Contains("DispatcherPriority.Background", pauseHandler);
         Assert.Contains("_viewModel.Save", pauseHandler);
-        Assert.Contains("await ShowOverlayTrackAsync(track)", showCurrentOverlay);
+        Assert.Contains("await ShowResolvedOverlayTrackAsync(track, immediateState)", showCurrentOverlay);
+        Assert.Contains("RefreshFavoriteStateAfterImmediateShowAsync(track)", showCurrentOverlay);
         Assert.Contains("private TrackInfo? _currentTrack", overlayCode);
         Assert.Contains("pauseOverlayChanged", overlayCode);
         Assert.Contains("ApplyPauseOverlayMode(pauseOverlayChanged)", overlayCode);
-        Assert.Contains("ShowTrackAsync(_currentTrack)", overlayCode);
+        Assert.Contains("ShowTrackAsync(_currentTrack, _currentFavoriteState)", overlayCode);
         Assert.Contains("BeginExitAnimation();", overlayCode);
+    }
+
+    [Fact]
+    public void PersistentModeActivationDoesNotStartTheWpfRuntimeOverlayBeforeLayeredRendering()
+    {
+        string overlayCode = File.ReadAllText(GetOverlayWindowCodeBehindPath());
+        string applySettings = ExtractBetween(
+            overlayCode,
+            "public void ApplySettings",
+            "public void ApplyTrackFontSetting");
+
+        Assert.Contains("bool applyPauseOverlayMode = true", applySettings);
+        Assert.Contains("if (applyPauseOverlayMode)", applySettings);
+        Assert.Contains("ApplyPauseOverlayMode(pauseOverlayChanged)", applySettings);
     }
 
     [Fact]
@@ -825,6 +869,187 @@ public sealed class ControlPanelXamlTests
     }
 
     [Fact]
+    public void PositionEditModeRemainsVisibleWhileScaleAndShadowSettingsChange()
+    {
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+        string overlayCode = File.ReadAllText(GetOverlayWindowCodeBehindPath());
+        string sliderHandler = ExtractBetween(
+            mainCode,
+            "private void OverlaySettingSlider_ValueChanged",
+            "private void OverlayTextOption_Changed");
+        string positionHandler = ExtractBetween(
+            mainCode,
+            "private void PositionOverlay_Click",
+            "private void RefreshGamepads_Click");
+        string applySettings = ExtractBetween(
+            overlayCode,
+            "public void ApplySettings",
+            "public void ApplyTrackFontSetting");
+        string beginPositionEdit = ExtractBetween(
+            overlayCode,
+            "public void BeginPositionEdit",
+            "private void PositionEditDone_Click");
+
+        Assert.Contains("if (_overlayRenderMode == OverlayRenderMode.WpfPositionEdit)", sliderHandler);
+        Assert.Contains("QueueOverlaySettingsAutoSave(debounce: true);", sliderHandler);
+        Assert.Contains("UpdatePositionEditBarPlacement();", applySettings);
+        Assert.Contains("ApplySettings(settings, animateScale: false);", beginPositionEdit);
+        Assert.True(
+            positionHandler.IndexOf("_overlayWindow.BeginPositionEdit", StringComparison.Ordinal) <
+            positionHandler.IndexOf("_layeredOverlayWindow.HideImmediately()", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TrackChangeOverlayToggleUsesExistingSettingsAndStaysIndependentFromPauseOverlay()
+    {
+        string mainXaml = File.ReadAllText(GetMainWindowXamlPath());
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+        string settingsCode = File.ReadAllText(GetOverlaySettingsPath());
+        string pauseDependentSettings = ExtractBetween(
+            mainXaml,
+            "x:Name=\"PauseOverlayDependentSettings\"",
+            "x:Name=\"OverlayContentSettings\"");
+
+        Assert.Contains("[ShowOverlayOnTrackChange]", mainXaml);
+        Assert.Contains("[ShowOverlayOnTrackChangeDescription]", mainXaml);
+        Assert.Contains("Settings.ShowOverlayOnTrackChange", mainXaml);
+        Assert.Contains("OverlayAutoShow_Changed", mainXaml);
+        Assert.DoesNotContain("Settings.ShowOverlayOnTrackChange", pauseDependentSettings);
+        Assert.Contains("public bool ShowOverlayOnTrackChange", settingsCode);
+        Assert.Contains("QueueOverlaySettingsAutoSave(debounce: false)", ExtractBetween(
+            mainCode,
+            "private void OverlayAutoShow_Changed",
+            "private void PauseOverlay_Changed"));
+    }
+
+    [Fact]
+    public void TrackChangeOverlaySettingKeepsManualShowPathIndependent()
+    {
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+        string automaticShow = ExtractBetween(
+            mainCode,
+            "private async Task ShowOverlayTrackAsync",
+            "private async Task ShowResolvedOverlayTrackAsync");
+        string manualShow = ExtractBetween(
+            mainCode,
+            "private async Task<bool> ShowCurrentTrackOverlayAsync()",
+            "private OverlayFavoriteVisualState GetCachedFavoriteState");
+
+        Assert.Contains("OverlayTrackChangeDisplayPolicy.Decide", automaticShow);
+        Assert.Contains("ShowOverlayOnTrackChange", automaticShow);
+        Assert.DoesNotContain("ShowOverlayOnTrackChange", manualShow);
+        Assert.Contains("ShowResolvedOverlayTrackAsync(track, immediateState)", manualShow);
+
+        string updateVisible = ExtractBetween(
+            mainCode,
+            "private void UpdateVisibleResolvedOverlayTrack",
+            "private void CacheResolvedOverlayTrack");
+        Assert.Contains("_layeredOverlayWindow.UpdateSnapshot(snapshot)", updateVisible);
+        Assert.DoesNotContain("ShowSnapshotAsync", updateVisible);
+    }
+
+    [Fact]
+    public void TrackChangeUpdatesContentWithoutLeavingPositionEditMode()
+    {
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+        string automaticShow = ExtractBetween(
+            mainCode,
+            "private async Task ShowOverlayTrackAsync",
+            "private void UpdateVisibleResolvedOverlayTrack");
+
+        Assert.Contains(
+            "if (_overlayRenderMode == OverlayRenderMode.WpfPositionEdit)",
+            automaticShow);
+        Assert.Contains(
+            "UpdateVisibleResolvedOverlayTrack(resolution.Track, resolution.State)",
+            automaticShow);
+        Assert.Contains("return;", automaticShow);
+    }
+
+    [Fact]
+    public void TrackChangeOverlayLocalizationKeysExistForChineseAndEnglish()
+    {
+        string localizerCode = File.ReadAllText(GetLocalizationServicePath());
+
+        Assert.Equal(2, CountOccurrences(localizerCode, "[\"ShowOverlayOnTrackChange\"]"));
+        Assert.Equal(2, CountOccurrences(localizerCode, "[\"ShowOverlayOnTrackChangeDescription\"]"));
+    }
+
+    [Fact]
+    public void OverlaySettingsUseAConsistentSettingTitleHierarchy()
+    {
+        string mainXaml = File.ReadAllText(GetMainWindowXamlPath());
+        string settingTitleStyle = ExtractBetween(
+            mainXaml,
+            "<Style x:Key=\"SettingTitleTextStyle\"",
+            "</Style>");
+        string overlayToggleStyle = ExtractBetween(
+            mainXaml,
+            "<Style x:Key=\"OverlaySettingToggleStyle\"",
+            "</Style>");
+
+        Assert.Contains("FontSize\" Value=\"14", settingTitleStyle);
+        Assert.Contains("FontWeight\" Value=\"SemiBold", settingTitleStyle);
+        Assert.Contains("FontSize\" Value=\"14", overlayToggleStyle);
+        Assert.Contains("FontWeight\" Value=\"SemiBold", overlayToggleStyle);
+
+        foreach (string key in new[]
+                 {
+                     "ShowOverlayOnTrackChange",
+                     "AutoHideOnMouseNear",
+                     "OverlayPosition",
+                     "OverlayTrackFont"
+                 })
+        {
+            Assert.Contains("Style=\"{StaticResource SettingTitleTextStyle}\"", ExtractElementAround(mainXaml, $"[{key}]"));
+        }
+
+        foreach (string settingPath in new[]
+                 {
+                     "Settings.PauseOverlay",
+                     "Settings.ShowTitle",
+                     "Settings.ShowArtist"
+                 })
+        {
+            Assert.Contains("Style=\"{StaticResource OverlaySettingToggleStyle}\"", ExtractElementAround(mainXaml, settingPath));
+        }
+    }
+
+    [Fact]
+    public void DisplayBehaviorCardAvoidsMisleadingBadgeAndDuplicateDependencyHints()
+    {
+        string mainXaml = File.ReadAllText(GetMainWindowXamlPath());
+        string displayBehaviorCard = ExtractBetween(
+            mainXaml,
+            "[DisplayBehavior]",
+            "x:Name=\"OverlayContentSettings\"");
+
+        Assert.DoesNotContain("[PinnedBadge]", displayBehaviorCard);
+        Assert.Equal(2, CountOccurrences(displayBehaviorCard, "[PauseOverlayRequired]"));
+    }
+
+    [Fact]
+    public void ShadowSliderClearsHeldPositionEditAnimationsBeforeApplyingLiveValues()
+    {
+        string overlayCode = File.ReadAllText(GetOverlayWindowCodeBehindPath());
+        string applyShadow = ExtractBetween(
+            overlayCode,
+            "private void ApplyCoverShadowSettings",
+            "private void ApplyPauseOverlayMode");
+        string clearAnimations = ExtractBetween(
+            overlayCode,
+            "private void ClearCoverShadowAnimations",
+            "private void ApplyPauseOverlayMode");
+
+        Assert.Contains("ClearCoverShadowAnimations();", applyShadow);
+        Assert.Contains("AmbientShadowEffect.BeginAnimation(DropShadowEffect.BlurRadiusProperty, null);", clearAnimations);
+        Assert.Contains("AmbientShadowEffect.BeginAnimation(DropShadowEffect.OpacityProperty, null);", clearAnimations);
+        Assert.Contains("KeyShadowEffect.BeginAnimation(DropShadowEffect.BlurRadiusProperty, null);", clearAnimations);
+        Assert.Contains("KeyShadowEffect.BeginAnimation(DropShadowEffect.ShadowDepthProperty, null);", clearAnimations);
+        Assert.Contains("KeyShadowEffect.BeginAnimation(DropShadowEffect.OpacityProperty, null);", clearAnimations);
+    }
+
+    [Fact]
     public void PositionEditBarUsesCompactGlassTreatment()
     {
         string overlayXaml = File.ReadAllText(GetOverlayWindowXamlPath());
@@ -864,8 +1089,9 @@ public sealed class ControlPanelXamlTests
         Assert.Contains("x:Name=\"GamepadNextBox\"", gamepadSection);
         Assert.Contains("x:Name=\"GamepadToggleBox\"", gamepadSection);
         Assert.Contains("x:Name=\"GamepadShowCurrentBox\"", gamepadSection);
-        Assert.Equal(4, CountOccurrences(gamepadSection, "PreviewMouseDown=\"GamepadBindingBox_PreviewMouseDown\""));
-        Assert.Equal(4, CountOccurrences(gamepadSection, "Click=\"ClearGamepadBinding_Click\""));
+        Assert.Contains("x:Name=\"GamepadFavoriteBox\"", gamepadSection);
+        Assert.Equal(5, CountOccurrences(gamepadSection, "PreviewMouseDown=\"GamepadBindingBox_PreviewMouseDown\""));
+        Assert.Equal(5, CountOccurrences(gamepadSection, "Click=\"ClearGamepadBinding_Click\""));
         Assert.DoesNotContain("Phase 2", gamepadSection);
         Assert.DoesNotContain("Click=\"Save_Click\"", gamepadSection);
 
@@ -939,6 +1165,27 @@ public sealed class ControlPanelXamlTests
     }
 
     [Fact]
+    public void FavoriteTrackActionUsesSharedShortcutUiAndDispatch()
+    {
+        string mainXaml = File.ReadAllText(GetMainWindowXamlPath());
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+        string keyboardPage = ExtractBetween(mainXaml, "x:Name=\"KeyboardPreviousBox\"", "x:Name=\"GamepadStatusTitleText\"");
+        string gamepadPage = ExtractBetween(mainXaml, "x:Name=\"GamepadPreviousBox\"", "Visibility=\"Collapsed\"");
+        string dispatch = ExtractBetween(mainCode, "private async Task ExecuteAppActionAsync", "private async Task<bool> ShowCurrentTrackOverlayAsync");
+
+        Assert.Contains("[FavoriteCurrentTrack]", keyboardPage);
+        Assert.Contains("[FavoriteCurrentTrackDescription]", keyboardPage);
+        Assert.Contains("x:Name=\"KeyboardFavoriteBox\"", keyboardPage);
+        Assert.Contains("Tag=\"KeyboardFavorite\"", keyboardPage);
+        Assert.Contains("Settings.KeyboardFavorite", keyboardPage);
+        Assert.Contains("[FavoriteCurrentTrack]", gamepadPage);
+        Assert.Contains("x:Name=\"GamepadFavoriteBox\"", gamepadPage);
+        Assert.Contains("Tag=\"FavoriteCurrentTrack\"", gamepadPage);
+        Assert.Contains("case AppAction.FavoriteCurrentTrack", dispatch);
+        Assert.Contains("FavoriteCurrentTrackAsync", dispatch);
+    }
+
+    [Fact]
     public void KeyboardCaptureSuppressesGlobalHotkeyActionsAndUsesConflictActions()
     {
         string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
@@ -1002,6 +1249,92 @@ public sealed class ControlPanelXamlTests
         Assert.Contains("_trackMonitor.CurrentTrack ?? _viewModel.CurrentTrack", handler);
         Assert.Contains("ShowWpfSettingsPreview(animateScale: false)", handler);
         Assert.Contains("QueueOverlaySettingsAutoSave(debounce: false)", handler);
+    }
+
+    [Fact]
+    public void OverlayFavoriteStatusUsesFixedStarSlotWithoutButtonChrome()
+    {
+        string overlayXaml = File.ReadAllText(GetOverlayWindowXamlPath());
+        string overlayCode = File.ReadAllText(GetOverlayWindowCodeBehindPath());
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+
+        Assert.Contains("x:Name=\"FavoriteStatusHost\"", overlayXaml);
+        Assert.Contains("x:Name=\"FavoriteOutlineStar\"", overlayXaml);
+        Assert.Contains("x:Name=\"FavoriteFilledStar\"", overlayXaml);
+        Assert.Contains("FontFamily=\"Segoe Fluent Icons, Segoe MDL2 Assets\"", overlayXaml);
+        Assert.Contains("Foreground=\"#E0E4EA\"", overlayXaml);
+        Assert.DoesNotContain("FavoriteStatusButton", overlayXaml);
+        Assert.Contains("TextTrimming=\"CharacterEllipsis\"", overlayXaml);
+        Assert.Contains("OverlayFavoritePresentation.CreateLayout", overlayCode);
+        Assert.Contains("OverlayFavoriteStatusCoordinator", mainCode);
+        Assert.Contains("ResolveAsync(track)", mainCode);
+    }
+
+    [Fact]
+    public void FavoriteShortcutStartsBackendBeforeAwaitingOptimisticMotionAndUsesNonModalFailureNotification()
+    {
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+        string layeredHostCode = File.ReadAllText(GetLayeredOverlayWindowPath());
+        string trayCode = File.ReadAllText(GetTrayIconServicePath());
+        string favoriteHandler = ExtractBetween(
+            mainCode,
+            "private async Task FavoriteCurrentTrackCoreAsync()",
+            "private bool IsCurrentTrack");
+
+        int invokeIndex = favoriteHandler.IndexOf("_favoriteService.FavoriteCurrentTrackAsync()", StringComparison.Ordinal);
+        int optimisticIndex = favoriteHandler.IndexOf("ShowOptimisticFavoriteFeedbackAsync", StringComparison.Ordinal);
+        Assert.True(invokeIndex >= 0 && optimisticIndex > invokeIndex);
+        Assert.Contains("ShowOptimisticFavoriteFeedbackAsync", favoriteHandler);
+        string optimisticFeedback = ExtractBetween(
+            mainCode,
+            "private async Task ShowOptimisticFavoriteFeedbackAsync",
+            "private async Task ShowFavoriteOverlayStateAsync");
+        int outlineIndex = optimisticFeedback.IndexOf("previousState", StringComparison.Ordinal);
+        int delayIndex = optimisticFeedback.IndexOf("FavoriteOptimisticFillDelay", StringComparison.Ordinal);
+        int filledIndex = optimisticFeedback.IndexOf("OverlayFavoriteVisualState.Favorite", StringComparison.Ordinal);
+        Assert.True(outlineIndex >= 0 && delayIndex > outlineIndex && filledIndex > delayIndex);
+        Assert.Contains("TransitionSnapshotAsync", favoriteHandler);
+        Assert.Contains("ShowFavoriteFailureNotification", favoriteHandler);
+        Assert.DoesNotContain("FavoriteAddedTitle", favoriteHandler);
+        Assert.DoesNotContain("FavoriteAlreadyTitle", favoriteHandler);
+        Assert.Contains("public void ShowNotification(string title, string message)", trayCode);
+        Assert.Contains("ShowBalloonTip", trayCode);
+        Assert.DoesNotContain("public void HoldSnapshot(OverlaySnapshot snapshot)", layeredHostCode);
+        Assert.Contains("private Task? _activeFavoriteUiRequest", mainCode);
+        Assert.Contains("if (_activeFavoriteUiRequest is { IsCompleted: false } activeRequest)", mainCode);
+
+        string favoriteServiceCode = File.ReadAllText(GetAppleMusicFavoriteServicePath());
+        Assert.Contains("DefaultPollInterval = TimeSpan.FromMilliseconds(180)", favoriteServiceCode);
+        Assert.Contains("DefaultMaxPolls = 32", favoriteServiceCode);
+        Assert.Contains("Task.Run(() => FavoriteCurrentTrackCoreAsync", favoriteServiceCode);
+    }
+
+    [Fact]
+    public void PreviousAndNextActionsWaitForActiveFavoriteConfirmationBeforeChangingTrack()
+    {
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+        string previousClick = ExtractBetween(mainCode, "private async void Previous_Click", "private async void Toggle_Click");
+        string nextClick = ExtractBetween(mainCode, "private async void Next_Click", "private async void ShowCurrentTrack_Click");
+        string dispatch = ExtractBetween(mainCode, "private async Task ExecuteAppActionAsync", "private Task FavoriteCurrentTrackAsync");
+
+        Assert.Contains("await WaitForActiveFavoriteRequestAsync()", previousClick);
+        Assert.Contains("await WaitForActiveFavoriteRequestAsync()", nextClick);
+        Assert.Equal(2, CountOccurrences(dispatch, "await WaitForActiveFavoriteRequestAsync()"));
+        Assert.Contains("private async Task WaitForActiveFavoriteRequestAsync()", mainCode);
+    }
+
+    [Fact]
+    public void ShowCurrentTrackShortcutDisplaysImmediatelyWithoutAwaitingFavoriteStatus()
+    {
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+        string showCurrentOverlay = ExtractBetween(
+            mainCode,
+            "private async Task<bool> ShowCurrentTrackOverlayAsync()",
+            "private async Task ShowOverlayTrackAsync");
+
+        Assert.Contains("ShowResolvedOverlayTrackAsync", showCurrentOverlay);
+        Assert.Contains("RefreshFavoriteStateAfterImmediateShowAsync", showCurrentOverlay);
+        Assert.DoesNotContain("await ShowOverlayTrackAsync(track)", showCurrentOverlay);
     }
 
     [Fact]
@@ -1405,6 +1738,23 @@ public sealed class ControlPanelXamlTests
         }
 
         throw new FileNotFoundException("Could not locate OverlaySettings.cs from the test output directory.");
+    }
+
+    private static string GetAppleMusicFavoriteServicePath()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory != null)
+        {
+            string candidate = Path.Combine(directory.FullName, "src", "AppleMusicOverlay", "Services", "AppleMusicFavoriteService.cs");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new FileNotFoundException("Could not locate AppleMusicFavoriteService.cs from the test output directory.");
     }
 
     private static string GetOverlaySettingsNormalizerPath()

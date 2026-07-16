@@ -33,7 +33,11 @@ public sealed class SmtcMediaSessionService : IMediaSessionService, IMediaSessio
         GlobalSystemMediaTransportControlsSessionPlaybackInfo playback = session.GetPlaybackInfo();
 
         string title = NormalizeText(properties.Title, "Unknown Track");
-        string artist = NormalizeText(properties.Artist, "Unknown Artist");
+        string sourceAppUserModelId = NormalizeText(session.SourceAppUserModelId, "Unknown Source");
+        string artist = AppleMusicSmtcMetadataNormalizer.NormalizeArtist(
+            sourceAppUserModelId,
+            NormalizeText(properties.Artist, "Unknown Artist"),
+            properties.AlbumTitle);
         byte[]? coverBytes = options.IncludeCover
             ? await TryReadCoverBytesAsync(properties.Thumbnail, cancellationToken)
             : null;
@@ -42,7 +46,7 @@ public sealed class SmtcMediaSessionService : IMediaSessionService, IMediaSessio
             title,
             artist,
             coverBytes,
-            NormalizeText(session.SourceAppUserModelId, "Unknown Source"),
+            sourceAppUserModelId,
             timeline.EndTime,
             playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing);
     }

@@ -15,6 +15,7 @@ public sealed class OverlaySettings
     public bool CloseToTray { get; set; } = true;
     public bool AutoStart { get; set; } = false;
     public bool PauseOverlay { get; set; } = false;
+    public bool ShowOverlayOnTrackChange { get; set; } = true;
     public bool AutoHideOnMouseNear { get; set; } = false;
     public string OverlayTrackFont { get; set; } = "default";
     public string LanguageCode { get; set; } = "zh-CN";
@@ -23,6 +24,7 @@ public sealed class OverlaySettings
     public string KeyboardNext { get; set; } = "Ctrl+Shift+Right";
     public string KeyboardToggle { get; set; } = "Ctrl+Shift+Down";
     public string KeyboardTestOverlay { get; set; } = "Ctrl+Shift+Up";
+    public string KeyboardFavorite { get; set; } = string.Empty;
     public GamepadBindingSet XboxGamepadBindings { get; set; } = new();
     public GamepadBindingSet DualSenseGamepadBindings { get; set; } = new();
     public GamepadBindingSet CompatibleGamepadBindings { get; set; } = new();
