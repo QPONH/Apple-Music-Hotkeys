@@ -7,6 +7,11 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UseWPF>true</UseWPF>
+    <AssemblyName>MusicFloat</AssemblyName>
+    <RootNamespace>AppleMusicOverlay</RootNamespace>
+    <AssemblyTitle>MusicFloat</AssemblyTitle>
+    <Product>MusicFloat</Product>
+    <Description>Lightweight Windows music overlay powered by SMTC.</Description>
     <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\MusicFloat.ico</ApplicationIcon>

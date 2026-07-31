@@ -45,6 +45,9 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
     private readonly ShadowWindow _shadowWindow;
     private readonly InstalledFontService _installedFontService = new();
     private readonly AppleMusicFavoriteService _favoriteService = new();
+    private readonly CloudMusicFavoriteStateService _cloudMusicFavoriteStateService;
+    private readonly CloudMusicFavoriteCommandService _cloudMusicFavoriteCommandService;
+    private readonly CloudMusicFavoriteStateMonitor _cloudMusicFavoriteStateMonitor;
     private readonly OverlayFavoriteStatusCoordinator _overlayFavoriteStatusCoordinator;
     private OverlayTrackFontAvailability _trackFontAvailability = InstalledFontService.DetectForTesting([]);
     private readonly GlobalHotkeyService _hotkeyService;
@@ -74,10 +77,12 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
     private OverlayRenderMode _overlayRenderMode = OverlayRenderMode.Hidden;
     private OverlayFavoriteVisualState _layeredOverlayFavoriteState = OverlayFavoriteVisualState.Unavailable;
     private string? _pendingOverlayTrackIdentity;
+    private string? _pendingCloudMusicFavoriteIdentity;
     private Task? _activeFavoriteUiRequest;
     private DateTimeOffset _lastGamepadCaptureUpdate = DateTimeOffset.Now;
     private DateTimeOffset _lastGamepadRuntimeUpdate = DateTimeOffset.Now;
     private bool _gamepadRuntimeCaptureActive;
+    private bool _isRefreshingCloudMusicFavoriteHotkeyEditor;
     private bool IsKeyboardHotkeyInputSuppressed => _capturingHotkeyBox != null || _keyboardHotkeyConflict != null;
     private LocalizationService Localizer => LocalizationService.Current;
     private string HotkeyCapturePrompt => Localizer.Text("HotkeyCapturePrompt");
@@ -87,6 +92,32 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
     private string HotkeyNeedMainKeyStatus => Localizer.Text("HotkeyNeedMainKey");
 
     private sealed record KeyboardHotkeyConflict(TextBox Box, AppAction TargetAction, AppAction ConflictAction, string HotkeyText);
+    private sealed record HotkeyChoice(string DisplayName, uint Value)
+    {
+        public override string ToString() => DisplayName;
+    }
+
+    private static readonly IReadOnlyList<HotkeyChoice> CloudMusicFavoriteModifierChoices =
+    [
+        new("Ctrl", 0x0002),
+        new("Alt", 0x0001),
+        new("Shift", 0x0004),
+        new("Win", 0x0008),
+        new("Ctrl+Alt", 0x0003),
+        new("Ctrl+Shift", 0x0006),
+        new("Ctrl+Win", 0x000A),
+        new("Alt+Shift", 0x0005),
+        new("Alt+Win", 0x0009),
+        new("Shift+Win", 0x000C),
+        new("Ctrl+Alt+Shift", 0x0007),
+        new("Ctrl+Alt+Win", 0x000B),
+        new("Ctrl+Shift+Win", 0x000E),
+        new("Alt+Shift+Win", 0x000D),
+        new("Ctrl+Alt+Shift+Win", 0x000F)
+    ];
+
+    private static readonly IReadOnlyList<HotkeyChoice> CloudMusicFavoriteKeyChoices =
+        CreateCloudMusicFavoriteKeyChoices();
 
     public MainWindow()
     {
@@ -110,7 +141,15 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         _overlayWindow.SetTrackFontAvailability(_trackFontAvailability);
         _overlayWindow.ApplySettings(_viewModel.Settings);
         _layeredOverlayWindow = new LayeredOverlayWindow(Dispatcher);
-        _overlayFavoriteStatusCoordinator = new OverlayFavoriteStatusCoordinator(_favoriteService.ReadCurrentStatusAsync);
+        _cloudMusicFavoriteStateService = new CloudMusicFavoriteStateService();
+        _cloudMusicFavoriteCommandService = new CloudMusicFavoriteCommandService(
+            _cloudMusicFavoriteStateService);
+        _cloudMusicFavoriteStateMonitor = new CloudMusicFavoriteStateMonitor(_cloudMusicFavoriteStateService);
+        _cloudMusicFavoriteStateMonitor.StateChanged += CloudMusicFavoriteStateMonitor_StateChanged;
+        var favoriteStateReader = new CompositeOverlayFavoriteStateReader(
+            new AppleMusicOverlayFavoriteStateReader(_favoriteService.ReadCurrentStatusAsync),
+            _cloudMusicFavoriteStateService);
+        _overlayFavoriteStatusCoordinator = new OverlayFavoriteStatusCoordinator(favoriteStateReader);
         _shadowWindow = new ShadowWindow();
         LogStartup("ctor: overlay ready");
         _hotkeyService = new GlobalHotkeyService(this);
@@ -124,6 +163,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         _trayIconService.UpdateText();
         LanguageCombo.ItemsSource = LocalizationService.SupportedLanguages;
         LanguageCombo.SelectedValue = _viewModel.Settings.LanguageCode;
+        InitializeCloudMusicFavoriteHotkeyEditor();
         UpdateDisplaySecondsValueText();
         DisplayHotkeyBoxValues();
         DisplayGamepadBindingBoxValues();
@@ -177,9 +217,14 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         Loaded += MainWindow_Loaded;
         Closed += MainWindow_Closed;
         PreviewMouseDown += MainWindow_PreviewMouseDown;
-        _trackMonitor.TrackRead += (_, track) => PostToDispatcher(() => _viewModel.ApplyTrack(track));
+        _trackMonitor.TrackRead += (_, track) =>
+        {
+            _cloudMusicFavoriteStateMonitor.UpdateTrack(track);
+            PostToDispatcher(() => ApplyTrackRead(track));
+        };
         _trackMonitor.TrackChanged += (_, track) => PostToDispatcher(() => _ = ShowOverlayTrackAsync(track));
         _trackMonitor.TrackRefreshed += (_, track) => PostToDispatcher(() => UpdateOverlayTrack(track));
+        _trackMonitor.TrackUnavailable += (_, _) => PostToDispatcher(HideRuntimeOverlayForUnavailableSource);
         _hotkeyService.HotkeyPressed += HotkeyService_HotkeyPressed;
         UpdateMaximizeButtonGlyph();
         ApplyWindowShellState();
@@ -773,7 +818,9 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
 
         if (action != null)
         {
-            _ = Dispatcher.InvokeAsync(() => _ = ExecuteAppActionAsync(action.Value), DispatcherPriority.Normal);
+            _ = Dispatcher.InvokeAsync(
+                () => _ = ExecuteAppActionAsync(action.Value),
+                DispatcherPriority.Normal);
         }
     }
 
@@ -1351,6 +1398,165 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         }
     }
 
+    private void CloudMusicNativeFavoriteHotkeyBox_SelectionChanged(
+        object sender,
+        SelectionChangedEventArgs e)
+    {
+        if (_isExiting || _isRefreshingCloudMusicFavoriteHotkeyEditor ||
+            CloudMusicNativeFavoriteModifierBox.SelectedItem is not HotkeyChoice modifiers ||
+            CloudMusicNativeFavoriteKeyBox.SelectedItem is not HotkeyChoice mainKey)
+        {
+            return;
+        }
+
+        TrySaveCloudMusicNativeFavoriteHotkey(
+            $"{modifiers.DisplayName}+{mainKey.DisplayName}");
+    }
+
+    private bool TrySaveCloudMusicNativeFavoriteHotkey(string candidateText)
+    {
+        string candidate = NormalizeCloudMusicNativeHotkeyText(
+            candidateText);
+        string current = _viewModel.Settings.CloudMusicFavoriteHotkey;
+        if (candidate.Equals(current, StringComparison.OrdinalIgnoreCase))
+        {
+            DisplayCloudMusicFavoriteHotkeyEditorValue();
+            return true;
+        }
+
+        if (!HotkeyParser.TryParse(candidate, out HotkeyDefinition nativeHotkey))
+        {
+            DisplayCloudMusicFavoriteHotkeyEditorValue();
+            ShowHotkeyCapturePanel(
+                Localizer.Text("CloudMusicNativeFavoriteHotkeyInvalid"),
+                isConflict: true,
+                title: Localizer.Text("CloudMusicNativeFavoriteHotkey"));
+            return false;
+        }
+
+        foreach ((AppAction action, string hotkeyText) in
+                 KeyboardHotkeyBindingManager.CreateSnapshot(_viewModel.Settings))
+        {
+            if (!HotkeyParser.TryParse(hotkeyText, out HotkeyDefinition musicFloatHotkey) ||
+                musicFloatHotkey != nativeHotkey)
+            {
+                continue;
+            }
+
+            DisplayCloudMusicFavoriteHotkeyEditorValue();
+            ShowHotkeyCapturePanel(
+                Localizer.Format(
+                    "CloudMusicNativeFavoriteHotkeyConflictTemplate",
+                    GamepadBindingActions.GetLabel(action)),
+                isConflict: true,
+                title: Localizer.Text("CloudMusicNativeFavoriteHotkey"));
+            return false;
+        }
+
+        _viewModel.Settings.CloudMusicFavoriteHotkey = candidate;
+        _viewModel.Save();
+        DisplayCloudMusicFavoriteHotkeyEditorValue();
+        ShowHotkeyCapturePanel(
+            Localizer.Format(
+                "CloudMusicNativeFavoriteHotkeySavedTemplate",
+                candidate),
+            autoHide: true,
+            autoHideMilliseconds: 1200,
+            title: Localizer.Text("CloudMusicNativeFavoriteHotkey"));
+        return true;
+    }
+
+    private void InitializeCloudMusicFavoriteHotkeyEditor()
+    {
+        _isRefreshingCloudMusicFavoriteHotkeyEditor = true;
+        try
+        {
+            CloudMusicNativeFavoriteModifierBox.ItemsSource =
+                CloudMusicFavoriteModifierChoices;
+            CloudMusicNativeFavoriteKeyBox.ItemsSource =
+                CloudMusicFavoriteKeyChoices;
+        }
+        finally
+        {
+            _isRefreshingCloudMusicFavoriteHotkeyEditor = false;
+        }
+    }
+
+    private void DisplayCloudMusicFavoriteHotkeyEditorValue()
+    {
+        if (!HotkeyParser.TryParse(
+                _viewModel.Settings.CloudMusicFavoriteHotkey,
+                out HotkeyDefinition hotkey))
+        {
+            return;
+        }
+
+        _isRefreshingCloudMusicFavoriteHotkeyEditor = true;
+        try
+        {
+            CloudMusicNativeFavoriteModifierBox.SelectedItem =
+                CloudMusicFavoriteModifierChoices.FirstOrDefault(
+                    choice => choice.Value == hotkey.Modifiers);
+            CloudMusicNativeFavoriteKeyBox.SelectedItem =
+                CloudMusicFavoriteKeyChoices.FirstOrDefault(
+                    choice => choice.Value == hotkey.VirtualKey);
+        }
+        finally
+        {
+            _isRefreshingCloudMusicFavoriteHotkeyEditor = false;
+        }
+    }
+
+    private static IReadOnlyList<HotkeyChoice> CreateCloudMusicFavoriteKeyChoices()
+    {
+        var choices = new List<HotkeyChoice>();
+        for (char letter = 'A'; letter <= 'Z'; letter++)
+        {
+            choices.Add(new HotkeyChoice(letter.ToString(), letter));
+        }
+
+        for (char digit = '0'; digit <= '9'; digit++)
+        {
+            choices.Add(new HotkeyChoice(digit.ToString(), digit));
+        }
+
+        for (int functionKey = 1; functionKey <= 24; functionKey++)
+        {
+            choices.Add(new HotkeyChoice(
+                $"F{functionKey}",
+                (uint)(0x70 + functionKey - 1)));
+        }
+
+        choices.AddRange(
+        [
+            new HotkeyChoice("Space", 0x20),
+            new HotkeyChoice("Enter", 0x0D),
+            new HotkeyChoice("Esc", 0x1B),
+            new HotkeyChoice("Left", 0x25),
+            new HotkeyChoice("Up", 0x26),
+            new HotkeyChoice("Right", 0x27),
+            new HotkeyChoice("Down", 0x28),
+            new HotkeyChoice("PageUp", 0x21),
+            new HotkeyChoice("PageDown", 0x22),
+            new HotkeyChoice("Home", 0x24),
+            new HotkeyChoice("End", 0x23),
+            new HotkeyChoice("Insert", 0x2D),
+            new HotkeyChoice("Delete", 0x2E)
+        ]);
+
+        return choices;
+    }
+
+    private static string NormalizeCloudMusicNativeHotkeyText(string? text)
+    {
+        return string.Join(
+            "+",
+            (text ?? string.Empty).Split(
+                '+',
+                StringSplitOptions.RemoveEmptyEntries |
+                StringSplitOptions.TrimEntries));
+    }
+
     private void HotkeyBox_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (sender is not TextBox box)
@@ -1751,6 +1957,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         KeyboardToggleBox.Text = DisplayHotkeyText(_viewModel.Settings.KeyboardToggle);
         KeyboardTestOverlayBox.Text = DisplayHotkeyText(_viewModel.Settings.KeyboardTestOverlay);
         KeyboardFavoriteBox.Text = DisplayHotkeyText(_viewModel.Settings.KeyboardFavorite);
+        DisplayCloudMusicFavoriteHotkeyEditorValue();
     }
 
     private string DisplayHotkeyText(string hotkeyText)
@@ -2086,7 +2293,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
 
     private void ApplyPreferredSource()
     {
-        _sourceService.PreferredSourceAppUserModelId = _viewModel.Settings.CaptureSourceAppUserModelId;
+        _sourceService.PreferredSourceAppUserModelId = _viewModel.CaptureSourceAppUserModelId;
     }
 
     private async void HotkeyService_HotkeyPressed(object? sender, GlobalHotkeyEventArgs e)
@@ -2097,10 +2304,12 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
             return;
         }
 
-        await ExecuteAppActionAsync(e.Action);
+        await ExecuteAppActionAsync(e.Action, e.HotkeyText);
     }
 
-    private async Task ExecuteAppActionAsync(AppAction action)
+    private async Task ExecuteAppActionAsync(
+        AppAction action,
+        string? triggeringHotkey = null)
     {
         switch (action)
         {
@@ -2119,7 +2328,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
                 await ShowCurrentTrackOverlayAsync();
                 break;
             case AppAction.FavoriteCurrentTrack:
-                await FavoriteCurrentTrackAsync();
+                await FavoriteCurrentTrackAsync(triggeringHotkey);
                 break;
         }
     }
@@ -2133,18 +2342,18 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         }
     }
 
-    private Task FavoriteCurrentTrackAsync()
+    private Task FavoriteCurrentTrackAsync(string? triggeringHotkey = null)
     {
         if (_activeFavoriteUiRequest is { IsCompleted: false } activeRequest)
         {
             return activeRequest;
         }
 
-        _activeFavoriteUiRequest = FavoriteCurrentTrackCoreAsync();
+        _activeFavoriteUiRequest = FavoriteCurrentTrackCoreAsync(triggeringHotkey);
         return _activeFavoriteUiRequest;
     }
 
-    private async Task FavoriteCurrentTrackCoreAsync()
+    private async Task FavoriteCurrentTrackCoreAsync(string? triggeringHotkey)
     {
         TrackInfo? track = _trackMonitor.CurrentTrack ?? _viewModel.CurrentTrack;
         if (track == null)
@@ -2159,21 +2368,46 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
             return;
         }
 
-        if (!OverlayFavoritePresentation.IsSupportedAppleMusicSource(track.SourceAppId))
+        bool isAppleMusic = OverlayFavoritePresentation.IsSupportedAppleMusicSource(track.SourceAppId);
+        bool isCloudMusic = OverlayFavoritePresentation.IsSupportedCloudMusicSource(track.SourceAppId);
+        if (!isAppleMusic && !isCloudMusic)
         {
             ShowCurrentNavigationPrompt("FavoriteUnsupportedTitle", "FavoriteUnsupportedMessage", CurrentNavigationPromptDelay);
             return;
         }
 
-        ShowCurrentNavigationPrompt("FavoriteInProgressTitle", "FavoriteInProgressMessage", FavoriteInProgressPromptDelay);
         OverlayFavoriteVisualState previousState = GetCachedFavoriteState(track);
         if (previousState == OverlayFavoriteVisualState.Unavailable)
         {
             previousState = OverlayFavoriteVisualState.NotFavorite;
         }
 
+        if (isCloudMusic && previousState == OverlayFavoriteVisualState.Favorite)
+        {
+            ShowCurrentNavigationPrompt(
+                "CloudMusicUnfavoriteInProgressTitle",
+                "CloudMusicUnfavoriteInProgressMessage",
+                FavoriteInProgressPromptDelay);
+        }
+        else
+        {
+            ShowCurrentNavigationPrompt(
+                "FavoriteInProgressTitle",
+                "FavoriteInProgressMessage",
+                FavoriteInProgressPromptDelay);
+        }
+
         _overlayFavoriteStatusCoordinator.CancelPending();
         _pendingOverlayTrackIdentity = null;
+        if (isCloudMusic)
+        {
+            await FavoriteCloudMusicCurrentTrackAsync(
+                track,
+                previousState,
+                triggeringHotkey);
+            return;
+        }
+
         Task<AppleMusicFavoriteResult> favoriteRequest = _favoriteService.FavoriteCurrentTrackAsync();
         await ShowOptimisticFavoriteFeedbackAsync(track, previousState);
 
@@ -2183,6 +2417,70 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         {
             await RollBackOptimisticFavoriteAsync(track, previousState);
             ShowFavoriteFailureNotification();
+        }
+    }
+
+    private async Task FavoriteCloudMusicCurrentTrackAsync(
+        TrackInfo track,
+        OverlayFavoriteVisualState previousState,
+        string? triggeringHotkey)
+    {
+        string trackIdentity = TrackIdentity.Create(track);
+        _pendingCloudMusicFavoriteIdentity = trackIdentity;
+        try
+        {
+            Task<CloudMusicFavoriteCommandResult> favoriteRequest =
+                _cloudMusicFavoriteCommandService.FavoriteCurrentTrackAsync(
+                    track,
+                    _viewModel.Settings.CloudMusicFavoriteHotkey,
+                    isStillCurrent: () => IsCurrentTrack(track),
+                    triggeringHotkey: triggeringHotkey);
+            await ShowOptimisticCloudMusicToggleFeedbackAsync(track, previousState);
+
+            CloudMusicFavoriteCommandResult result = await favoriteRequest;
+            if (result.Kind == CloudMusicFavoriteCommandResultKind.Added)
+            {
+                _cloudMusicFavoriteStateMonitor.SetKnownState(
+                    track,
+                    OverlayFavoriteVisualState.Favorite);
+                if (previousState == OverlayFavoriteVisualState.Favorite)
+                {
+                    await ShowOptimisticFavoriteFeedbackAsync(
+                        track,
+                        OverlayFavoriteVisualState.NotFavorite);
+                }
+
+                return;
+            }
+
+            if (result.Kind == CloudMusicFavoriteCommandResultKind.Removed)
+            {
+                _cloudMusicFavoriteStateMonitor.SetKnownState(
+                    track,
+                    OverlayFavoriteVisualState.NotFavorite);
+                if (previousState != OverlayFavoriteVisualState.Favorite)
+                {
+                    await ShowFavoriteOverlayStateAsync(
+                        track,
+                        OverlayFavoriteVisualState.NotFavorite,
+                        animateTransition: true);
+                }
+
+                return;
+            }
+
+            await RollBackOptimisticFavoriteAsync(track, previousState);
+            ShowCloudMusicFavoriteFailureNotification(result.Kind);
+        }
+        finally
+        {
+            if (string.Equals(
+                    _pendingCloudMusicFavoriteIdentity,
+                    trackIdentity,
+                    StringComparison.Ordinal))
+            {
+                _pendingCloudMusicFavoriteIdentity = null;
+            }
         }
     }
 
@@ -2201,6 +2499,61 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         {
             await PlayFavoriteStarMotionAsync(track);
         }
+    }
+
+    private async Task ShowOptimisticCloudMusicToggleFeedbackAsync(
+        TrackInfo track,
+        OverlayFavoriteVisualState previousState)
+    {
+        if (previousState == OverlayFavoriteVisualState.Favorite)
+        {
+            await ShowFavoriteOverlayStateAsync(
+                track,
+                OverlayFavoriteVisualState.NotFavorite,
+                animateTransition: true);
+            return;
+        }
+
+        await ShowOptimisticFavoriteFeedbackAsync(track, previousState);
+    }
+
+    private void CloudMusicFavoriteStateMonitor_StateChanged(
+        object? sender,
+        CloudMusicFavoriteStateChangedEventArgs e)
+    {
+        PostToDispatcher(() => _ = ApplyCloudMusicFavoriteStateChangeAsync(e));
+    }
+
+    private async Task ApplyCloudMusicFavoriteStateChangeAsync(
+        CloudMusicFavoriteStateChangedEventArgs e)
+    {
+        if (!IsCurrentTrack(e.Track))
+        {
+            return;
+        }
+
+        if (string.Equals(
+                _pendingCloudMusicFavoriteIdentity,
+                TrackIdentity.Create(e.Track),
+                StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        _overlayFavoriteStatusCoordinator.CancelPending();
+        _pendingOverlayTrackIdentity = null;
+        if (e.CurrentState == OverlayFavoriteVisualState.Favorite)
+        {
+            await ShowOptimisticFavoriteFeedbackAsync(
+                e.Track,
+                OverlayFavoriteVisualState.NotFavorite);
+            return;
+        }
+
+        await ShowFavoriteOverlayStateAsync(
+            e.Track,
+            OverlayFavoriteVisualState.NotFavorite,
+            animateTransition: true);
     }
 
     private async Task PlayFavoriteStarMotionAsync(TrackInfo track)
@@ -2329,12 +2682,39 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
 
     private void ShowFavoriteFailureNotification()
     {
-        ShowCurrentNavigationPrompt("FavoriteFailedTitle", "FavoriteFailedMessage", CurrentNavigationPromptDelay);
+        ShowFavoriteFailureNotification("FavoriteFailedTitle", "FavoriteFailedMessage");
+    }
+
+    private void ShowCloudMusicFavoriteFailureNotification(
+        CloudMusicFavoriteCommandResultKind resultKind)
+    {
+        (string titleKey, string messageKey) = resultKind switch
+        {
+            CloudMusicFavoriteCommandResultKind.TriggerReleaseTimedOut =>
+                ("CloudMusicTriggerReleaseTimedOutTitle", "CloudMusicTriggerReleaseTimedOutMessage"),
+            CloudMusicFavoriteCommandResultKind.StateUnavailable =>
+                ("CloudMusicStateUnavailableTitle", "CloudMusicStateUnavailableMessage"),
+            CloudMusicFavoriteCommandResultKind.DispatchFailed =>
+                ("CloudMusicDispatchFailedTitle", "CloudMusicDispatchFailedMessage"),
+            CloudMusicFavoriteCommandResultKind.ConfirmationTimedOut =>
+                ("CloudMusicConfirmationTimedOutTitle", "CloudMusicConfirmationTimedOutMessage"),
+            CloudMusicFavoriteCommandResultKind.TrackChanged =>
+                ("CloudMusicTrackChangedTitle", "CloudMusicTrackChangedMessage"),
+            _ => ("FavoriteFailedTitle", "FavoriteFailedMessage")
+        };
+        ShowFavoriteFailureNotification(titleKey, messageKey);
+    }
+
+    private void ShowFavoriteFailureNotification(
+        string titleKey,
+        string messageKey)
+    {
+        ShowCurrentNavigationPrompt(titleKey, messageKey, CurrentNavigationPromptDelay);
         if (!IsVisible || WindowState == WindowState.Minimized || !IsActive)
         {
             _trayIconService.ShowNotification(
-                Localizer.Text("FavoriteFailedTitle"),
-                Localizer.Text("FavoriteFailedMessage"));
+                Localizer.Text(titleKey),
+                Localizer.Text(messageKey));
         }
     }
 
@@ -2377,18 +2757,21 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
     private async Task RefreshFavoriteStateAfterImmediateShowAsync(TrackInfo track)
     {
         OverlayFavoriteResolution? resolution = await _overlayFavoriteStatusCoordinator.ResolveAsync(track);
+        TrackInfo latestTrack = OverlayTrackChangeDisplayPolicy.SelectLatestCloudMusicTrack(
+            track,
+            _trackMonitor.CurrentTrack);
         if (resolution == null ||
             resolution.State == OverlayFavoriteVisualState.Unavailable ||
-            !IsCurrentTrack(track) ||
-            GetCachedFavoriteState(track) == resolution.State)
+            !IsCurrentTrack(latestTrack) ||
+            GetCachedFavoriteState(latestTrack) == resolution.State)
         {
             return;
         }
 
-        _layeredOverlayTrack = track;
+        _layeredOverlayTrack = latestTrack;
         _layeredOverlayFavoriteState = resolution.State;
         _overlayWindow.ApplySettings(_viewModel.Settings);
-        OverlaySnapshot snapshot = _overlayWindow.CreateSnapshot(track, resolution.State);
+        OverlaySnapshot snapshot = _overlayWindow.CreateSnapshot(latestTrack, resolution.State);
         _overlayWindow.HideOverlayVisualImmediately();
         if (_layeredOverlayWindow.IsVisible)
         {
@@ -2433,6 +2816,40 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
                 CacheResolvedOverlayTrack(resolution.Track, resolution.State);
                 break;
         }
+    }
+
+    private void ApplyTrackRead(TrackInfo? track)
+    {
+        _viewModel.ApplyTrack(track);
+        if (!OverlayTrackChangeDisplayPolicy.ShouldHideStaleCloudMusicOverlay(
+                track,
+                _layeredOverlayTrack))
+        {
+            return;
+        }
+
+        _pendingOverlayTrackIdentity = null;
+        _overlayWindow.HideOverlayVisualImmediately();
+        _layeredOverlayWindow.HideImmediately();
+        _overlayRenderMode = OverlayRenderMode.Hidden;
+        _layeredOverlayTrack = track;
+        _layeredOverlayFavoriteState = OverlayFavoriteVisualState.Unavailable;
+    }
+
+    private void HideRuntimeOverlayForUnavailableSource()
+    {
+        _pendingOverlayTrackIdentity = null;
+        _layeredOverlayTrack = null;
+        _layeredOverlayFavoriteState = OverlayFavoriteVisualState.Unavailable;
+
+        if (_overlayRenderMode is OverlayRenderMode.WpfSettingsPreview or OverlayRenderMode.WpfPositionEdit)
+        {
+            return;
+        }
+
+        _overlayWindow.HideOverlayVisualImmediately();
+        _layeredOverlayWindow.HideImmediately();
+        _overlayRenderMode = OverlayRenderMode.Hidden;
     }
 
     private void UpdateVisibleResolvedOverlayTrack(TrackInfo track, OverlayFavoriteVisualState favoriteState)
@@ -2678,6 +3095,8 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar
         }
 
         SafeDispose(_trackMonitor);
+        _cloudMusicFavoriteStateMonitor.StateChanged -= CloudMusicFavoriteStateMonitor_StateChanged;
+        SafeDispose(_cloudMusicFavoriteStateMonitor);
         SafeDispose(_hotkeyService);
         SafeDispose(_gamepadService);
         SafeDispose(_overlayFavoriteStatusCoordinator);

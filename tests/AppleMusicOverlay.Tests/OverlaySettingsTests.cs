@@ -105,7 +105,8 @@ public sealed class OverlaySettingsTests
             PauseOverlay = true,
             AutoHideOnMouseNear = true,
             ShowOverlayOnTrackChange = false,
-            OverlayTrackFont = "sf-pro"
+            OverlayTrackFont = "sf-pro",
+            CloudMusicFavoriteHotkey = "Ctrl+Alt+K"
         };
 
         service.Save(input);
@@ -118,6 +119,32 @@ public sealed class OverlaySettingsTests
         Assert.True(loaded.AutoHideOnMouseNear);
         Assert.False(loaded.ShowOverlayOnTrackChange);
         Assert.Equal("sf-pro", loaded.OverlayTrackFont);
+        Assert.Equal("Ctrl+Alt+K", loaded.CloudMusicFavoriteHotkey);
+    }
+
+    [Fact]
+    public void CloudMusicFavoriteHotkeyDefaultsAndNormalizesToNativeShortcut()
+    {
+        var defaults = new OverlaySettings();
+        var invalid = new OverlaySettings { CloudMusicFavoriteHotkey = "  " };
+
+        Assert.Equal("Ctrl+Alt+L", defaults.CloudMusicFavoriteHotkey);
+        Assert.Equal(
+            "Ctrl+Alt+L",
+            OverlaySettingsNormalizer.Normalize(invalid).CloudMusicFavoriteHotkey);
+    }
+
+    [Fact]
+    public void InvalidCloudMusicFavoriteHotkeyFallsBackToDefault()
+    {
+        var settings = new OverlaySettings
+        {
+            CloudMusicFavoriteHotkey = "L"
+        };
+
+        OverlaySettings normalized = OverlaySettingsNormalizer.Normalize(settings);
+
+        Assert.Equal("Ctrl+Alt+L", normalized.CloudMusicFavoriteHotkey);
     }
 
     [Fact]

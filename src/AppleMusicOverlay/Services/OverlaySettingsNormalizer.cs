@@ -21,6 +21,15 @@ public static class OverlaySettingsNormalizer
         settings.KeyboardNext = NormalizeOptionalText(settings.KeyboardNext);
         settings.KeyboardToggle = NormalizeOptionalText(settings.KeyboardToggle);
         settings.KeyboardTestOverlay = NormalizeOptionalText(settings.KeyboardTestOverlay);
+        settings.KeyboardFavorite = NormalizeOptionalText(settings.KeyboardFavorite);
+        string cloudMusicFavoriteHotkey = NormalizeText(
+            settings.CloudMusicFavoriteHotkey,
+            "Ctrl+Alt+L");
+        settings.CloudMusicFavoriteHotkey = HotkeyParser.TryParse(
+            cloudMusicFavoriteHotkey,
+            out _)
+                ? cloudMusicFavoriteHotkey
+                : "Ctrl+Alt+L";
         settings.XboxGamepadBindings = NormalizeGamepadBindingSet(settings.XboxGamepadBindings);
         settings.DualSenseGamepadBindings = NormalizeGamepadBindingSet(settings.DualSenseGamepadBindings);
         settings.CompatibleGamepadBindings = NormalizeGamepadBindingSet(settings.CompatibleGamepadBindings);

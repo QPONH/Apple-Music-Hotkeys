@@ -7,6 +7,24 @@ namespace AppleMusicOverlay.Tests;
 public sealed class MainViewModelTests
 {
     [Fact]
+    public void CaptureSourceDefaultsToAutomaticAndRemainsSelectedAfterRefresh()
+    {
+        var settingsPath = Path.Combine(Path.GetTempPath(), "AppleMusicOverlay.Tests", Guid.NewGuid().ToString("N"), "settings.json");
+        var viewModel = new MainViewModel(new OverlaySettingsService(settingsPath));
+        var changedProperties = new List<string?>();
+        viewModel.PropertyChanged += (_, args) => changedProperties.Add(args.PropertyName);
+
+        viewModel.ReplaceCaptureSources(
+        [
+            new MediaSessionCandidate("cloudmusic.exe", "Song", "Artist", true, true, 0)
+        ]);
+
+        Assert.Equal(string.Empty, viewModel.CaptureSourceAppUserModelId);
+        Assert.Equal(string.Empty, viewModel.CaptureSources[0].SourceAppUserModelId);
+        Assert.Contains(nameof(MainViewModel.CaptureSourceAppUserModelId), changedProperties);
+    }
+
+    [Fact]
     public void TransportButtonTextShowsPauseWhenTrackIsPlaying()
     {
         var settingsPath = Path.Combine(Path.GetTempPath(), "AppleMusicOverlay.Tests", Guid.NewGuid().ToString("N"), "settings.json");

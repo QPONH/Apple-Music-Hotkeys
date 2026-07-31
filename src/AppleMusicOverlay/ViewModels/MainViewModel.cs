@@ -28,6 +28,25 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public ObservableCollection<MediaSessionSourceOption> CaptureSources { get; } = new();
 
+    public string CaptureSourceAppUserModelId
+    {
+        get => Settings.CaptureSourceAppUserModelId;
+        set
+        {
+            string normalized = value?.Trim() ?? string.Empty;
+            if (string.Equals(
+                    Settings.CaptureSourceAppUserModelId,
+                    normalized,
+                    StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            Settings.CaptureSourceAppUserModelId = normalized;
+            OnPropertyChanged();
+        }
+    }
+
     public TrackInfo? CurrentTrack
     {
         get => _currentTrack;
@@ -114,7 +133,7 @@ public sealed class MainViewModel : INotifyPropertyChanged
 
     public void ReplaceCaptureSources(IEnumerable<MediaSessionCandidate> sessions)
     {
-        string selected = Settings.CaptureSourceAppUserModelId;
+        string selected = CaptureSourceAppUserModelId;
         CaptureSources.Clear();
         CaptureSources.Add(MediaSessionSourceOption.Automatic);
 
@@ -129,6 +148,8 @@ public sealed class MainViewModel : INotifyPropertyChanged
             CaptureSources.Add(new MediaSessionSourceOption(selected, $"{selected}（{LocalizationService.Current.Text("UndetectedSuffix")}）"));
         }
 
+        Settings.CaptureSourceAppUserModelId = selected;
+        OnPropertyChanged(nameof(CaptureSourceAppUserModelId));
         OnPropertyChanged(nameof(CaptureSources));
     }
 

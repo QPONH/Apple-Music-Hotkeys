@@ -25,6 +25,7 @@ public sealed class OverlaySettings
     public string KeyboardToggle { get; set; } = "Ctrl+Shift+Down";
     public string KeyboardTestOverlay { get; set; } = "Ctrl+Shift+Up";
     public string KeyboardFavorite { get; set; } = string.Empty;
+    public string CloudMusicFavoriteHotkey { get; set; } = "Ctrl+Alt+L";
     public GamepadBindingSet XboxGamepadBindings { get; set; } = new();
     public GamepadBindingSet DualSenseGamepadBindings { get; set; } = new();
     public GamepadBindingSet CompatibleGamepadBindings { get; set; } = new();

@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using AppleMusicOverlay.Models;
 using AppleMusicOverlay.Services;
 
@@ -156,6 +157,128 @@ public sealed class TrackMonitorTests
     }
 
     [Fact]
+    public async Task CloudMusicWaitsForNewCoverWithoutReusingPreviousCover()
+    {
+        byte[] oldCover = CreateBmp(768, 768);
+        var first = new TrackInfo(
+            "First",
+            "Artist",
+            oldCover,
+            "cloudmusic.exe",
+            TimeSpan.FromMinutes(3),
+            true);
+        var secondWithOldCover = new TrackInfo(
+            "Second",
+            "Artist",
+            oldCover,
+            "cloudmusic.exe",
+            TimeSpan.FromMinutes(4),
+            true);
+        var service = new FakeMediaSessionService(
+            first,
+            first,
+            secondWithOldCover,
+            secondWithOldCover);
+        var monitor = new TrackMonitor(service, settleDelay: TimeSpan.Zero);
+        var changes = new List<TrackInfo>();
+        monitor.TrackChanged += (_, track) => changes.Add(track);
+
+        await monitor.PollOnceAsync();
+        await monitor.PollOnceAsync();
+
+        Assert.Equal([first], changes);
+        Assert.Equal("Second", monitor.CurrentTrack?.Title);
+        Assert.Null(monitor.CurrentTrack?.CoverBytes);
+    }
+
+    [Fact]
+    public async Task CloudMusicBrieflyWaitsForHighResolutionCoverBeforeFirstDisplay()
+    {
+        byte[] lowResolutionCover = CreateBmp(162, 162);
+        byte[] highResolutionCover = CreateBmp(768, 768);
+        var lowResolutionTrack = new TrackInfo(
+            "Song",
+            "Artist",
+            lowResolutionCover,
+            "cloudmusic.exe",
+            TimeSpan.FromMinutes(3),
+            true);
+        var highResolutionTrack = lowResolutionTrack with
+        {
+            CoverBytes = highResolutionCover
+        };
+        var service = new FakeMediaSessionService(
+            lowResolutionTrack,
+            highResolutionTrack);
+        var monitor = new TrackMonitor(
+            service,
+            settleDelay: TimeSpan.FromMilliseconds(120));
+        var changes = new List<TrackInfo>();
+        monitor.TrackChanged += (_, track) => changes.Add(track);
+
+        await monitor.PollOnceAsync();
+
+        Assert.Equal([highResolutionTrack], changes);
+    }
+
+    [Fact]
+    public async Task CloudMusicNeverPublishesLowResolutionArtworkAtTheSettleDeadline()
+    {
+        byte[] staleLowResolutionCover = CreateBmp(162, 162);
+        var track = new TrackInfo(
+            "New Song",
+            "New Artist",
+            staleLowResolutionCover,
+            "cloudmusic.exe",
+            TimeSpan.FromMinutes(3),
+            true);
+        var service = new FakeMediaSessionService(track, track, track);
+        var monitor = new TrackMonitor(service, settleDelay: TimeSpan.Zero);
+        var changes = new List<TrackInfo>();
+        var reads = new List<TrackInfo?>();
+        monitor.TrackChanged += (_, changedTrack) => changes.Add(changedTrack);
+        monitor.TrackRead += (_, readTrack) => reads.Add(readTrack);
+
+        await monitor.PollOnceAsync();
+
+        Assert.Empty(changes);
+        Assert.Single(reads);
+        Assert.Equal("New Song", reads[0]?.Title);
+        Assert.Null(reads[0]?.CoverBytes);
+    }
+
+    [Fact]
+    public async Task CloudMusicPublishesLateHdCoverAsFirstCompleteDisplay()
+    {
+        byte[] lowResolutionCover = CreateBmp(162, 162);
+        byte[] highResolutionCover = CreateBmp(768, 768);
+        var withoutHdCover = new TrackInfo(
+            "Song",
+            "Artist",
+            lowResolutionCover,
+            "cloudmusic.exe",
+            TimeSpan.FromMinutes(3),
+            true);
+        TrackInfo withHdCover = withoutHdCover with { CoverBytes = highResolutionCover };
+        var service = new FakeMediaSessionService(
+            withoutHdCover,
+            withoutHdCover,
+            withHdCover,
+            withHdCover);
+        var monitor = new TrackMonitor(service, settleDelay: TimeSpan.Zero);
+        var changes = new List<TrackInfo>();
+        var refreshes = new List<TrackInfo>();
+        monitor.TrackChanged += (_, changedTrack) => changes.Add(changedTrack);
+        monitor.TrackRefreshed += (_, refreshedTrack) => refreshes.Add(refreshedTrack);
+
+        await monitor.PollOnceAsync();
+        await monitor.PollOnceAsync();
+
+        Assert.Equal([withHdCover], changes);
+        Assert.Empty(refreshes);
+    }
+
+    [Fact]
     public async Task PollOnceRaisesChangedOnlyAfterFirstTrackReceivesCover()
     {
         var withoutCover = new TrackInfo("Song", "Artist", null, "AppleMusic", TimeSpan.FromMinutes(3), true);
@@ -184,6 +307,38 @@ public sealed class TrackMonitorTests
         await monitor.PollOnceAsync();
 
         Assert.Equal([null], reads);
+    }
+
+    [Fact]
+    public async Task ConfirmedMissingSessionRaisesUnavailableAndAllowsSameTrackToReturn()
+    {
+        var track = new TrackInfo("Song", "Artist", [1], "AppleMusic", TimeSpan.FromMinutes(3), true);
+        var service = new FakeMediaSessionService(track, track, null, track, track);
+        var monitor = new TrackMonitor(service, settleDelay: TimeSpan.Zero);
+        var changes = new List<TrackInfo>();
+        int unavailableCount = 0;
+        monitor.TrackChanged += (_, changedTrack) => changes.Add(changedTrack);
+        monitor.TrackUnavailable += (_, _) => unavailableCount++;
+
+        await monitor.PollOnceAsync();
+        await monitor.PollOnceAsync();
+        Assert.Null(monitor.CurrentTrack);
+        await monitor.PollOnceAsync();
+
+        Assert.Equal(1, unavailableCount);
+        Assert.Equal([track, track], changes);
+    }
+
+    [Fact]
+    public async Task MediaReadFailureDoesNotReportConfirmedSessionUnavailable()
+    {
+        var monitor = new TrackMonitor(new ThrowingMediaSessionService());
+        int unavailableCount = 0;
+        monitor.TrackUnavailable += (_, _) => unavailableCount++;
+
+        await monitor.PollOnceAsync();
+
+        Assert.Equal(0, unavailableCount);
     }
 
     [Fact]
@@ -270,6 +425,24 @@ public sealed class TrackMonitorTests
         public Task PreviousAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
 
         public Task TogglePlayPauseAsync(CancellationToken cancellationToken = default) => Task.CompletedTask;
+    }
+
+    private static byte[] CreateBmp(int width, int height)
+    {
+        int rowStride = ((width * 3) + 3) & ~3;
+        int pixelBytes = checked(rowStride * height);
+        byte[] bytes = new byte[54 + pixelBytes];
+        bytes[0] = (byte)'B';
+        bytes[1] = (byte)'M';
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(2, 4), bytes.Length);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(10, 4), 54);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(14, 4), 40);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(18, 4), width);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(22, 4), height);
+        BinaryPrimitives.WriteInt16LittleEndian(bytes.AsSpan(26, 2), 1);
+        BinaryPrimitives.WriteInt16LittleEndian(bytes.AsSpan(28, 2), 24);
+        BinaryPrimitives.WriteInt32LittleEndian(bytes.AsSpan(34, 4), pixelBytes);
+        return bytes;
     }
 
     private sealed class ThrowingMediaSessionService : IMediaSessionService

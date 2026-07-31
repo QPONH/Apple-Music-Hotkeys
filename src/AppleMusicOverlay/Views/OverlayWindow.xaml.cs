@@ -384,7 +384,8 @@ public partial class OverlayWindow : Window
 
     private void ApplyTrackContentLayout(OverlayFavoriteVisualState favoriteState)
     {
-        OverlayTrackContentLayout layout = OverlayFavoritePresentation.CreateLayout(
+        OverlayTrackContentLayout layout = OverlayFavoritePresentation.CreateLayoutForTrack(
+            _currentTrack,
             favoriteState,
             _settings.ShowTitle,
             _settings.ShowArtist);
@@ -1458,7 +1459,8 @@ public partial class OverlayWindow : Window
     private Rect GetFallbackVisibleContentRectInWindow(double scale)
     {
         Rect bounds = new(40, 40, CoverSize, CoverSize);
-        OverlayTrackContentLayout layout = OverlayFavoritePresentation.CreateLayout(
+        OverlayTrackContentLayout layout = OverlayFavoritePresentation.CreateLayoutForTrack(
+            _currentTrack,
             _currentFavoriteState,
             _settings.ShowTitle,
             _settings.ShowArtist);

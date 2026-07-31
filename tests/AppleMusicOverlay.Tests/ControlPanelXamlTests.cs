@@ -937,6 +937,10 @@ public sealed class ControlPanelXamlTests
 
         Assert.Contains("OverlayTrackChangeDisplayPolicy.Decide", automaticShow);
         Assert.Contains("ShowOverlayOnTrackChange", automaticShow);
+        Assert.Contains("_overlayFavoriteStatusCoordinator.ResolveAsync(track)", automaticShow);
+        Assert.Contains("ShowResolvedOverlayTrackAsync(resolution.Track, resolution.State)", automaticShow);
+        Assert.DoesNotContain("GetCachedFavoriteState(track)", automaticShow);
+        Assert.DoesNotContain("RefreshFavoriteStateAfterImmediateShowAsync(track)", automaticShow);
         Assert.DoesNotContain("ShowOverlayOnTrackChange", manualShow);
         Assert.Contains("ShowResolvedOverlayTrackAsync(track, immediateState)", manualShow);
 
@@ -1159,7 +1163,7 @@ public sealed class ControlPanelXamlTests
         Assert.Contains("RefreshGamepadRuntimeBindings()", mainCode);
         Assert.Contains("ResumeGamepadRuntimeAfterCapture", mainCode);
         Assert.Contains("ExecuteAppActionAsync(action.Value)", mainCode);
-        Assert.Contains("await ExecuteAppActionAsync(e.Action)", mainCode);
+        Assert.Contains("await ExecuteAppActionAsync(e.Action, e.HotkeyText)", mainCode);
         Assert.Contains("_gamepadShortcutRuntime.Reset()", mainCode);
         Assert.Contains("GamepadShortcutRuntime", File.ReadAllText(GetGamepadShortcutRuntimePath()));
     }
@@ -1181,8 +1185,108 @@ public sealed class ControlPanelXamlTests
         Assert.Contains("[FavoriteCurrentTrack]", gamepadPage);
         Assert.Contains("x:Name=\"GamepadFavoriteBox\"", gamepadPage);
         Assert.Contains("Tag=\"FavoriteCurrentTrack\"", gamepadPage);
+        int keyboardCardIndex = mainXaml.IndexOf("x:Name=\"KeyboardPreviousBox\"", StringComparison.Ordinal);
+        int gamepadCardIndex = mainXaml.IndexOf("x:Name=\"GamepadHotkeyCard\"", StringComparison.Ordinal);
+        int gamepadLastBindingIndex = mainXaml.IndexOf("x:Name=\"GamepadFavoriteBox\"", StringComparison.Ordinal);
+        int cloudMusicCardIndex = mainXaml.IndexOf("x:Name=\"CloudMusicNativeFavoriteHotkeyCard\"", StringComparison.Ordinal);
+        Assert.True(keyboardCardIndex < gamepadCardIndex);
+        Assert.True(gamepadCardIndex < gamepadLastBindingIndex);
+        Assert.True(gamepadLastBindingIndex < cloudMusicCardIndex);
+        Assert.Contains("x:Name=\"CloudMusicNativeFavoriteModifierBox\"", mainXaml);
+        Assert.Contains("x:Name=\"CloudMusicNativeFavoriteKeyBox\"", mainXaml);
+        Assert.Contains("CloudMusicNativeFavoriteHotkeyBox_SelectionChanged", mainXaml);
+        Assert.DoesNotContain("x:Name=\"CloudMusicNativeFavoriteHotkeyBox\"", mainXaml);
         Assert.Contains("case AppAction.FavoriteCurrentTrack", dispatch);
         Assert.Contains("FavoriteCurrentTrackAsync", dispatch);
+    }
+
+    [Fact]
+    public void CloudMusicNativeFavoriteHotkeyIsValidatedSavedAndNeverRegistered()
+    {
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+        string settingsCode = File.ReadAllText(GetOverlaySettingsPath());
+        string bindingManagerCode = File.ReadAllText(GetKeyboardHotkeyBindingManagerPath());
+        string saveHandler = ExtractBetween(
+            mainCode,
+            "private bool TrySaveCloudMusicNativeFavoriteHotkey(string candidateText)",
+            "private static string NormalizeCloudMusicNativeHotkeyText");
+
+        Assert.Contains("HotkeyParser.TryParse(candidate", saveHandler);
+        Assert.Contains("KeyboardHotkeyBindingManager.CreateSnapshot", saveHandler);
+        Assert.Contains("_viewModel.Settings.CloudMusicFavoriteHotkey = candidate", saveHandler);
+        Assert.Contains("_viewModel.Save()", saveHandler);
+        Assert.Contains("CloudMusicFavoriteModifierChoices", mainCode);
+        Assert.Contains("CloudMusicFavoriteKeyChoices", mainCode);
+        Assert.Contains("CloudMusicFavoriteHotkey", settingsCode);
+        Assert.DoesNotContain("CloudMusicFavoriteHotkey", bindingManagerCode);
+    }
+
+    [Fact]
+    public void FavoriteTrackActionRoutesCloudMusicThroughItsNativeFavoriteShortcut()
+    {
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+        string commandService = File.ReadAllText(Path.Combine(
+            Path.GetDirectoryName(GetAppleMusicFavoriteServicePath())!,
+            "CloudMusicFavoriteCommandService.cs"));
+        string favoriteHandler = ExtractBetween(
+            mainCode,
+            "private async Task FavoriteCurrentTrackCoreAsync(string? triggeringHotkey)",
+            "private async Task ShowOptimisticFavoriteFeedbackAsync");
+
+        Assert.Contains("IsSupportedCloudMusicSource", favoriteHandler);
+        Assert.Contains("FavoriteCloudMusicCurrentTrackAsync", favoriteHandler);
+        Assert.Contains("_viewModel.Settings.CloudMusicFavoriteHotkey", favoriteHandler);
+        Assert.Contains("IGlobalShortcutSender", commandService);
+        Assert.Contains("IHotkeyReleaseWaiter", commandService);
+        Assert.Contains("_releaseWaiter.WaitForReleaseAsync", commandService);
+        Assert.Contains("_shortcutSender.TrySendAsync(hotkey", commandService);
+        Assert.Contains("forceRefresh: true", commandService);
+        Assert.Contains("CloudMusicFavoriteCommandResultKind.Removed", commandService);
+        Assert.Contains("_cloudMusicFavoriteStateMonitor.SetKnownState", favoriteHandler);
+        Assert.Contains("ShowCloudMusicFavoriteFailureNotification(result.Kind)", favoriteHandler);
+        Assert.Contains("CloudMusicTriggerReleaseTimedOutTitle", mainCode);
+    }
+
+    [Fact]
+    public void KeyboardAndGamepadFavoriteKeepOneActionWhileKeyboardCarriesReleaseContext()
+    {
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+        string keyboardHandler = ExtractBetween(
+            mainCode,
+            "private async void HotkeyService_HotkeyPressed",
+            "private async Task ExecuteAppActionAsync");
+        string gamepadHandler = ExtractBetween(
+            mainCode,
+            "private void HandleGamepadShortcutButtons",
+            "private void RenderGamepadCaptureState");
+        string dispatch = ExtractBetween(
+            mainCode,
+            "private async Task ExecuteAppActionAsync",
+            "private async Task WaitForActiveFavoriteRequestAsync");
+
+        Assert.Contains("ExecuteAppActionAsync(e.Action, e.HotkeyText)", keyboardHandler);
+        Assert.Contains("ExecuteAppActionAsync(action.Value)", gamepadHandler);
+        Assert.Contains("case AppAction.FavoriteCurrentTrack", dispatch);
+        Assert.Contains("FavoriteCurrentTrackAsync(triggeringHotkey)", dispatch);
+    }
+
+    [Fact]
+    public void CloudMusicUnlikeUsesSourceSpecificCurrentPagePrompt()
+    {
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+        string localizationCode = File.ReadAllText(GetLocalizationServicePath());
+        string favoriteHandler = ExtractBetween(
+            mainCode,
+            "private async Task FavoriteCurrentTrackCoreAsync(string? triggeringHotkey)",
+            "private async Task FavoriteCloudMusicCurrentTrackAsync");
+
+        Assert.Contains(
+            "isCloudMusic && previousState == OverlayFavoriteVisualState.Favorite",
+            favoriteHandler);
+        Assert.Contains("\"CloudMusicUnfavoriteInProgressTitle\"", favoriteHandler);
+        Assert.Contains("\"CloudMusicUnfavoriteInProgressMessage\"", favoriteHandler);
+        Assert.Contains("[\"CloudMusicUnfavoriteInProgressTitle\"]", localizationCode);
+        Assert.Contains("[\"CloudMusicUnfavoriteInProgressMessage\"]", localizationCode);
     }
 
     [Fact]
@@ -1229,7 +1333,7 @@ public sealed class ControlPanelXamlTests
         Assert.Contains("_pendingHotkeyText = hotkeyText", mainCode);
         Assert.Contains("TryCommitPendingHotkey(_capturingHotkeyBox)", mainCode);
         Assert.Contains("TryCommitRegisteredHotkeyCandidate(e.HotkeyText)", hotkeyHandler);
-        Assert.Contains("await ExecuteAppActionAsync(e.Action)", hotkeyHandler);
+        Assert.Contains("await ExecuteAppActionAsync(e.Action, e.HotkeyText)", hotkeyHandler);
     }
 
     [Fact]
@@ -1265,7 +1369,7 @@ public sealed class ControlPanelXamlTests
         Assert.Contains("Foreground=\"#E0E4EA\"", overlayXaml);
         Assert.DoesNotContain("FavoriteStatusButton", overlayXaml);
         Assert.Contains("TextTrimming=\"CharacterEllipsis\"", overlayXaml);
-        Assert.Contains("OverlayFavoritePresentation.CreateLayout", overlayCode);
+        Assert.Contains("OverlayFavoritePresentation.CreateLayoutForTrack", overlayCode);
         Assert.Contains("OverlayFavoriteStatusCoordinator", mainCode);
         Assert.Contains("ResolveAsync(track)", mainCode);
     }
@@ -1278,7 +1382,7 @@ public sealed class ControlPanelXamlTests
         string trayCode = File.ReadAllText(GetTrayIconServicePath());
         string favoriteHandler = ExtractBetween(
             mainCode,
-            "private async Task FavoriteCurrentTrackCoreAsync()",
+            "private async Task FavoriteCurrentTrackCoreAsync(string? triggeringHotkey)",
             "private bool IsCurrentTrack");
 
         int invokeIndex = favoriteHandler.IndexOf("_favoriteService.FavoriteCurrentTrackAsync()", StringComparison.Ordinal);
@@ -1411,6 +1515,19 @@ public sealed class ControlPanelXamlTests
     }
 
     [Fact]
+    public void DefaultBuildAndManifestExposeMusicFloatProductName()
+    {
+        string project = File.ReadAllText(GetProjectFilePath());
+        string manifest = File.ReadAllText(GetAppManifestPath());
+
+        Assert.Contains("<AssemblyName>MusicFloat</AssemblyName>", project);
+        Assert.Contains("<RootNamespace>AppleMusicOverlay</RootNamespace>", project);
+        Assert.Contains("<AssemblyTitle>MusicFloat</AssemblyTitle>", project);
+        Assert.Contains("<Product>MusicFloat</Product>", project);
+        Assert.Contains("<assemblyIdentity version=\"1.0.0.0\" name=\"MusicFloat\"/>", manifest);
+    }
+
+    [Fact]
     public void TrayMenuUsesAsyncRestoreActionsAndCompleteExitLabels()
     {
         string trayCode = File.ReadAllText(GetTrayIconServicePath());
@@ -1442,6 +1559,32 @@ public sealed class ControlPanelXamlTests
         Assert.Contains("RequestApplicationExit", mainCode);
         Assert.Contains("SessionEnding", appCode);
         Assert.Contains("RequestApplicationExit(isSessionEnding: true)", appCode);
+    }
+
+    [Fact]
+    public void CaptureSourceSelectionUsesRestorableViewModelProperty()
+    {
+        string mainXaml = File.ReadAllText(GetMainWindowXamlPath());
+        string captureSourceCombo = ExtractElementAround(mainXaml, "x:Name=\"CaptureSourceCombo\"");
+
+        Assert.Contains(
+            "SelectedValue=\"{Binding CaptureSourceAppUserModelId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}\"",
+            captureSourceCombo);
+    }
+
+    [Fact]
+    public void ConfirmedUnavailableSourceHidesRuntimeOverlayRegardlessOfPersistentMode()
+    {
+        string mainCode = File.ReadAllText(GetMainWindowCodeBehindPath());
+        string handler = ExtractBetween(
+            mainCode,
+            "private void HideRuntimeOverlayForUnavailableSource",
+            "private void UpdateVisibleResolvedOverlayTrack");
+
+        Assert.Contains("TrackUnavailable +=", mainCode);
+        Assert.Contains("_overlayWindow.HideOverlayVisualImmediately();", handler);
+        Assert.Contains("_layeredOverlayWindow.HideImmediately();", handler);
+        Assert.DoesNotContain("PauseOverlay", handler);
     }
 
     private static string GetMainWindowXamlPath()
@@ -1806,6 +1949,23 @@ public sealed class ControlPanelXamlTests
         }
 
         throw new FileNotFoundException("Could not locate AppleMusicOverlay.csproj from the test output directory.");
+    }
+
+    private static string GetAppManifestPath()
+    {
+        var directory = new DirectoryInfo(AppContext.BaseDirectory);
+        while (directory != null)
+        {
+            string candidate = Path.Combine(directory.FullName, "src", "AppleMusicOverlay", "app.manifest");
+            if (File.Exists(candidate))
+            {
+                return candidate;
+            }
+
+            directory = directory.Parent;
+        }
+
+        throw new FileNotFoundException("Could not locate app.manifest from the test output directory.");
     }
 
     private static string GetAppCodeBehindPath()

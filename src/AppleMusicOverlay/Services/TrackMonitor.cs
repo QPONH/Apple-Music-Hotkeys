@@ -29,6 +29,8 @@ public sealed class TrackMonitor : IDisposable
 
     public event EventHandler<TrackInfo>? TrackRefreshed;
 
+    public event EventHandler? TrackUnavailable;
+
     public TrackInfo? CurrentTrack => _lastStableTrack;
 
     public TrackMonitor(
@@ -83,16 +85,21 @@ public sealed class TrackMonitor : IDisposable
         if (track == null)
         {
             _pendingTrackKey = null;
+            _lastTrackKey = null;
+            _lastCoverKey = null;
             _lastStableTrack = null;
+            _stableMetadataOnlyPolls = 0;
             TrackRead?.Invoke(this, null);
+            TrackUnavailable?.Invoke(this, EventArgs.Empty);
             return;
         }
 
-        track = NormalizeTrack(track);
+        track = NormalizeCoverForSource(NormalizeTrack(track));
         bool alreadySettledTrack = false;
         if (!includeCover && HasTrackIdentityChanged(track))
         {
-            track = NormalizeTrack(await ReadSettledTrackAsync(track, cancellationToken));
+            track = NormalizeCoverForSource(
+                NormalizeTrack(await ReadSettledTrackAsync(track, cancellationToken)));
             alreadySettledTrack = true;
         }
         else
@@ -103,7 +110,10 @@ public sealed class TrackMonitor : IDisposable
         string trackKey = TrackIdentity.Create(track);
         string coverKey = CreateCoverKey(track);
         bool pendingTrackReady = trackKey == _pendingTrackKey && HasCover(track);
-        bool metadataUpdated = IsMetadataRefresh(track);
+        bool isCloudMusicTrack =
+            OverlayFavoritePresentation.IsSupportedCloudMusicSource(track.SourceAppId);
+        bool metadataUpdated = IsMetadataRefresh(track) &&
+                               !(isCloudMusicTrack && !HasCover(track));
         bool trackChanged = (trackKey != _lastTrackKey || pendingTrackReady) && !metadataUpdated;
         bool refreshed = metadataUpdated ||
                          (trackKey == _lastTrackKey && coverKey != _lastCoverKey && track.CoverBytes is { Length: > 0 });
@@ -118,7 +128,11 @@ public sealed class TrackMonitor : IDisposable
         {
             if (!alreadySettledTrack)
             {
-                track = NormalizeTrack(await SettleTrackAsync(track, _lastCoverKey, cancellationToken));
+                track = NormalizeCoverForSource(
+                    NormalizeTrack(await SettleTrackAsync(
+                        track,
+                        _lastCoverKey,
+                        cancellationToken)));
             }
 
             if (!IsUsableTrack(track))
@@ -143,17 +157,34 @@ public sealed class TrackMonitor : IDisposable
             if (!HasCover(track))
             {
                 _pendingTrackKey = trackKey;
+                if (isCloudMusicTrack)
+                {
+                    _lastTrackKey = trackKey;
+                    _lastCoverKey = string.Empty;
+                    PublishRead(track);
+                    return;
+                }
+
                 TrackRead?.Invoke(this, _lastStableTrack);
                 return;
             }
 
             if (trackKey == _lastTrackKey)
             {
+                bool wasWaitingForFirstCover = trackKey == _pendingTrackKey;
+                _pendingTrackKey = null;
                 if (coverKey != _lastCoverKey && track.CoverBytes is { Length: > 0 })
                 {
                     _lastCoverKey = coverKey;
                     PublishRead(track);
-                    TrackRefreshed?.Invoke(this, track);
+                    if (wasWaitingForFirstCover)
+                    {
+                        TrackChanged?.Invoke(this, track);
+                    }
+                    else
+                    {
+                        TrackRefreshed?.Invoke(this, track);
+                    }
                 }
                 else
                 {
@@ -246,7 +277,8 @@ public sealed class TrackMonitor : IDisposable
                 await Task.Delay(delay, cancellationToken);
             }
 
-            bestTrack = NormalizeTrack(await ReadSettledTrackAsync(bestTrack, cancellationToken));
+            bestTrack = NormalizeCoverForSource(
+                NormalizeTrack(await ReadSettledTrackAsync(bestTrack, cancellationToken)));
             if (IsReadyToDisplay(bestTrack, previousCoverKey))
             {
                 return bestTrack;
@@ -372,6 +404,20 @@ public sealed class TrackMonitor : IDisposable
         return track with { Title = title, Artist = artist };
     }
 
+    private static TrackInfo NormalizeCoverForSource(TrackInfo track)
+    {
+        if (!OverlayFavoritePresentation.IsSupportedCloudMusicSource(track.SourceAppId) ||
+            track.CoverBytes is not { Length: > 0 } coverBytes ||
+            CoverImageQuality.MeetsMinimumResolution(
+                coverBytes,
+                CloudMusicCoverResolver.MinimumHighResolutionPixels))
+        {
+            return track;
+        }
+
+        return track with { CoverBytes = null };
+    }
+
     private static TrackInfo RemovePreviousCover(TrackInfo track, string? previousCoverKey)
     {
         if (track.CoverBytes is { Length: > 0 } &&
@@ -386,9 +432,19 @@ public sealed class TrackMonitor : IDisposable
 
     private static bool IsReadyToDisplay(TrackInfo track, string? previousCoverKey)
     {
-        return IsUsableTrack(track) &&
-               HasCover(track) &&
-               (string.IsNullOrEmpty(previousCoverKey) || CreateCoverKey(track) != previousCoverKey);
+        bool hasCurrentCover =
+            IsUsableTrack(track) &&
+            HasCover(track) &&
+            (string.IsNullOrEmpty(previousCoverKey) || CreateCoverKey(track) != previousCoverKey);
+        if (!hasCurrentCover)
+        {
+            return false;
+        }
+
+        return !OverlayFavoritePresentation.IsSupportedCloudMusicSource(track.SourceAppId) ||
+               CoverImageQuality.MeetsMinimumResolution(
+                   track.CoverBytes!,
+                   CloudMusicCoverResolver.MinimumHighResolutionPixels);
     }
 
     private static bool HasCover(TrackInfo track)

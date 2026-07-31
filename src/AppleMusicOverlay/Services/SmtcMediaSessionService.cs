@@ -8,11 +8,25 @@ public sealed class SmtcMediaSessionService : IMediaSessionService, IMediaSessio
 {
     private readonly object _syncRoot = new();
     private readonly HashSet<GlobalSystemMediaTransportControlsSession> _observedSessions = new();
+    private readonly CloudMusicCoverUpgradeCoordinator _cloudMusicCoverUpgradeCoordinator;
     private GlobalSystemMediaTransportControlsSessionManager? _manager;
 
     public event EventHandler? MediaSessionChanged;
 
     public string PreferredSourceAppUserModelId { get; set; } = string.Empty;
+
+    public SmtcMediaSessionService()
+        : this(new CloudMusicCoverResolver())
+    {
+    }
+
+    public SmtcMediaSessionService(ICloudMusicCoverResolver cloudMusicCoverResolver)
+    {
+        _cloudMusicCoverUpgradeCoordinator =
+            new CloudMusicCoverUpgradeCoordinator(cloudMusicCoverResolver);
+        _cloudMusicCoverUpgradeCoordinator.CoverUpgraded +=
+            (_, _) => RaiseMediaSessionChanged();
+    }
 
     public Task<TrackInfo?> GetCurrentTrackAsync(CancellationToken cancellationToken = default)
     {
@@ -38,16 +52,33 @@ public sealed class SmtcMediaSessionService : IMediaSessionService, IMediaSessio
             sourceAppUserModelId,
             NormalizeText(properties.Artist, "Unknown Artist"),
             properties.AlbumTitle);
-        byte[]? coverBytes = options.IncludeCover
-            ? await TryReadCoverBytesAsync(properties.Thumbnail, cancellationToken)
-            : null;
+        TimeSpan duration = timeline.EndTime;
+        byte[]? coverBytes = null;
+        if (_cloudMusicCoverUpgradeCoordinator.IsSupportedSource(sourceAppUserModelId))
+        {
+            byte[]? highResolutionCover = _cloudMusicCoverUpgradeCoordinator.SelectCover(
+                title,
+                artist,
+                duration,
+                options.IncludeCover);
+            coverBytes = highResolutionCover;
+        }
+        else if (options.IncludeCover)
+        {
+            coverBytes = await TryReadCoverBytesAsync(properties.Thumbnail, cancellationToken);
+        }
+
+        if (!_cloudMusicCoverUpgradeCoordinator.IsSupportedSource(sourceAppUserModelId))
+        {
+            _cloudMusicCoverUpgradeCoordinator.Reset();
+        }
 
         return new TrackInfo(
             title,
             artist,
             coverBytes,
             sourceAppUserModelId,
-            timeline.EndTime,
+            duration,
             playback.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing);
     }
 

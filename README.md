@@ -20,11 +20,11 @@
 
 MusicFloat is a local Windows desktop app for players that expose metadata through Windows System Media Transport Controls (SMTC). It shows a compact floating overlay, lets you control playback, and stays out of the game process: no injection, no DirectX hooks, no driver overlay, and no process patching.
 
-The project remains named `AppleMusicOverlay` internally for compatibility with the existing codebase. Official release packages expose `MusicFloat.exe`.
+The project namespace remains `AppleMusicOverlay` for compatibility with the existing codebase; default builds and official release packages both produce `MusicFloat.exe`.
 
 ## Preview
 
-MusicFloat provides a dark desktop control panel with pages for current playback, overlay settings, shortcuts, and common options. The floating overlay displays cover art, title, artist, and, for the Apple Music Windows app, the current Favorite state.
+MusicFloat provides a dark desktop control panel with pages for current playback, overlay settings, shortcuts, and common options. The floating overlay displays cover art, title, artist, and the current Favorite state for Apple Music or NetEase CloudMusic.
 
 ## Features
 
@@ -33,10 +33,13 @@ MusicFloat provides a dark desktop control panel with pages for current playback
 - Lets users disable automatic track-change popups while keeping manual overlay shortcuts available.
 - Supports configurable overlay visibility, duration, size, position, shadow, title and artist visibility, and track information font.
 - Supports keyboard and gamepad shortcuts for previous track, next track, play/pause, and showing the current track overlay.
-- Adds the currently playing song to Favorites in the Apple Music Windows app through a configurable keyboard or gamepad shortcut.
+- Routes the same MusicFloat keyboard or gamepad Favorite action by source: Apple Music only adds a Favorite, while NetEase CloudMusic receives its own global Favorite shortcut and repeated actions toggle Like on or off.
+- The CloudMusic favorite link at the bottom of MusicFloat's Shortcuts page uses separate modifier and main-key selectors. It must match CloudMusic's global Like shortcut and is used only as a forwarding target, not registered by MusicFloat.
 - Detects an already-favorited Apple Music song without removing it or toggling its state.
-- Displays Apple Music Favorite state in the overlay and provides immediate star feedback when a Favorite shortcut is used.
-- Provides capture source selection when multiple SMTC media sessions are available.
+- Displays Favorite state for Apple Music and NetEase CloudMusic in the overlay.
+- When CloudMusic's own global Favorite shortcut or Favorite button is used, CloudMusic performs the real playlist operation and MusicFloat plays the same star motion after confirming the local state. User-customized CloudMusic shortcuts are supported.
+- MusicFloat does not use CloudMusic's potentially delayed or low-resolution SMTC thumbnail. It safely resolves the current track from the local playing list, displays only official-CDN artwork measured at 400px or larger, and prefetches the next four queue entries. This accepts legacy CloudMusic albums whose official artwork is capped at 430px while continuing to reject clearly low-resolution thumbnails. On track changes, the overlay waits for verified high-resolution artwork for the current song so the cover, title, artist, and Favorite state appear together without reusing the previous or a low-resolution cover.
+- Provides capture source selection when multiple SMTC media sessions are available and defaults to Automatic on first launch. When the selected source closes, the runtime overlay stops showing stale track information regardless of persistent mode.
 - Runs locally with a tray icon and optional close-to-tray behavior.
 - Uses system-installed fonts only. MusicFloat does not bundle, download, copy, or redistribute Spotify Mix, Apple SF Pro, or other proprietary fonts.
 
@@ -102,8 +105,7 @@ dotnet publish src/AppleMusicOverlay/AppleMusicOverlay.csproj `
   -p:PublishSingleFile=true `
   -p:PublishTrimmed=false `
   -p:DebugType=None `
-  -p:DebugSymbols=false `
-  -p:AssemblyName=MusicFloat
+  -p:DebugSymbols=false
 ```
 
 ## Known Limitations
@@ -112,8 +114,9 @@ dotnet publish src/AppleMusicOverlay/AppleMusicOverlay.csproj `
 - Metadata quality depends on the player. Some players may provide missing, delayed, or generic title, artist, or cover information.
 - The overlay is a normal Windows desktop overlay. It does not inject into games and may be hidden by exclusive fullscreen modes.
 - Optional track information fonts only appear when already installed on the user's system.
-- The Favorite shortcut currently supports the Apple Music Windows app only. It relies on the app's Windows UI Automation accessibility tree because SMTC does not expose Favorite operations.
+- Apple Music Favorite relies on the app's Windows UI Automation accessibility tree because SMTC does not expose Favorite operations.
 - Apple Music must remain running and signed in for Favorite state detection and Favorite actions to work.
+- NetEase CloudMusic must remain running and signed in with SMTC and global shortcuts enabled. MusicFloat's CloudMusic favorite link must match the shortcut configured in CloudMusic; the default is `Ctrl+Alt+L`. CloudMusic performs the real Like or Unlike operation, then MusicFloat confirms it from the local Favorite playlist state.
 
 ## License
 

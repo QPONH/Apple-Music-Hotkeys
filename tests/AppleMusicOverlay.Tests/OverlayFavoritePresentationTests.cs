@@ -98,6 +98,44 @@ public sealed class OverlayFavoritePresentationTests
         Assert.Equal(249, layout.ArtistTop);
     }
 
+    [Fact]
+    public void CloudMusicUnavailableStateReservesStableFavoriteTextGeometry()
+    {
+        TrackInfo cloudMusicTrack = AppleMusicTrack with { SourceAppId = "cloudmusic.exe" };
+
+        OverlayTrackContentLayout unresolved = OverlayFavoritePresentation.CreateLayoutForTrack(
+            cloudMusicTrack,
+            OverlayFavoriteVisualState.Unavailable,
+            showTitle: true,
+            showArtist: true);
+        OverlayTrackContentLayout resolved = OverlayFavoritePresentation.CreateLayoutForTrack(
+            cloudMusicTrack,
+            OverlayFavoriteVisualState.Favorite,
+            showTitle: true,
+            showArtist: true);
+
+        Assert.Equal(resolved.TextLeft, unresolved.TextLeft);
+        Assert.Equal(resolved.TextWidth, unresolved.TextWidth);
+        Assert.Equal(resolved.CenterText, unresolved.CenterText);
+        Assert.False(unresolved.ShowFavoriteStar);
+        Assert.True(resolved.ShowFavoriteStar);
+    }
+
+    [Fact]
+    public void AppleMusicUnavailableStateKeepsExistingCenteredGeometry()
+    {
+        OverlayTrackContentLayout layout = OverlayFavoritePresentation.CreateLayoutForTrack(
+            AppleMusicTrack,
+            OverlayFavoriteVisualState.Unavailable,
+            showTitle: true,
+            showArtist: true);
+
+        Assert.Equal(4, layout.TextLeft);
+        Assert.Equal(248, layout.TextWidth);
+        Assert.True(layout.CenterText);
+        Assert.False(layout.ShowFavoriteStar);
+    }
+
     [Theory]
     [InlineData(OverlayTrackFontIds.Default, false, 0)]
     [InlineData(OverlayTrackFontIds.SpotifyMix, false, 0)]
@@ -188,6 +226,22 @@ public sealed class OverlayFavoritePresentationTests
     }
 
     [Fact]
+    public async Task StatusCoordinatorUsesCloudMusicReaderWithoutAppleMusicAutomation()
+    {
+        TrackInfo cloudMusicTrack = AppleMusicTrack with { SourceAppId = "cloudmusic.exe" };
+        var reader = new StubFavoriteStateReader(
+            "cloudmusic.exe",
+            OverlayFavoriteVisualState.Favorite);
+        using var coordinator = new OverlayFavoriteStatusCoordinator(reader);
+
+        OverlayFavoriteResolution? result = await coordinator.ResolveAsync(cloudMusicTrack);
+
+        Assert.NotNull(result);
+        Assert.Equal(OverlayFavoriteVisualState.Favorite, result.State);
+        Assert.Equal(1, reader.ReadCount);
+    }
+
+    [Fact]
     public async Task StatusCoordinatorFallsBackToLegacyPresentationWhenReadTimesOut()
     {
         using var coordinator = new OverlayFavoriteStatusCoordinator(
@@ -230,5 +284,96 @@ public sealed class OverlayFavoritePresentationTests
         Assert.NotNull(result);
         Assert.Equal(OverlayFavoriteVisualState.NotFavorite, result.State);
         Assert.Equal(2, readCount);
+    }
+
+    [Fact]
+    public async Task StatusCoordinatorWaitsForAppleMusicFavoriteControlOnFirstRandomTrack()
+    {
+        var statuses = new Queue<AppleMusicFavoriteStatus>(
+        [
+            new AppleMusicFavoriteStatus(FavoriteButtonState.Unknown, null),
+            new AppleMusicFavoriteStatus(FavoriteButtonState.Unknown, null),
+            new AppleMusicFavoriteStatus(FavoriteButtonState.Unknown, null),
+            new AppleMusicFavoriteStatus(FavoriteButtonState.Unknown, null),
+            new AppleMusicFavoriteStatus(
+                FavoriteButtonState.AlreadyFavorite,
+                "A Very Long Song Title - Example Artist")
+        ]);
+        int readCount = 0;
+        using var coordinator = new OverlayFavoriteStatusCoordinator(
+            _ =>
+            {
+                readCount++;
+                return Task.FromResult(statuses.Dequeue());
+            },
+            TimeSpan.FromSeconds(1),
+            TimeSpan.Zero,
+            maxAttempts: 3,
+            appleMusicMaxAttempts: 5);
+
+        OverlayFavoriteResolution? result = await coordinator.ResolveAsync(AppleMusicTrack);
+
+        Assert.NotNull(result);
+        Assert.Equal(OverlayFavoriteVisualState.Favorite, result.State);
+        Assert.Equal(5, readCount);
+    }
+
+    [Fact]
+    public async Task StatusCoordinatorKeepsDefaultRetryCountForCloudMusic()
+    {
+        TrackInfo cloudMusicTrack = AppleMusicTrack with { SourceAppId = "cloudmusic.exe" };
+        var reader = new CountingUnavailableStateReader("cloudmusic.exe");
+        using var coordinator = new OverlayFavoriteStatusCoordinator(
+            reader,
+            TimeSpan.FromSeconds(1),
+            TimeSpan.Zero,
+            maxAttempts: 3,
+            appleMusicMaxAttempts: 8);
+
+        OverlayFavoriteResolution? result = await coordinator.ResolveAsync(cloudMusicTrack);
+
+        Assert.NotNull(result);
+        Assert.Equal(OverlayFavoriteVisualState.Unavailable, result.State);
+        Assert.Equal(3, reader.ReadCount);
+    }
+
+    private sealed class StubFavoriteStateReader(
+        string supportedSource,
+        OverlayFavoriteVisualState state) : IOverlayFavoriteStateReader
+    {
+        public int ReadCount { get; private set; }
+
+        public bool IsSupportedSource(string? sourceAppId)
+        {
+            return string.Equals(sourceAppId, supportedSource, StringComparison.OrdinalIgnoreCase);
+        }
+
+        public Task<OverlayFavoriteVisualState> ReadAsync(
+            TrackInfo track,
+            CancellationToken cancellationToken)
+        {
+            ReadCount++;
+            return Task.FromResult(state);
+        }
+    }
+
+    private sealed class CountingUnavailableStateReader(string supportedSource)
+        : IOverlayFavoriteStateReader
+    {
+        public int ReadCount { get; private set; }
+
+        public bool IsSupportedSource(string? sourceAppId)
+        {
+            return string.Equals(sourceAppId, supportedSource, StringComparison.OrdinalIgnoreCase);
+        }
+
+        public Task<OverlayFavoriteVisualState> ReadAsync(
+            TrackInfo track,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ReadCount++;
+            return Task.FromResult(OverlayFavoriteVisualState.Unavailable);
+        }
     }
 }

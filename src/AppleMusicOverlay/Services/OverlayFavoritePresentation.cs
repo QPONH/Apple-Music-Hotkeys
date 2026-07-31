@@ -26,12 +26,65 @@ public sealed record OverlayFavoriteResolution(
     TrackInfo Track,
     OverlayFavoriteVisualState State);
 
+public interface IOverlayFavoriteStateReader
+{
+    bool IsSupportedSource(string? sourceAppId);
+
+    Task<OverlayFavoriteVisualState> ReadAsync(
+        TrackInfo track,
+        CancellationToken cancellationToken);
+}
+
+public sealed class CompositeOverlayFavoriteStateReader(
+    params IOverlayFavoriteStateReader[] readers) : IOverlayFavoriteStateReader
+{
+    private readonly IOverlayFavoriteStateReader[] _readers = readers;
+
+    public bool IsSupportedSource(string? sourceAppId)
+    {
+        return _readers.Any(reader => reader.IsSupportedSource(sourceAppId));
+    }
+
+    public Task<OverlayFavoriteVisualState> ReadAsync(
+        TrackInfo track,
+        CancellationToken cancellationToken)
+    {
+        IOverlayFavoriteStateReader? reader = _readers.FirstOrDefault(
+            candidate => candidate.IsSupportedSource(track.SourceAppId));
+        return reader == null
+            ? Task.FromResult(OverlayFavoriteVisualState.Unavailable)
+            : reader.ReadAsync(track, cancellationToken);
+    }
+}
+
+public sealed class AppleMusicOverlayFavoriteStateReader(
+    Func<CancellationToken, Task<AppleMusicFavoriteStatus>> readStatusAsync)
+    : IOverlayFavoriteStateReader
+{
+    public bool IsSupportedSource(string? sourceAppId)
+    {
+        return OverlayFavoritePresentation.IsSupportedAppleMusicSource(sourceAppId);
+    }
+
+    public async Task<OverlayFavoriteVisualState> ReadAsync(
+        TrackInfo track,
+        CancellationToken cancellationToken)
+    {
+        AppleMusicFavoriteStatus status = await readStatusAsync(cancellationToken);
+        return OverlayFavoritePresentation.Resolve(track, status);
+    }
+}
+
 public sealed class OverlayFavoriteStatusCoordinator : IDisposable
 {
-    private readonly Func<CancellationToken, Task<AppleMusicFavoriteStatus>> _readStatusAsync;
+    private static readonly TimeSpan DefaultAppleMusicReadTimeout = TimeSpan.FromMilliseconds(1600);
+    private const int DefaultAppleMusicMaxAttempts = 8;
+    private readonly IOverlayFavoriteStateReader _stateReader;
     private readonly TimeSpan _readTimeout;
+    private readonly TimeSpan _appleMusicReadTimeout;
     private readonly TimeSpan _retryDelay;
     private readonly int _maxAttempts;
+    private readonly int _appleMusicMaxAttempts;
     private readonly object _gate = new();
     private CancellationTokenSource? _activeRequestCts;
     private long _revision;
@@ -40,16 +93,42 @@ public sealed class OverlayFavoriteStatusCoordinator : IDisposable
         Func<CancellationToken, Task<AppleMusicFavoriteStatus>> readStatusAsync,
         TimeSpan? readTimeout = null,
         TimeSpan? retryDelay = null,
-        int maxAttempts = 3)
+        int maxAttempts = 3,
+        TimeSpan? appleMusicReadTimeout = null,
+        int appleMusicMaxAttempts = DefaultAppleMusicMaxAttempts)
+        : this(
+            new AppleMusicOverlayFavoriteStateReader(readStatusAsync),
+            readTimeout,
+            retryDelay,
+            maxAttempts,
+            appleMusicReadTimeout,
+            appleMusicMaxAttempts)
     {
-        _readStatusAsync = readStatusAsync;
+    }
+
+    public OverlayFavoriteStatusCoordinator(
+        IOverlayFavoriteStateReader stateReader,
+        TimeSpan? readTimeout = null,
+        TimeSpan? retryDelay = null,
+        int maxAttempts = 3,
+        TimeSpan? appleMusicReadTimeout = null,
+        int appleMusicMaxAttempts = DefaultAppleMusicMaxAttempts)
+    {
+        _stateReader = stateReader;
         _readTimeout = readTimeout ?? TimeSpan.FromMilliseconds(900);
+        _appleMusicReadTimeout = appleMusicReadTimeout ??
+                                     readTimeout ??
+                                     DefaultAppleMusicReadTimeout;
         _retryDelay = retryDelay ?? TimeSpan.FromMilliseconds(140);
         _maxAttempts = Math.Max(1, maxAttempts);
+        _appleMusicMaxAttempts = Math.Max(_maxAttempts, appleMusicMaxAttempts);
     }
 
     public async Task<OverlayFavoriteResolution?> ResolveAsync(TrackInfo track)
     {
+        bool isAppleMusic = OverlayFavoritePresentation.IsSupportedAppleMusicSource(track.SourceAppId);
+        TimeSpan readTimeout = isAppleMusic ? _appleMusicReadTimeout : _readTimeout;
+        int maxAttempts = isAppleMusic ? _appleMusicMaxAttempts : _maxAttempts;
         long revision;
         CancellationTokenSource requestCts;
         lock (_gate)
@@ -58,11 +137,11 @@ public sealed class OverlayFavoriteStatusCoordinator : IDisposable
             _activeRequestCts?.Cancel();
             _activeRequestCts?.Dispose();
             requestCts = new CancellationTokenSource();
-            requestCts.CancelAfter(_readTimeout);
+            requestCts.CancelAfter(readTimeout);
             _activeRequestCts = requestCts;
         }
 
-        if (!OverlayFavoritePresentation.IsSupportedAppleMusicSource(track.SourceAppId))
+        if (!_stateReader.IsSupportedSource(track.SourceAppId))
         {
             return IsCurrent(revision)
                 ? new OverlayFavoriteResolution(track, OverlayFavoriteVisualState.Unavailable)
@@ -71,16 +150,15 @@ public sealed class OverlayFavoriteStatusCoordinator : IDisposable
 
         try
         {
-            for (int attempt = 0; attempt < _maxAttempts; attempt++)
+            for (int attempt = 0; attempt < maxAttempts; attempt++)
             {
-                AppleMusicFavoriteStatus status = await _readStatusAsync(requestCts.Token);
+                OverlayFavoriteVisualState state = await _stateReader.ReadAsync(track, requestCts.Token);
                 if (!IsCurrent(revision))
                 {
                     return null;
                 }
 
-                OverlayFavoriteVisualState state = OverlayFavoritePresentation.Resolve(track, status);
-                if (state != OverlayFavoriteVisualState.Unavailable || attempt == _maxAttempts - 1)
+                if (state != OverlayFavoriteVisualState.Unavailable || attempt == maxAttempts - 1)
                 {
                     return new OverlayFavoriteResolution(track, state);
                 }
@@ -143,6 +221,18 @@ public static class OverlayFavoritePresentation
                sourceAppId.Contains("music.apple.com", StringComparison.OrdinalIgnoreCase);
     }
 
+    public static bool IsSupportedCloudMusicSource(string? sourceAppId)
+    {
+        if (string.IsNullOrWhiteSpace(sourceAppId))
+        {
+            return false;
+        }
+
+        return sourceAppId.Equals("cloudmusic.exe", StringComparison.OrdinalIgnoreCase) ||
+               sourceAppId.EndsWith("\\cloudmusic.exe", StringComparison.OrdinalIgnoreCase) ||
+               sourceAppId.EndsWith("/cloudmusic.exe", StringComparison.OrdinalIgnoreCase);
+    }
+
     public static OverlayFavoriteVisualState Resolve(TrackInfo track, AppleMusicFavoriteStatus status)
     {
         if (!IsSupportedAppleMusicSource(track.SourceAppId) ||
@@ -162,7 +252,35 @@ public static class OverlayFavoritePresentation
         bool showTitle,
         bool showArtist)
     {
-        if (favoriteState == OverlayFavoriteVisualState.Unavailable)
+        return CreateLayoutCore(
+            favoriteState,
+            showTitle,
+            showArtist,
+            reserveFavoriteSlot: false);
+    }
+
+    public static OverlayTrackContentLayout CreateLayoutForTrack(
+        TrackInfo? track,
+        OverlayFavoriteVisualState favoriteState,
+        bool showTitle,
+        bool showArtist)
+    {
+        return CreateLayoutCore(
+            favoriteState,
+            showTitle,
+            showArtist,
+            reserveFavoriteSlot:
+                IsSupportedCloudMusicSource(track?.SourceAppId));
+    }
+
+    private static OverlayTrackContentLayout CreateLayoutCore(
+        OverlayFavoriteVisualState favoriteState,
+        bool showTitle,
+        bool showArtist,
+        bool reserveFavoriteSlot)
+    {
+        if (favoriteState == OverlayFavoriteVisualState.Unavailable &&
+            !reserveFavoriteSlot)
         {
             return new OverlayTrackContentLayout(
                 4,
@@ -184,7 +302,7 @@ public static class OverlayFavoritePresentation
             titleTop,
             artistTop,
             CenterText: false,
-            ShowFavoriteStar: true,
+            ShowFavoriteStar: favoriteState != OverlayFavoriteVisualState.Unavailable,
             StarLeft: 194,
             StarTop: 236,
             StarSize: 22);

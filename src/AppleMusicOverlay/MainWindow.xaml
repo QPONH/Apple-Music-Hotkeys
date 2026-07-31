@@ -1015,7 +1015,7 @@
                                                   ItemsSource="{Binding CaptureSources}"
                                                   DisplayMemberPath="DisplayName"
                                                   SelectedValuePath="SourceAppUserModelId"
-                                                  SelectedValue="{Binding Settings.CaptureSourceAppUserModelId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                  SelectedValue="{Binding CaptureSourceAppUserModelId, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                   SelectionChanged="CaptureSourceCombo_SelectionChanged" />
                                         <TextBlock Grid.Row="4"
                                                    Text="{Binding [CaptureSourceHint], Source={x:Static services:LocalizationService.Current}}"
@@ -1822,6 +1822,47 @@
                                                 <TextBlock Text="{Binding [GamepadFutureDescription], Source={x:Static services:LocalizationService.Current}}"
                                                            Margin="0,5,0,0"
                                                            Style="{StaticResource BodyTextStyle}" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Grid>
+                                </Border>
+
+                                <Border x:Name="CloudMusicNativeFavoriteHotkeyCard"
+                                        Style="{StaticResource CardStyle}"
+                                        Margin="0,14,0,0">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="330" />
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Margin="0,0,22,0">
+                                            <TextBlock Text="{Binding [CloudMusicNativeFavoriteHotkey], Source={x:Static services:LocalizationService.Current}}"
+                                                       Style="{StaticResource ValueTextStyle}" />
+                                            <TextBlock Text="{Binding [CloudMusicNativeFavoriteHotkeyDescription], Source={x:Static services:LocalizationService.Current}}"
+                                                       Margin="0,4,0,0"
+                                                       TextWrapping="Wrap"
+                                                       Style="{StaticResource CaptionTextStyle}" />
+                                        </StackPanel>
+                                        <Grid Grid.Column="1"
+                                              VerticalAlignment="Center">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="10" />
+                                                <ColumnDefinition Width="112" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel>
+                                                <TextBlock Text="{Binding [CloudMusicHotkeyModifiers], Source={x:Static services:LocalizationService.Current}}"
+                                                           Margin="1,0,0,5"
+                                                           Style="{StaticResource CaptionTextStyle}" />
+                                                <ComboBox x:Name="CloudMusicNativeFavoriteModifierBox"
+                                                          SelectionChanged="CloudMusicNativeFavoriteHotkeyBox_SelectionChanged" />
+                                            </StackPanel>
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock Text="{Binding [CloudMusicHotkeyMainKey], Source={x:Static services:LocalizationService.Current}}"
+                                                           Margin="1,0,0,5"
+                                                           Style="{StaticResource CaptionTextStyle}" />
+                                                <ComboBox x:Name="CloudMusicNativeFavoriteKeyBox"
+                                                          SelectionChanged="CloudMusicNativeFavoriteHotkeyBox_SelectionChanged" />
                                             </StackPanel>
                                         </Grid>
                                     </Grid>
