@@ -14,162 +14,60 @@ public enum HotkeyApplyFailureKind
     RegistrationFailed
 }
 
-public sealed record HotkeyApplyResult(
-    bool Success,
-    string Message,
-    HotkeyApplyFailureKind FailureKind = HotkeyApplyFailureKind.None,
-    AppAction? ConflictAction = null,
-    string HotkeyText = "");
+public sealed record HotkeyApplyResult(bool Success, string Message, HotkeyApplyFailureKind FailureKind = HotkeyApplyFailureKind.None, AppAction? ConflictAction = null);
 
 public static class KeyboardHotkeyBindingManager
 {
-    public static HotkeyApplyResult Apply(
-        OverlaySettings settings,
-        AppAction action,
-        string hotkeyText,
-        IHotkeySnapshotRegistrar registrar)
+    public static Dictionary<AppAction, string> CreateSnapshot(OverlaySettings settings) => new()
     {
-        string normalized = NormalizeHotkeyText(hotkeyText);
+        [AppAction.PreviousTrack] = settings.KeyboardPrevious.Trim(),
+        [AppAction.NextTrack] = settings.KeyboardNext.Trim(),
+        [AppAction.TogglePlayPause] = settings.KeyboardToggle.Trim(),
+        [AppAction.VolumeUp] = settings.KeyboardVolumeUp.Trim(),
+        [AppAction.VolumeDown] = settings.KeyboardVolumeDown.Trim()
+    };
+
+    public static HotkeyApplyResult Apply(OverlaySettings settings, AppAction action, string hotkeyText, IHotkeySnapshotRegistrar registrar)
+    {
+        string normalized = hotkeyText.Trim();
         Dictionary<AppAction, string> candidate = CreateSnapshot(settings);
         candidate[action] = normalized;
-
         AppAction? duplicate = FindDuplicate(candidate, action, normalized);
         if (duplicate != null)
-        {
-            return CreateInternalConflictResult(normalized, duplicate.Value);
-        }
-
+            return new(false, $"该快捷键已被“{GetLabel(duplicate.Value)}”使用。", HotkeyApplyFailureKind.InternalConflict, duplicate);
         if (!registrar.TryRegisterSnapshot(candidate))
-        {
-            return CreateRegistrationFailedResult(normalized);
-        }
-
+            return new(false, "快捷键注册失败，可能已被系统或其他程序占用。", HotkeyApplyFailureKind.RegistrationFailed);
         SetSetting(settings, action, normalized);
-        return CreateSuccessResult(normalized);
+        return new(true, string.IsNullOrWhiteSpace(normalized) ? "快捷键已清除。" : $"已保存：{normalized}");
     }
 
-    public static HotkeyApplyResult ApplyReplacingConflict(
-        OverlaySettings settings,
-        AppAction action,
-        AppAction conflictAction,
-        string hotkeyText,
-        IHotkeySnapshotRegistrar registrar)
+    private static AppAction? FindDuplicate(Dictionary<AppAction, string> values, AppAction current, string value)
     {
-        string normalized = NormalizeHotkeyText(hotkeyText);
-        Dictionary<AppAction, string> candidate = CreateSnapshot(settings);
-        candidate[conflictAction] = string.Empty;
-        candidate[action] = normalized;
-
-        AppAction? duplicate = FindDuplicate(candidate, action, normalized);
-        if (duplicate != null)
-        {
-            return CreateInternalConflictResult(normalized, duplicate.Value);
-        }
-
-        if (!registrar.TryRegisterSnapshot(candidate))
-        {
-            return CreateRegistrationFailedResult(normalized);
-        }
-
-        SetSetting(settings, conflictAction, string.Empty);
-        SetSetting(settings, action, normalized);
-        return CreateSuccessResult(normalized);
-    }
-
-    public static Dictionary<AppAction, string> CreateSnapshot(OverlaySettings settings)
-    {
-        return new Dictionary<AppAction, string>
-        {
-            [AppAction.PreviousTrack] = NormalizeHotkeyText(settings.KeyboardPrevious),
-            [AppAction.NextTrack] = NormalizeHotkeyText(settings.KeyboardNext),
-            [AppAction.TogglePlayPause] = NormalizeHotkeyText(settings.KeyboardToggle),
-            [AppAction.VolumeUp] = NormalizeHotkeyText(settings.KeyboardVolumeUp),
-            [AppAction.VolumeDown] = NormalizeHotkeyText(settings.KeyboardVolumeDown)
-        };
-    }
-
-    private static HotkeyApplyResult CreateInternalConflictResult(string hotkeyText, AppAction conflictAction)
-    {
-        return new HotkeyApplyResult(
-            false,
-            LocalizationService.Current.Format("HotkeyConflictTemplate", hotkeyText, GamepadBindingActions.GetLabel(conflictAction)),
-            HotkeyApplyFailureKind.InternalConflict,
-            conflictAction,
-            hotkeyText);
-    }
-
-    private static HotkeyApplyResult CreateRegistrationFailedResult(string hotkeyText)
-    {
-        return new HotkeyApplyResult(
-            false,
-            LocalizationService.Current.Text("HotkeyRegistrationFailed"),
-            HotkeyApplyFailureKind.RegistrationFailed,
-            null,
-            hotkeyText);
-    }
-
-    private static HotkeyApplyResult CreateSuccessResult(string hotkeyText)
-    {
-        return new HotkeyApplyResult(
-            true,
-            string.IsNullOrWhiteSpace(hotkeyText)
-                ? LocalizationService.Current.Text("AutoSavedUnset")
-                : LocalizationService.Current.Format("AutoSavedTemplate", hotkeyText));
-    }
-
-    private static AppAction? FindDuplicate(Dictionary<AppAction, string> candidate, AppAction currentAction, string hotkeyText)
-    {
-        if (string.IsNullOrWhiteSpace(hotkeyText))
-        {
-            return null;
-        }
-
-        foreach ((AppAction action, string existing) in candidate)
-        {
-            if (action == currentAction)
-            {
-                continue;
-            }
-
-            if (string.Equals(existing, hotkeyText, StringComparison.OrdinalIgnoreCase))
-            {
-                return action;
-            }
-        }
-
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        foreach (var pair in values)
+            if (pair.Key != current && string.Equals(pair.Value, value, StringComparison.OrdinalIgnoreCase)) return pair.Key;
         return null;
     }
 
-    private static void SetSetting(OverlaySettings settings, AppAction action, string hotkeyText)
+    private static void SetSetting(OverlaySettings settings, AppAction action, string value)
     {
         switch (action)
         {
-            case AppAction.PreviousTrack:
-                settings.KeyboardPrevious = hotkeyText;
-                break;
-            case AppAction.NextTrack:
-                settings.KeyboardNext = hotkeyText;
-                break;
-            case AppAction.TogglePlayPause:
-                settings.KeyboardToggle = hotkeyText;
-                break;
-            case AppAction.ShowCurrentTrack:
-                settings.KeyboardTestOverlay = hotkeyText;
-                break;
-            case AppAction.FavoriteCurrentTrack:
-                settings.KeyboardFavorite = hotkeyText;
-                break;
-            case AppAction.VolumeUp:
-                settings.KeyboardVolumeUp = hotkeyText;
-                break;
-            case AppAction.VolumeDown:
-                settings.KeyboardVolumeDown = hotkeyText;
-                break;
+            case AppAction.PreviousTrack: settings.KeyboardPrevious = value; break;
+            case AppAction.NextTrack: settings.KeyboardNext = value; break;
+            case AppAction.TogglePlayPause: settings.KeyboardToggle = value; break;
+            case AppAction.VolumeUp: settings.KeyboardVolumeUp = value; break;
+            case AppAction.VolumeDown: settings.KeyboardVolumeDown = value; break;
         }
     }
 
-    private static string NormalizeHotkeyText(string? text)
+    private static string GetLabel(AppAction action) => action switch
     {
-        return string.IsNullOrWhiteSpace(text) ? string.Empty : text.Trim();
-    }
+        AppAction.PreviousTrack => "上一曲",
+        AppAction.NextTrack => "下一曲",
+        AppAction.TogglePlayPause => "播放 / 暂停",
+        AppAction.VolumeUp => "Apple Music 音量 +5%",
+        AppAction.VolumeDown => "Apple Music 音量 -5%",
+        _ => action.ToString()
+    };
 }
