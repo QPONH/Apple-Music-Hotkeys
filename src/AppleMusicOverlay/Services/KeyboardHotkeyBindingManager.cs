@@ -4,7 +4,7 @@ namespace AppleMusicOverlay.Services;
 
 public interface IHotkeySnapshotRegistrar
 {
-    bool TryRegisterSnapshot(IReadOnlyDictionary<AppAction, string> hotkeys);
+    bool TryRegisterSnapshot(IReadOnlyDictionary<AppAction, string> hotkeys, AppAction requiredAction);
 }
 
 public enum HotkeyApplyFailureKind
@@ -35,7 +35,7 @@ public static class KeyboardHotkeyBindingManager
         AppAction? duplicate = FindDuplicate(candidate, action, normalized);
         if (duplicate != null)
             return new(false, $"该快捷键已被“{GetLabel(duplicate.Value)}”使用。", HotkeyApplyFailureKind.InternalConflict, duplicate);
-        if (!registrar.TryRegisterSnapshot(candidate))
+        if (!registrar.TryRegisterSnapshot(candidate, action))
             return new(false, "快捷键注册失败，可能已被系统或其他程序占用。", HotkeyApplyFailureKind.RegistrationFailed);
         SetSetting(settings, action, normalized);
         return new(true, string.IsNullOrWhiteSpace(normalized) ? "快捷键已清除。" : $"已保存：{normalized}");

@@ -61,47 +61,102 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
     private void HotkeyBox_PreviewMouseDown(object sender, MouseButtonEventArgs e)
     {
         if (sender is not TextBox box) return;
+
+        // Windows consumes registered global hotkey chords before WPF can capture them.
+        // Temporarily unregister all shortcuts while recording a new binding.
+        _hotkeyService.Clear();
         _capturingBox = box;
         box.Focus();
         box.SelectAll();
-        StatusText = "正在设置快捷键：按下 Ctrl / Alt / Shift / Win + 一个按键；松开后自动保存。";
+        StatusText = "正在设置快捷键：按住 Ctrl / Alt / Shift / Win，再按一个按键；按 Esc 取消。";
         e.Handled = true;
     }
 
     private void HotkeyBox_PreviewKeyDown(object sender, KeyEventArgs e)
     {
         if (sender is not TextBox box || _capturingBox != box) return;
-        if (e.Key == Key.Escape)
+
+        Key key = e.Key == Key.System ? e.SystemKey : e.Key;
+        if (key == Key.Escape)
         {
             box.Text = GetSettingValue((string)box.Tag);
             _capturingBox = null;
-            StatusText = "已取消。";
+            RegisterHotkeys();
+            StatusText = "已取消快捷键设置。";
             e.Handled = true;
             return;
         }
-        e.Handled = true;
-    }
 
-    private void HotkeyBox_PreviewKeyUp(object sender, KeyEventArgs e)
-    {
-        if (sender is not TextBox box || _capturingBox != box) return;
-        ModifierKeys modifiers = Keyboard.Modifiers;
-        Key key = e.Key == Key.System ? e.SystemKey : e.Key;
-        if (key is Key.LeftCtrl or Key.RightCtrl or Key.LeftAlt or Key.RightAlt or Key.LeftShift or Key.RightShift or Key.LWin or Key.RWin)
+        // Modifier keys are only part of the chord; wait for the main key.
+        if (key is Key.LeftCtrl or Key.RightCtrl or Key.LeftAlt or Key.RightAlt
+            or Key.LeftShift or Key.RightShift or Key.LWin or Key.RWin)
+        {
+            e.Handled = true;
             return;
+        }
+
+        ModifierKeys modifiers = Keyboard.Modifiers;
+        if (modifiers == ModifierKeys.None)
+        {
+            StatusText = "请先按住 Ctrl、Alt、Shift 或 Win，再按主按键。";
+            e.Handled = true;
+            return;
+        }
+
         string mainKey = FormatKey(key);
-        if (string.IsNullOrWhiteSpace(mainKey) || modifiers == ModifierKeys.None) return;
+        if (string.IsNullOrWhiteSpace(mainKey))
+        {
+            e.Handled = true;
+            return;
+        }
 
         string hotkey = FormatHotkey(modifiers, mainKey);
-        HotkeyApplyResult result = KeyboardHotkeyBindingManager.Apply(_settings, ParseAction((string)box.Tag), hotkey, this);
+        HotkeyApplyResult result = KeyboardHotkeyBindingManager.Apply(
+            _settings, ParseAction((string)box.Tag), hotkey, this);
         StatusText = result.Message;
+
         if (result.Success)
         {
             box.Text = hotkey;
             _settingsService.Save(_settings);
             _capturingBox = null;
         }
+        else
+        {
+            // Keep capture active after a conflict, and keep the OS from swallowing
+            // the next attempt with the old registered shortcut.
+            _hotkeyService.Clear();
+        }
+
         e.Handled = true;
+    }
+
+    private void HotkeyBox_LostKeyboardFocus(object sender, KeyboardFocusChangedEventArgs e)
+    {
+        if (sender is not TextBox box || _capturingBox != box) return;
+
+        box.Text = GetSettingValue((string)box.Tag);
+        _capturingBox = null;
+        RegisterHotkeys();
+        StatusText = "快捷键设置已取消。";
+    }
+
+    private void NavigationTabs_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (_capturingBox != null || e.Key is not (Key.Up or Key.Down)) return;
+        if (sender is not TabControl tabs) return;
+
+        // Keep Up/Down available for scrolling within page content. Only suppress
+        // vertical selection changes when focus is on one of the left navigation tabs.
+        for (int i = 0; i < tabs.Items.Count; i++)
+        {
+            if (tabs.ItemContainerGenerator.ContainerFromIndex(i) is TabItem item
+                && item.IsKeyboardFocusWithin)
+            {
+                e.Handled = true;
+                return;
+            }
+        }
     }
 
     private void DeleteHotkey_Click(object sender, RoutedEventArgs e)
@@ -117,24 +172,56 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         StatusText = result.Message;
     }
 
-    public bool TryRegisterSnapshot(IReadOnlyDictionary<AppAction, string> hotkeys) => RegisterHotkeySnapshotDirect(hotkeys);
+    public bool TryRegisterSnapshot(IReadOnlyDictionary<AppAction, string> hotkeys, AppAction requiredAction)
+        => RegisterHotkeySnapshotDirect(hotkeys, requiredAction);
 
-    private bool RegisterHotkeys() => RegisterHotkeySnapshotDirect(KeyboardHotkeyBindingManager.CreateSnapshot(_settings));
+    private bool RegisterHotkeys()
+        => RegisterHotkeySnapshotDirect(KeyboardHotkeyBindingManager.CreateSnapshot(_settings), requiredAction: null);
 
-    private bool RegisterHotkeySnapshotDirect(IReadOnlyDictionary<AppAction, string> hotkeys)
+    private bool RegisterHotkeySnapshotDirect(
+        IReadOnlyDictionary<AppAction, string> hotkeys,
+        AppAction? requiredAction)
     {
         _hotkeyService.Clear();
+        var failedActions = new List<AppAction>();
+
         foreach ((AppAction action, string hotkeyText) in hotkeys)
         {
             if (string.IsNullOrWhiteSpace(hotkeyText)) continue;
-            if (!_hotkeyService.Register(action, hotkeyText))
+            if (_hotkeyService.Register(action, hotkeyText)) continue;
+
+            failedActions.Add(action);
+            if (requiredAction == action)
             {
+                // The newly requested shortcut itself is unavailable. Restore the
+                // previous configuration on a best-effort basis before reporting failure.
                 _hotkeyService.Clear();
+                RegisterHotkeySnapshotDirect(
+                    KeyboardHotkeyBindingManager.CreateSnapshot(_settings),
+                    requiredAction: null);
                 return false;
             }
         }
+
+        if (failedActions.Count > 0 && _capturingBox == null)
+        {
+            StatusText = "部分快捷键未能注册（可能被系统或其他程序占用）：" +
+                         string.Join("、", failedActions.Select(GetActionLabel)) +
+                         "。仍可继续自定义这些快捷键。";
+        }
+
         return true;
     }
+
+    private static string GetActionLabel(AppAction action) => action switch
+    {
+        AppAction.PreviousTrack => "上一曲",
+        AppAction.NextTrack => "下一曲",
+        AppAction.TogglePlayPause => "播放/暂停",
+        AppAction.VolumeUp => "音量+",
+        AppAction.VolumeDown => "音量-",
+        _ => action.ToString()
+    };
 
     private async void HotkeyService_ActionRequested(object? sender, AppAction action)
     {
