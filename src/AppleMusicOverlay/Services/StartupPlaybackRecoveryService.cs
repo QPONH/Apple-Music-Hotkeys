@@ -16,6 +16,11 @@ public sealed class StartupPlaybackRecoveryService
     private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
     [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hWnd);
+<<<<<<< HEAD
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr hWnd, System.Text.StringBuilder text, int maxCount);
+=======
+>>>>>>> 9c4da6fa662428a2fa5a53422d751ceae9329a8a
     [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr hWnd);
@@ -69,11 +74,20 @@ public sealed class StartupPlaybackRecoveryService
         token.ThrowIfCancellationRequested();
         if (IsIconic(hwnd)) ShowWindow(hwnd, SW_RESTORE);
         ActivateTargetWindow(hwnd);
+<<<<<<< HEAD
+        await WaitForTargetForegroundAsync(hwnd, token);
+        if (queueMethod == "Keyboard") await OpenQueueByKeyboardAsync(hwnd, token);
+        else await ClickAtPercentAsync(hwnd, queueXPercent, queueYPercent, token);
+        await Task.Delay(700, token);
+        EnsureTargetForeground(hwnd);
+        if (songMethod == "Keyboard") await SelectFirstSongByKeyboardAsync(hwnd, token);
+=======
         await Task.Delay(900, token);
         if (queueMethod == "Keyboard") await OpenQueueByKeyboardAsync(token);
         else await ClickAtPercentAsync(hwnd, queueXPercent, queueYPercent, token);
         await Task.Delay(700, token);
         if (songMethod == "Keyboard") await SelectFirstSongByKeyboardAsync(token);
+>>>>>>> 9c4da6fa662428a2fa5a53422d751ceae9329a8a
         else
         {
             await ClickAtPercentAsync(hwnd, songXPercent, songYPercent, token);
@@ -82,6 +96,20 @@ public sealed class StartupPlaybackRecoveryService
         }
     }
 
+<<<<<<< HEAD
+    private static async Task OpenQueueByKeyboardAsync(IntPtr hwnd, CancellationToken token)
+    {
+        EnsureTargetForeground(hwnd);
+        KeyDown(VK_MENU); await Task.Delay(100, token); KeyUp(VK_MENU);
+        await Task.Delay(180, token);
+        EnsureTargetForeground(hwnd); PressKey(VK_L);
+        await Task.Delay(180, token);
+        EnsureTargetForeground(hwnd); PressKey(VK_Q);
+        await Task.Delay(250, token);
+    }
+
+    private static async Task SelectFirstSongByKeyboardAsync(IntPtr hwnd, CancellationToken token)
+=======
     private static async Task OpenQueueByKeyboardAsync(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
@@ -93,16 +121,55 @@ public sealed class StartupPlaybackRecoveryService
     }
 
     private static async Task SelectFirstSongByKeyboardAsync(CancellationToken token)
+>>>>>>> 9c4da6fa662428a2fa5a53422d751ceae9329a8a
     {
         for (int i = 0; i < 31; i++)
         {
             token.ThrowIfCancellationRequested();
+<<<<<<< HEAD
+            EnsureTargetForeground(hwnd);
+            PressKey(VK_TAB);
+            await Task.Delay(35, token);
+        }
+        EnsureTargetForeground(hwnd);
+        PressKey(VK_RETURN);
+    }
+
+    private static async Task WaitForTargetForegroundAsync(IntPtr hwnd, CancellationToken token)
+    {
+        for (int i = 0; i < 10; i++)
+        {
+            token.ThrowIfCancellationRequested();
+            if (IsTargetForeground(hwnd)) return;
+            ActivateTargetWindow(hwnd);
+            await Task.Delay(250, token);
+        }
+        throw new InvalidOperationException("无法将 Apple Music 切换到前台。为避免误操作 WinUI Desktop 或其他窗口，已中止自动播放。请先手动切换到 Apple Music，再点击检查。 ");
+    }
+
+    private static void EnsureTargetForeground(IntPtr hwnd)
+    {
+        if (!IsTargetForeground(hwnd))
+            throw new InvalidOperationException("当前前台窗口已不是 Apple Music。为避免向其他窗口发送按键，自动播放已中止。");
+    }
+
+    private static bool IsTargetForeground(IntPtr hwnd)
+    {
+        IntPtr foreground = GetForegroundWindow();
+        if (foreground == IntPtr.Zero || hwnd == IntPtr.Zero) return false;
+        GetWindowThreadProcessId(hwnd, out uint targetPid);
+        GetWindowThreadProcessId(foreground, out uint foregroundPid);
+        return targetPid != 0 && targetPid == foregroundPid;
+    }
+
+=======
             PressKey(VK_TAB);
             await Task.Delay(35, token);
         }
         PressKey(VK_RETURN);
     }
 
+>>>>>>> 9c4da6fa662428a2fa5a53422d751ceae9329a8a
     private static void PressKey(byte key) { KeyDown(key); Thread.Sleep(25); KeyUp(key); }
     private static void KeyDown(byte key) => keybd_event(key, 0, 0, UIntPtr.Zero);
     private static void KeyUp(byte key) => keybd_event(key, 0, KEYEVENTF_KEYUP, UIntPtr.Zero);
@@ -136,7 +203,14 @@ public sealed class StartupPlaybackRecoveryService
         long bestArea = -1;
         EnumWindows((hWnd, _) =>
         {
+<<<<<<< HEAD
+            if (!IsWindow(hWnd) || !IsWindowVisible(hWnd)) return true;
+            var title = new System.Text.StringBuilder(256);
+            GetWindowText(hWnd, title, title.Capacity);
+            if (title.Length == 0) return true;
+=======
             if (!IsWindow(hWnd)) return true;
+>>>>>>> 9c4da6fa662428a2fa5a53422d751ceae9329a8a
             GetWindowThreadProcessId(hWnd, out uint pid);
             if (pid == 0) return true;
             try
@@ -158,6 +232,10 @@ public sealed class StartupPlaybackRecoveryService
     private static async Task ClickAtPercentAsync(IntPtr hwnd, int xPercent, int yPercent, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
+<<<<<<< HEAD
+        EnsureTargetForeground(hwnd);
+=======
+>>>>>>> 9c4da6fa662428a2fa5a53422d751ceae9329a8a
         if (!GetClientRect(hwnd, out RECT r) || r.Right <= 0 || r.Bottom <= 0)
             throw new InvalidOperationException("无法读取 Apple Music 窗口尺寸。");
         int x = Math.Clamp(r.Right * Math.Clamp(xPercent, 0, 100) / 100, 0, Math.Max(0, r.Right - 1));
@@ -169,6 +247,10 @@ public sealed class StartupPlaybackRecoveryService
         {
             SetCursorPos(target.X, target.Y);
             await Task.Delay(80, token);
+<<<<<<< HEAD
+            EnsureTargetForeground(hwnd);
+=======
+>>>>>>> 9c4da6fa662428a2fa5a53422d751ceae9329a8a
             mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
             await Task.Delay(60, token);
             mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);

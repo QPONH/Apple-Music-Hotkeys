@@ -240,13 +240,21 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
 
     private async void HotkeyService_ActionRequested(object? sender, AppAction action)
     {
-        switch (action)
+        try
         {
-            case AppAction.PreviousTrack: await _mediaService.PreviousAsync(); break;
-            case AppAction.NextTrack: await _mediaService.NextAsync(); break;
-            case AppAction.TogglePlayPause: await _mediaService.TogglePlayPauseAsync(); break;
-            case AppAction.VolumeUp: ChangeVolume(0.05f); break;
-            case AppAction.VolumeDown: ChangeVolume(-0.05f); break;
+            switch (action)
+            {
+                case AppAction.PreviousTrack: await _mediaService.PreviousAsync(); break;
+                case AppAction.NextTrack: await _mediaService.NextAsync(); break;
+                case AppAction.TogglePlayPause: await _mediaService.TogglePlayPauseAsync(); break;
+                case AppAction.VolumeUp: ChangeVolume(0.05f); break;
+                case AppAction.VolumeDown: ChangeVolume(-0.05f); break;
+            }
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, $"GlobalHotkey:{action}");
+            StatusText = $"快捷键执行失败：{ex.Message}";
         }
     }
 
@@ -258,14 +266,25 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
             StatusText = "没有找到正在输出声音的 Apple Music 音频会话。请先播放音乐。";
     }
 
-    private async void Previous_Click(object sender, RoutedEventArgs e) => await _mediaService.PreviousAsync();
-    private async void Next_Click(object sender, RoutedEventArgs e) => await _mediaService.NextAsync();
-    private async void Toggle_Click(object sender, RoutedEventArgs e) => await _mediaService.TogglePlayPauseAsync();
+    private async void Previous_Click(object sender, RoutedEventArgs e) => await RunMediaActionSafelyAsync(() => _mediaService.PreviousAsync(), "上一曲");
+    private async void Next_Click(object sender, RoutedEventArgs e) => await RunMediaActionSafelyAsync(() => _mediaService.NextAsync(), "下一曲");
+    private async void Toggle_Click(object sender, RoutedEventArgs e) => await RunMediaActionSafelyAsync(() => _mediaService.TogglePlayPauseAsync(), "播放/暂停");
 
     private async void TestMedia_Click(object sender, RoutedEventArgs e)
     {
-        await _mediaService.TogglePlayPauseAsync();
-        StatusText = "已发送播放 / 暂停指令到 Apple Music。";
+        if (await RunMediaActionSafelyAsync(() => _mediaService.TogglePlayPauseAsync(), "播放/暂停测试"))
+            StatusText = "已发送播放 / 暂停指令到 Apple Music。";
+    }
+
+    private async Task<bool> RunMediaActionSafelyAsync(Func<Task> action, string label)
+    {
+        try { await action(); return true; }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, $"MediaAction:{label}");
+            StatusText = $"{label}失败：{ex.Message}";
+            return false;
+        }
     }
 
     private void CloseToTray_Changed(object sender, RoutedEventArgs e)
@@ -399,13 +418,24 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         try
         {
             await _startupPlaybackRecoveryService.RunAsync(_settings.RecoveryQueueXPercent, _settings.RecoveryQueueYPercent, _settings.RecoverySongXPercent, _settings.RecoverySongYPercent, _settings.RecoveryQueueMethod, _settings.RecoverySongMethod, _settings.RecoveryWaitSeconds, cancellationToken);
+<<<<<<< HEAD
+            if (!cancellationToken.IsCancellationRequested && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+                Dispatcher.BeginInvoke(() => StatusText = "已执行开机恢复播放操作；请确认歌曲和队列是否正确。 ");
+=======
             if (!cancellationToken.IsCancellationRequested)
                 Dispatcher.Invoke(() => StatusText = "已执行开机恢复播放操作；请确认歌曲和队列是否正确。 ");
+>>>>>>> 9c4da6fa662428a2fa5a53422d751ceae9329a8a
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
+<<<<<<< HEAD
+            CrashLog.Write(ex, "StartupPlaybackRecovery");
+            if (!Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
+                Dispatcher.BeginInvoke(() => StatusText = $"开机恢复播放操作失败：{ex.Message}");
+=======
             Dispatcher.Invoke(() => StatusText = $"开机恢复播放操作失败：{ex.Message}");
+>>>>>>> 9c4da6fa662428a2fa5a53422d751ceae9329a8a
         }
     }
 
@@ -468,7 +498,12 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
     {
         if (_isExiting) return;
         _isExiting = true;
+<<<<<<< HEAD
+        try { _startupRecoveryCancellation?.Cancel(); } catch (ObjectDisposedException) { }
+        _startupRecoveryCancellation?.Dispose();
+=======
         _startupRecoveryCancellation?.Cancel();
+>>>>>>> 9c4da6fa662428a2fa5a53422d751ceae9329a8a
         _hotkeyService.Dispose();
         _volumeService.Dispose();
         _trayIconService.Dispose();
