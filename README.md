@@ -9,6 +9,7 @@ MusicFloat - Apple Music Hotkeys 修改版
 新增：
 - 全局Apple Music音量 +/-5% 快捷键
 -开机自启动
+-自动播放待播列表
 
 本版本移除实际功能：
 - 悬浮歌词/歌曲信息 Overlay
