@@ -15,6 +15,8 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
     private readonly GlobalHotkeyService _hotkeyService;
     private readonly SmtcMediaSessionService _mediaService = new();
     private readonly AppleMusicVolumeService _volumeService = new();
+    private readonly StartupPlaybackRecoveryService _startupPlaybackRecoveryService = new();
+    private CancellationTokenSource? _startupRecoveryCancellation;
     private readonly TrayIconService _trayIconService;
     private TextBox? _capturingBox;
     private bool _isExiting;
@@ -44,6 +46,11 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
     {
         RegisterHotkeys();
         if (_settings.HideWindowOnStartup) Hide();
+        if (_settings.StartupPlaybackRecovery)
+        {
+            _startupRecoveryCancellation = new CancellationTokenSource();
+            _ = RunStartupPlaybackRecoveryAsync(_startupRecoveryCancellation.Token);
+        }
     }
 
     private void LoadSettingsToUi()
@@ -56,6 +63,14 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         CloseToTrayCheckBox.IsChecked = _settings.CloseToTray;
         HideOnStartupCheckBox.IsChecked = _settings.HideWindowOnStartup;
         StartWithWindowsCheckBox.IsChecked = StartupService.IsEnabled;
+        StartupPlaybackRecoveryCheckBox.IsChecked = _settings.StartupPlaybackRecovery;
+        RecoveryWaitSecondsBox.Text = _settings.RecoveryWaitSeconds.ToString();
+        RecoveryQueueXBox.Text = _settings.RecoveryQueueXPercent.ToString();
+        RecoveryQueueYBox.Text = _settings.RecoveryQueueYPercent.ToString();
+        RecoverySongXBox.Text = _settings.RecoverySongXPercent.ToString();
+        RecoverySongYBox.Text = _settings.RecoverySongYPercent.ToString();
+        RecoveryQueueMethodBox.SelectedValue = _settings.RecoveryQueueMethod;
+        RecoverySongMethodBox.SelectedValue = _settings.RecoverySongMethod;
     }
 
     private void HotkeyBox_PreviewMouseDown(object sender, MouseButtonEventArgs e)
@@ -265,6 +280,135 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         _settingsService.Save(_settings);
     }
 
+    private void StartupPlaybackRecovery_Changed(object sender, RoutedEventArgs e)
+    {
+        _settings.StartupPlaybackRecovery = StartupPlaybackRecoveryCheckBox.IsChecked == true;
+        _settingsService.Save(_settings);
+        StatusText = _settings.StartupPlaybackRecovery
+            ? "已启用开机恢复播放。请确保 Apple Music 登录 Windows 后自动启动，并保持最大化窗口。"
+            : "已关闭开机恢复播放。";
+    }
+
+    private async void CaptureQueuePosition_Click(object sender, RoutedEventArgs e)
+    {
+        await CaptureAppleMusicPositionAsync(true);
+    }
+
+    private async void CaptureSongPosition_Click(object sender, RoutedEventArgs e)
+    {
+        await CaptureAppleMusicPositionAsync(false);
+    }
+
+    private async Task CaptureAppleMusicPositionAsync(bool queueButton)
+    {
+        StatusText = "请在 Apple Music 中单击要捕获的位置；这次点击会被拦截，不会操作界面。";
+        try
+        {
+            using var capture = new MousePositionCaptureService();
+            var position = await capture.Result;
+            if (queueButton)
+            {
+                _settings.RecoveryQueueXPercent = position.x;
+                _settings.RecoveryQueueYPercent = position.y;
+                RecoveryQueueXBox.Text = position.x.ToString();
+                RecoveryQueueYBox.Text = position.y.ToString();
+            }
+            else
+            {
+                _settings.RecoverySongXPercent = position.x;
+                _settings.RecoverySongYPercent = position.y;
+                RecoverySongXBox.Text = position.x.ToString();
+                RecoverySongYBox.Text = position.y.ToString();
+            }
+            _settingsService.Save(_settings);
+            StatusText = $"位置已捕获并保存：X={position.x}%，Y={position.y}%。";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"捕获位置失败：{ex.Message}";
+            MessageBox.Show(this, ex.Message, "捕获鼠标位置失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+
+    private void RecoveryMethod_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (!IsInitialized || RecoveryQueueMethodBox.SelectedValue is null || RecoverySongMethodBox.SelectedValue is null) return;
+        _settings.RecoveryQueueMethod = RecoveryQueueMethodBox.SelectedValue.ToString() ?? "Keyboard";
+        _settings.RecoverySongMethod = RecoverySongMethodBox.SelectedValue.ToString() ?? "Mouse";
+        _settingsService.Save(_settings);
+    }
+
+    private void RecoveryWaitSeconds_LostFocus(object sender, RoutedEventArgs e)
+    {
+        _settings.RecoveryWaitSeconds = int.TryParse(RecoveryWaitSecondsBox.Text, out int seconds)
+            ? Math.Clamp(seconds, 0, 600) : 2;
+        RecoveryWaitSecondsBox.Text = _settings.RecoveryWaitSeconds.ToString();
+        _settingsService.Save(_settings);
+    }
+
+    private void RecoveryCoordinates_LostFocus(object sender, RoutedEventArgs e)
+    {
+        _settings.RecoveryQueueXPercent = ReadPercent(RecoveryQueueXBox, 85);
+        _settings.RecoveryQueueYPercent = ReadPercent(RecoveryQueueYBox, 3);
+        _settings.RecoverySongXPercent = ReadPercent(RecoverySongXBox, 24);
+        _settings.RecoverySongYPercent = ReadPercent(RecoverySongYBox, 12);
+        RecoveryQueueXBox.Text = _settings.RecoveryQueueXPercent.ToString();
+        RecoveryQueueYBox.Text = _settings.RecoveryQueueYPercent.ToString();
+        RecoverySongXBox.Text = _settings.RecoverySongXPercent.ToString();
+        RecoverySongYBox.Text = _settings.RecoverySongYPercent.ToString();
+        _settingsService.Save(_settings);
+    }
+
+    private static int ReadPercent(TextBox box, int fallback) =>
+        int.TryParse(box.Text, out int value) ? Math.Clamp(value, 0, 100) : fallback;
+
+    private void CancelStartupPlaybackRecovery_Click(object sender, RoutedEventArgs e)
+    {
+        if (_startupRecoveryCancellation is null || _startupRecoveryCancellation.IsCancellationRequested)
+        {
+            StatusText = "当前没有正在运行的后台开机播放检测。";
+            return;
+        }
+
+        _startupRecoveryCancellation.Cancel();
+        StatusText = "已请求停止后台开机播放检测。";
+    }
+
+    private async void TestStartupPlaybackRecovery_Click(object sender, RoutedEventArgs e)
+    {
+        RecoveryCoordinates_LostFocus(RecoveryQueueXBox, new RoutedEventArgs());
+        StatusText = "正在手动测试开机自动播放流程……请勿操作鼠标。";
+        try
+        {
+            await _startupPlaybackRecoveryService.RunOnceAsync(
+                _settings.RecoveryQueueXPercent, _settings.RecoveryQueueYPercent,
+                _settings.RecoverySongXPercent, _settings.RecoverySongYPercent,
+                _settings.RecoveryQueueMethod, _settings.RecoverySongMethod, _settings.RecoveryWaitSeconds);
+            StatusText = "测试流程已执行一次。请检查 Apple Music 是否打开队列并开始播放第一首歌曲。";
+        }
+        catch (Exception ex)
+        {
+            StatusText = $"测试失败：{ex.Message}";
+            MessageBox.Show(this, ex.Message, "开机自动播放测试失败", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
+    private async Task RunStartupPlaybackRecoveryAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _startupPlaybackRecoveryService.RunAsync(_settings.RecoveryQueueXPercent, _settings.RecoveryQueueYPercent, _settings.RecoverySongXPercent, _settings.RecoverySongYPercent, _settings.RecoveryQueueMethod, _settings.RecoverySongMethod, _settings.RecoveryWaitSeconds, cancellationToken);
+            if (!cancellationToken.IsCancellationRequested)
+                Dispatcher.Invoke(() => StatusText = "已执行开机恢复播放操作；请确认歌曲和队列是否正确。 ");
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            Dispatcher.Invoke(() => StatusText = $"开机恢复播放操作失败：{ex.Message}");
+        }
+    }
+
     private void StartWithWindows_Changed(object sender, RoutedEventArgs e)
     {
         bool enabled = StartWithWindowsCheckBox.IsChecked == true;
@@ -324,6 +468,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
     {
         if (_isExiting) return;
         _isExiting = true;
+        _startupRecoveryCancellation?.Cancel();
         _hotkeyService.Dispose();
         _volumeService.Dispose();
         _trayIconService.Dispose();

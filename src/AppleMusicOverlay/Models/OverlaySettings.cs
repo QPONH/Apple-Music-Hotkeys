@@ -6,6 +6,14 @@ public sealed class OverlaySettings
     public bool CloseToTray { get; set; } = true;
     public bool HideWindowOnStartup { get; set; }
     public bool StartWithWindows { get; set; }
+    public bool StartupPlaybackRecovery { get; set; }
+    public int RecoveryWaitSeconds { get; set; } = 2;
+    public string RecoveryQueueMethod { get; set; } = "Keyboard";
+    public string RecoverySongMethod { get; set; } = "Mouse";
+    public int RecoveryQueueXPercent { get; set; } = 85;
+    public int RecoveryQueueYPercent { get; set; } = 3;
+    public int RecoverySongXPercent { get; set; } = 24;
+    public int RecoverySongYPercent { get; set; } = 12;
     public string KeyboardPrevious { get; set; } = "Ctrl+Shift+Left";
     public string KeyboardNext { get; set; } = "Ctrl+Shift+Right";
     public string KeyboardToggle { get; set; } = "Ctrl+Shift+Space";
