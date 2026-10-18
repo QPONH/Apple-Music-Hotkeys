@@ -29,6 +29,9 @@
   <ItemGroup>
     <None Remove="Assets\MusicFloat.ico" />
     <Content Include="Assets\MusicFloat.ico" CopyToOutputDirectory="PreserveNewest" />
+    <!-- Embedded copy: the tray icon must exist even when the Assets folder is not
+         deployed next to the executable (for example a single-file publish). -->
+    <EmbeddedResource Include="Assets\MusicFloat.ico" LogicalName="AppleMusicOverlay.Assets.MusicFloat.ico" />
   </ItemGroup>
 
 </Project>

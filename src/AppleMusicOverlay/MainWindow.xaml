@@ -829,7 +829,8 @@
                     <TextBlock Text="Apple Music 全局快捷键控制" Margin="0,1,0,0" Style="{StaticResource CaptionTextStyle}" />
                 </StackPanel>
                 <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
-                    <Button Content="测试媒体控制" Width="110" Style="{StaticResource SecondaryButtonStyle}" Margin="0,0,12,0" Click="TestMedia_Click" />
+                    <Button Content="测试媒体控制" Width="110" Style="{StaticResource SecondaryButtonStyle}" Margin="0,0,8,0" Click="TestMedia_Click" />
+                    <Button x:Name="ApplyButton" Content="应用" Width="72" IsEnabled="False" Style="{StaticResource SecondaryButtonStyle}" Margin="0,0,12,0" Click="ApplySettings_Click" />
                     <Button Content="&#xE921;" Style="{StaticResource WindowButtonStyle}" Click="Minimize_Click" />
                     <Button x:Name="MaximizeButton" Content="&#xE922;" Style="{StaticResource WindowButtonStyle}" Click="Maximize_Click" />
                     <Button Content="&#xE8BB;" Style="{StaticResource WindowButtonStyle}" Click="Close_Click" />
@@ -855,6 +856,59 @@
                                             <Button Content="播放 / 暂停" Width="120" Style="{StaticResource PrimaryButtonStyle}" Click="Toggle_Click" Margin="0,0,10,0" />
                                             <Button Content="下一曲" Width="110" Style="{StaticResource SecondaryButtonStyle}" Click="Next_Click" />
                                         </StackPanel>
+                                    </StackPanel>
+                                </Border>
+                                <Border Style="{StaticResource CardStyle}" Margin="0,0,0,14">
+                                    <StackPanel>
+                                        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                            <StackPanel><TextBlock Text="悬浮歌词" Style="{StaticResource SectionTitleStyle}"/><TextBlock Text="只显示歌词文字，透明背景；点击歌词窗口可拖动位置。" Margin="0,5,20,0" Style="{StaticResource BodyTextStyle}"/></StackPanel>
+                                            <CheckBox x:Name="LyricsEnabledCheckBox" Grid.Column="1" Content="启用" VerticalAlignment="Center" Checked="LyricsEnabled_Changed" Unchecked="LyricsEnabled_Changed"/>
+                                        </Grid>
+                                        <WrapPanel Margin="0,12,0,0" VerticalAlignment="Center" ItemHeight="38">
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,12,6" VerticalAlignment="Center">
+                                                <TextBlock Text="字号" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                                <TextBox x:Name="LyricsFontSizeBox" Width="58" MinWidth="58" Height="36" Padding="4,0" Text="26" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" LostFocus="LyricsSettings_Changed"/>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,12,6" VerticalAlignment="Center">
+                                                <TextBlock Text="对齐" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                                <ComboBox x:Name="LyricsAlignmentBox" Width="104" Height="36" VerticalContentAlignment="Center" SelectedValuePath="Tag" SelectionChanged="LyricsSettings_Changed">
+                                                    <ComboBoxItem Content="左对齐" Tag="Left"/><ComboBoxItem Content="居中" Tag="Center"/><ComboBoxItem Content="右对齐" Tag="Right"/>
+                                                </ComboBox>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,12,6" VerticalAlignment="Center">
+                                                <TextBlock Text="方向" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                                <ComboBox x:Name="LyricsOrientationBox" Width="94" Height="36" VerticalContentAlignment="Center" SelectedValuePath="Tag" SelectionChanged="LyricsSettings_Changed">
+                                                    <ComboBoxItem Content="横排" Tag="Horizontal"/><ComboBoxItem Content="竖排" Tag="Vertical"/>
+                                                </ComboBox>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,12,6" VerticalAlignment="Center">
+                                                <TextBlock Text="竖排对齐" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                                <ComboBox x:Name="LyricsVerticalAlignmentBox" Width="86" Height="36" VerticalContentAlignment="Center" SelectedValuePath="Tag" SelectionChanged="LyricsSettings_Changed">
+                                                    <ComboBoxItem Content="顶部" Tag="Top"/><ComboBoxItem Content="居中" Tag="Center"/><ComboBoxItem Content="底部" Tag="Bottom"/>
+                                                </ComboBox>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,12,6" VerticalAlignment="Center">
+                                                <TextBlock Text="竖排靠边" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                                <ComboBox x:Name="LyricsVerticalAnchorBox" Width="86" Height="36" VerticalContentAlignment="Center" SelectedValuePath="Tag" SelectionChanged="LyricsSettings_Changed" ToolTip="竖排模式下把歌词靠到窗口最左或最右">
+                                                    <ComboBoxItem Content="最左" Tag="Left"/><ComboBoxItem Content="居中" Tag="Center"/><ComboBoxItem Content="最右" Tag="Right"/>
+                                                </ComboBox>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,12,6" VerticalAlignment="Center">
+                                                <TextBlock Text="同步微调 ms" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                                <TextBox x:Name="LyricsOffsetBox" Width="76" MinWidth="76" Height="36" Padding="4,0" Text="0" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" TextChanged="LyricsOffsetBox_TextChanged" ToolTip="正数让歌词更晚显示，负数让歌词更早显示"/>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,12,6" VerticalAlignment="Center">
+                                                <TextBlock Text="透明度 %" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                                <TextBox x:Name="LyricsOpacityBox" Width="76" MinWidth="76" Height="36" Padding="4,0" Text="100" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" TextChanged="LyricsOpacityBox_TextChanged" LostFocus="LyricsOpacityBox_LostFocus" ToolTip="5 - 100，同时影响歌词文字与背景的整体透明度"/>
+                                            </StackPanel>
+                                            <StackPanel Orientation="Horizontal" Margin="0,0,12,6" VerticalAlignment="Center">
+                                                <TextBlock Text="颜色" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                                                <Border x:Name="LyricsColorSwatch" Width="26" Height="26" CornerRadius="6" Background="White" BorderBrush="#3B4656" BorderThickness="1" Margin="0,0,6,0" VerticalAlignment="Center" ToolTip="当前歌词颜色"/>
+                                                <TextBox x:Name="LyricsColorBox" Width="86" MinWidth="86" Height="36" Padding="4,0" Text="#FFFFFF" HorizontalContentAlignment="Center" VerticalContentAlignment="Center" TextChanged="LyricsColorBox_TextChanged" LostFocus="LyricsColorBox_LostFocus" ToolTip="十六进制颜色，例如 #FFFFFF、#FFD166 或 #5BA7B8"/>
+                                                <Button Content="选择…" Width="70" Height="36" Margin="6,0,0,0" Padding="6,0" Style="{StaticResource SecondaryButtonStyle}" Click="LyricsPickColor_Click" ToolTip="打开调色板选择歌词颜色"/>
+                                            </StackPanel>
+                                            <CheckBox x:Name="LyricsBackgroundCheckBox" Content="半透明背景" Margin="0,0,0,6" VerticalAlignment="Center" Checked="LyricsSettings_Changed" Unchecked="LyricsSettings_Changed"/>
+                                        </WrapPanel>
                                     </StackPanel>
                                 </Border>
                                 <Border Style="{StaticResource CardStyle}">
@@ -962,8 +1016,22 @@
                                         </StackPanel>
                                     </StackPanel>
                                 </Border>
+                                <Border Style="{StaticResource CardStyle}" Margin="0,0,0,14">
+                                    <Grid>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                        <StackPanel>
+                                            <TextBlock Text="任务栏图标" Style="{StaticResource SectionTitleStyle}"/>
+                                            <TextBlock Text="图标丢失（例如资源管理器重启、登录时任务栏尚未就绪）时会自动重新注册；也可以在这里手动补一次。Windows 10/11 默认把新图标收进“显示隐藏的图标”区域。" Margin="0,5,20,0" Style="{StaticResource BodyTextStyle}"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="1" VerticalAlignment="Center">
+                                            <Button Content="重新注册图标" Width="124" Style="{StaticResource SecondaryButtonStyle}" Click="ReRegisterTrayIcon_Click"/>
+                                            <Button Content="任务栏图标设置" Width="124" Margin="0,8,0,0" Style="{StaticResource SecondaryButtonStyle}" Click="OpenTaskbarSettings_Click" ToolTip="打开 Windows 的“选择哪些图标显示在任务栏上”，把 MusicFloat 切换为显示"/>
+                                            <TextBlock x:Name="TrayStatusText" Text="正在检测…" Margin="0,6,0,0" MaxWidth="300" TextWrapping="Wrap" TextAlignment="Center" Style="{StaticResource CaptionTextStyle}"/>
+                                        </StackPanel>
+                                    </Grid>
+                                </Border>
                                 <Border Style="{StaticResource CardStyle}">
-                                    <StackPanel><TextBlock Text="关于此版本" Style="{StaticResource SectionTitleStyle}"/><TextBlock Text="MusicFloat 的 Apple Music Hotkeys 二次修改版。保留原项目 GPL-3.0-only 许可证及项目资源；移除游戏手柄、网易云音乐、收藏和运行时浮窗功能。" Margin="0,5,0,0" Style="{StaticResource BodyTextStyle}"/><TextBlock Text="Apple Music 播放控制：Windows SMTC  ·  应用音量：Windows Core Audio / NAudio" Margin="0,10,0,0" Style="{StaticResource CaptionTextStyle}"/></StackPanel>
+                                    <StackPanel><TextBlock Text="关于此版本" Style="{StaticResource SectionTitleStyle}"/><TextBlock x:Name="VersionText" Text="v14.25" Margin="0,5,0,0" Style="{StaticResource CaptionTextStyle}"/><TextBlock Text="MusicFloat 的 Apple Music Hotkeys 二次修改版。保留原项目 GPL-3.0-only 许可证及项目资源；移除游戏手柄、网易云音乐、收藏和运行时浮窗功能。" Margin="0,5,0,0" Style="{StaticResource BodyTextStyle}"/><TextBlock Text="Apple Music 播放控制：Windows SMTC  ·  应用音量：Windows Core Audio / NAudio" Margin="0,10,0,0" Style="{StaticResource CaptionTextStyle}"/></StackPanel>
                                 </Border>
                             </StackPanel>
                         </Grid>

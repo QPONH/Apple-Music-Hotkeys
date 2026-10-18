@@ -20,7 +20,6 @@ public sealed class MousePositionCaptureService : IDisposable
     [DllImport("user32.dll")] private static extern bool ScreenToClient(IntPtr hwnd, ref POINT point);
     [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr hwnd, uint gaFlags);
     private readonly HookProc _proc;
-<<<<<<< HEAD
     private GCHandle _procRoot;
     private IntPtr _hook;
     private bool _disposed;
@@ -65,27 +64,6 @@ public sealed class MousePositionCaptureService : IDisposable
         {
             // Never allow a managed exception to escape through the native hook callback.
         }
-=======
-    private IntPtr _hook;
-    private readonly TaskCompletionSource<(int x, int y)> _tcs = new(TaskCreationOptions.RunContinuationsAsynchronously);
-
-    public MousePositionCaptureService() { _proc = HookCallback; _hook = SetWindowsHookEx(WH_MOUSE_LL, _proc, IntPtr.Zero, 0); if (_hook == IntPtr.Zero) throw new InvalidOperationException("无法安装鼠标捕获钩子。"); }
-    public Task<(int x, int y)> Result => _tcs.Task;
-    private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
-    {
-        if (nCode >= 0 && wParam.ToInt32() == WM_LBUTTONDOWN)
-        {
-            var data = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam); IntPtr child = WindowFromPoint(data.pt);
-            IntPtr hwnd = child == IntPtr.Zero ? IntPtr.Zero : GetAncestor(child, 2); // GA_ROOT
-            if (IsAppleMusicWindow(hwnd) && GetClientRect(hwnd, out RECT r) && r.Right > 0 && r.Bottom > 0)
-            {
-                // Swallow this one click so capturing a position cannot trigger playback or alter the queue.
-                POINT client = data.pt; ScreenToClient(hwnd, ref client);
-                _tcs.TrySetResult((Math.Clamp(client.X * 100 / r.Right, 0, 100), Math.Clamp(client.Y * 100 / r.Bottom, 0, 100)));
-                return (IntPtr)1;
-            }
-        }
->>>>>>> 9c4da6fa662428a2fa5a53422d751ceae9329a8a
         return CallNextHookEx(_hook, nCode, wParam, lParam);
     }
     private static bool IsAppleMusicWindow(IntPtr hwnd)
@@ -95,22 +73,16 @@ public sealed class MousePositionCaptureService : IDisposable
         try { using var p = Process.GetProcessById((int)pid); return p.ProcessName.Contains("AppleMusic", StringComparison.OrdinalIgnoreCase) || p.ProcessName.Equals("Apple Music", StringComparison.OrdinalIgnoreCase); } catch { return false; }
     }
     [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
-<<<<<<< HEAD
     public void Dispose()
     {
         if (_disposed) return;
         _disposed = true;
 
-        if (_hook != IntPtr.Zero && UnhookWindowsHookEx(_hook))
-            _hook = IntPtr.Zero;
-
-        // Keep the delegate rooted if Windows did not confirm that the hook was removed.
-        if (_hook == IntPtr.Zero && _procRoot.IsAllocated)
-            _procRoot.Free();
+        bool removed = _hook == IntPtr.Zero || UnhookWindowsHookEx(_hook);
+        if (removed) _hook = IntPtr.Zero;
+        // Only release the delegate after Windows confirms the hook is gone.
+        if (removed && _procRoot.IsAllocated) _procRoot.Free();
 
         GC.SuppressFinalize(this);
     }
-=======
-    public void Dispose() { if (_hook != IntPtr.Zero) { UnhookWindowsHookEx(_hook); _hook = IntPtr.Zero; } }
->>>>>>> 9c4da6fa662428a2fa5a53422d751ceae9329a8a
 }

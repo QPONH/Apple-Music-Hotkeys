@@ -13,6 +13,7 @@ public sealed class GlobalHotkeyService : IDisposable
     private const uint ModNoRepeat = 0x4000;
 
     private readonly Window _owner;
+    private readonly LowLevelKeyboardHotkeyService _keyboardHook;
     private readonly Dictionary<int, RegisteredHotkey> _hotkeys = new();
     private HwndSource? _source;
     private int _nextId = 0x4150;
@@ -24,6 +25,11 @@ public sealed class GlobalHotkeyService : IDisposable
     public GlobalHotkeyService(Window owner)
     {
         _owner = owner;
+        _keyboardHook = new LowLevelKeyboardHotkeyService(owner.Dispatcher);
+        _keyboardHook.ActionRequested += (_, action) =>
+        {
+            ActionRequested?.Invoke(this, action);
+        };
     }
 
     public bool Register(AppAction action, string hotkeyText)
@@ -33,6 +39,9 @@ public sealed class GlobalHotkeyService : IDisposable
         {
             return false;
         }
+
+        if (action is AppAction.VolumeUp or AppAction.VolumeDown)
+            return _keyboardHook.Register(action, hotkeyText);
 
         IntPtr handle = EnsureHandle();
         int id = _nextId++;
@@ -53,6 +62,7 @@ public sealed class GlobalHotkeyService : IDisposable
             return;
         }
 
+        _keyboardHook.Clear();
         IntPtr handle = EnsureHandle();
         foreach (int id in _hotkeys.Keys)
         {
@@ -70,6 +80,7 @@ public sealed class GlobalHotkeyService : IDisposable
         }
 
         Clear();
+        _keyboardHook.Dispose();
         _source?.RemoveHook(WndProc);
         _source = null;
         _disposed = true;

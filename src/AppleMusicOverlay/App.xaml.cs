@@ -20,7 +20,6 @@ public partial class App : Application
             Shutdown();
             return;
         }
-<<<<<<< HEAD
         // Install crash reporting before creating the main window. Recoverable UI
         // exceptions are logged and kept from terminating the entire tray app.
         DispatcherUnhandledException += App_DispatcherUnhandledException;
@@ -31,10 +30,24 @@ public partial class App : Application
             CrashLog.Write(args.Exception, "TaskScheduler.UnobservedTaskException");
             args.SetObserved();
         };
-=======
->>>>>>> 9c4da6fa662428a2fa5a53422d751ceae9329a8a
         base.OnStartup(e);
         SessionEnding += App_SessionEnding;
+
+        // Create the window by hand instead of StartupUri: a window that has to start hidden must
+        // never be shown at all, otherwise it flashes on screen for a frame before hiding to the
+        // tray.
+        try
+        {
+            var window = new MainWindow();
+            MainWindow = window;
+            if (window.PrepareStartup()) window.Show();
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, "Startup:MainWindow");
+            MessageBox.Show("程序启动失败：" + ex.Message, "MusicFloat", MessageBoxButton.OK, MessageBoxImage.Error);
+            Shutdown();
+        }
     }
 
     protected override void OnExit(ExitEventArgs e)
@@ -44,7 +57,6 @@ public partial class App : Application
         base.OnExit(e);
     }
 
-<<<<<<< HEAD
     private void App_DispatcherUnhandledException(object sender, DispatcherUnhandledExceptionEventArgs e)
     {
         CrashLog.Write(e.Exception, "DispatcherUnhandledException");
@@ -57,8 +69,6 @@ public partial class App : Application
         catch { /* Do not let error reporting cause a second crash. */ }
     }
 
-=======
->>>>>>> 9c4da6fa662428a2fa5a53422d751ceae9329a8a
     private void App_SessionEnding(object sender, SessionEndingCancelEventArgs e)
     {
         if (MainWindow is MainWindow mainWindow) mainWindow.RequestApplicationExit(isSessionEnding: true);
