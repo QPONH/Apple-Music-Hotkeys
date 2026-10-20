@@ -12,12 +12,30 @@ namespace AppleMusicOverlay.Views;
 
 public sealed class LyricsWindow : Window
 {
+    private const uint SwpNoSize = 0x0001;
+    private const uint SwpNoMove = 0x0002;
+    private const uint SwpNoActivate = 0x0010;
+    private static readonly IntPtr HwndTopmost = new(-1);
+
     private readonly LyricsService _service;
     private readonly OverlaySettings _settings;
     private readonly OverlaySettingsService _settingsService = new();
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromMilliseconds(350) };
+    // Topmost is only a one-shot z-order flag: another topmost window that appears later (or the
+    // player itself) ends up above the overlay. Re-asserting it while visible keeps it on top.
+    private readonly DispatcherTimer _topmostTimer = new() { Interval = TimeSpan.FromMilliseconds(800) };
     private IReadOnlyList<LyricLine> _lines = Array.Empty<LyricLine>();
     private string _trackKey = string.Empty;
+    private string _renderSignature = string.Empty;
+    private LyricsLookupStatus? _lookupStatus;
+    private DateTime _nextLookupUtc = DateTime.MinValue;
+    private int _lookupAttempts;
+    private bool _lookupRunning;
+    private int _generation;
+    private IntPtr _hwnd;
+    private bool _menuOpen;
+    private bool _updating;
+    private bool _forceRefresh;
 
     public LyricsWindow(LyricsService service, OverlaySettings settings, Action? openSettings = null, Action? exitApplication = null)
     {
@@ -29,13 +47,20 @@ public sealed class LyricsWindow : Window
         WindowStartupLocation = _settings.LyricsWindowLeft.HasValue && _settings.LyricsWindowTop.HasValue ? WindowStartupLocation.Manual : WindowStartupLocation.CenterScreen;
         if (_settings.LyricsWindowLeft.HasValue) Left = _settings.LyricsWindowLeft.Value;
         if (_settings.LyricsWindowTop.HasValue) Top = _settings.LyricsWindowTop.Value;
-        SourceInitialized += (_, _) => HideFromAltTab();
+        SourceInitialized += (_, _) => OnSourceInitialized();
         PreviewMouseLeftButtonDown += DragAnywhere;
-        Loaded += async (_, _) => { _timer.Start(); await UpdateAsync(); };
-        Closed += (_, _) => _timer.Stop();
+        Loaded += async (_, _) => { _timer.Start(); _topmostTimer.Start(); EnsureTopmost(); await UpdateAsync(); };
+        Closed += (_, _) => { _timer.Stop(); _topmostTimer.Stop(); };
+        IsVisibleChanged += (_, _) => EnsureTopmost();
+        Activated += (_, _) => EnsureTopmost();
+        Deactivated += (_, _) => EnsureTopmost();
         SizeChanged += (_, _) => SaveBounds();
         LocationChanged += (_, _) => SaveBounds();
         _timer.Tick += async (_, _) => await UpdateAsync();
+        _topmostTimer.Tick += (_, _) => EnsureTopmost();
+        // The overlay's own context menu is a popup window; raising the overlay while it is open
+        // would draw over it, so the topmost keeper pauses for the menu's lifetime.
+        ContextMenuOpening += (_, _) => _menuOpen = true;
         // The lyrics overlay is often the only visible window (the settings window can be
         // hidden at startup), so give it its own entry point in case the tray icon is missing.
         BuildContextMenu(openSettings, exitApplication);
@@ -47,9 +72,12 @@ public sealed class LyricsWindow : Window
         var menu = new ContextMenu();
         if (openSettings is not null)
             menu.Items.Add(new MenuItem { Header = "打开设置", Command = new RelayCommand(openSettings) });
+        menu.Items.Add(new MenuItem { Header = "重新查找歌词", Command = new RelayCommand(ForceReload) });
         if (exitApplication is not null)
             menu.Items.Add(new MenuItem { Header = "退出 MusicFloat", Command = new RelayCommand(exitApplication) });
-        if (menu.Items.Count > 0) ContextMenu = menu;
+        menu.Opened += (_, _) => _menuOpen = true;
+        menu.Closed += (_, _) => { _menuOpen = false; EnsureTopmost(); };
+        ContextMenu = menu;
     }
 
     private sealed class RelayCommand : ICommand
@@ -63,17 +91,38 @@ public sealed class LyricsWindow : Window
 
     private async Task UpdateAsync()
     {
+        // A slow SMTC call can outlive the 350 ms timer; never run two updates at once.
+        if (_updating) return;
+        _updating = true;
         try
         {
             var playback = await _service.GetCurrentPlaybackAsync();
-            if (playback is null) { Render("未识别到正在播放的 Apple Music 歌曲", ""); return; }
+            if (playback is null)
+            {
+                // A strict Apple Music session check runs inside the service: another player's
+                // lyrics are never shown here once Apple Music is closed.
+                Render("未识别到正在播放的 Apple Music 歌曲", "");
+                return;
+            }
+
             string key = $"{playback.Title}\n{playback.Artist}";
             if (key != _trackKey)
             {
                 _trackKey = key;
-                _lines = (await _service.GetLyricsAsync(playback.Title, playback.Artist, playback.Duration))?.Lines ?? Array.Empty<LyricLine>();
+                ResetLookupState();
             }
-            if (_lines.Count == 0) { Render("未找到歌词", ""); return; }
+
+            if (_lines.Count == 0)
+            {
+                // Lyrics may only become available a moment later (slow provider, rate limit,
+                // offline), so keep retrying with a back-off instead of caching "not found"
+                // for the lifetime of the track.
+                if (!_lookupRunning && DateTime.UtcNow >= _nextLookupUtc)
+                    BeginLookup(playback, key);
+                Render(StatusMessage(), "");
+                return;
+            }
+
             // Positive offset means lyrics should appear later, so evaluate the timeline earlier.
             TimeSpan adjustedPosition = playback.Position - TimeSpan.FromMilliseconds(_settings.LyricsOffsetMilliseconds);
             int index = _lines.TakeWhile(line => line.Start <= adjustedPosition).Count() - 1;
@@ -81,10 +130,103 @@ public sealed class LyricsWindow : Window
             Render(_lines[index].Text, index + 1 < _lines.Count ? _lines[index + 1].Text : string.Empty);
         }
         catch (Exception ex) { CrashLog.Write(ex, "LyricsWindow"); Render("歌词读取异常；详情已写入日志", ""); }
+        finally { _updating = false; }
+    }
+
+    private void ResetLookupState()
+    {
+        _lines = Array.Empty<LyricLine>();
+        _lookupStatus = null;
+        _lookupAttempts = 0;
+        _nextLookupUtc = DateTime.MinValue;
+        _lookupRunning = false;
+        // Invalidate any lookup that is still in flight for the previous track.
+        _generation++;
+    }
+
+    /// <summary>Re-runs the lookup for the current track (context menu action).</summary>
+    private void ForceReload()
+    {
+        ResetLookupState();
+        _forceRefresh = true;
+        _nextLookupUtc = DateTime.MinValue;
+        Render("正在重新查找歌词……", "");
+    }
+
+    private void BeginLookup(PlaybackSnapshot playback, string key)
+    {
+        _lookupRunning = true;
+        _lookupAttempts++;
+        int generation = _generation;
+        bool forceRefresh = _forceRefresh;
+        _forceRefresh = false;
+        _ = LookupAsync(playback, key, generation, forceRefresh);
+    }
+
+    private async Task LookupAsync(PlaybackSnapshot playback, string key, int generation, bool forceRefresh)
+    {
+        LyricsLookupResult result;
+        try
+        {
+            result = await _service.GetLyricsAsync(playback.Title, playback.Artist, playback.Duration, forceRefresh);
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, "LyricsWindow:Lookup");
+            result = LyricsLookupResult.Unavailable;
+        }
+
+        // The user skipped to another track while the request was running: drop the result.
+        if (generation != _generation || !string.Equals(key, _trackKey, StringComparison.Ordinal)) return;
+
+        _lookupRunning = false;
+        if (result.Lyrics is not null)
+        {
+            _lines = result.Lyrics.Lines;
+            _lookupStatus = LyricsLookupStatus.Found;
+            _nextLookupUtc = DateTime.MaxValue;
+            return;
+        }
+
+        _lookupStatus = result.Status;
+        _nextLookupUtc = DateTime.UtcNow + RetryDelay(_lookupAttempts, result.Status);
+    }
+
+    /// <summary>Back-off schedule; never stops retrying, but slows down to once every few minutes.</summary>
+    private static TimeSpan RetryDelay(int attempt, LyricsLookupStatus status)
+    {
+        if (status == LyricsLookupStatus.Unavailable)
+        {
+            // 2s, 4s, 8s, 16s, then 30s, and 3 minutes once the network stays down.
+            if (attempt >= 8) return TimeSpan.FromMinutes(3);
+            return TimeSpan.FromSeconds(Math.Min(30, Math.Pow(2, Math.Max(1, attempt))));
+        }
+
+        // 5s, 10s, 20s, 40s, then once a minute, then once every 5 minutes.
+        if (attempt >= 8) return TimeSpan.FromMinutes(5);
+        return TimeSpan.FromSeconds(Math.Min(60, 5 * Math.Pow(2, Math.Max(0, attempt - 1))));
+    }
+
+    private string StatusMessage()
+    {
+        if (_lookupRunning && _lookupStatus is null) return "正在查找歌词……";
+        return _lookupStatus switch
+        {
+            LyricsLookupStatus.Unavailable => "歌词服务连接失败，正在重试……",
+            LyricsLookupStatus.NotFound => "暂未找到歌词，正在重试……",
+            LyricsLookupStatus.Found => "正在读取同步歌词……",
+            _ => _lookupRunning ? "正在查找歌词……" : "正在读取同步歌词……"
+        };
     }
 
     private void Render(string current, string next)
     {
+        // Rebuilding the visual tree on every tick (even for unchanged text) made the overlay
+        // flicker and burn CPU; only rebuild when the displayed text really changes.
+        string signature = current + "\u001F" + next;
+        if (string.Equals(signature, _renderSignature, StringComparison.Ordinal)) return;
+        _renderSignature = signature;
+
         // The color and the overall opacity are read on every render so the overlay follows
         // the applied settings without rebuilding the window by hand.
         Brush lyricsBrush = LyricStyle.CreateBrush(_settings.LyricsColor);
@@ -381,18 +523,88 @@ public sealed class LyricsWindow : Window
 
     private void SaveBounds()
     {
+        // The vertical lyric layout is built from the window size, so a resize must rebuild it.
+        _renderSignature = string.Empty;
         if (!IsLoaded || double.IsNaN(Left) || double.IsNaN(Top)) return;
         _settings.LyricsWindowWidth = ActualWidth; _settings.LyricsWindowHeight = ActualHeight; _settings.LyricsWindowLeft = Left; _settings.LyricsWindowTop = Top;
         _settingsService.Save(_settings);
     }
 
+    private void OnSourceInitialized()
+    {
+        _hwnd = new WindowInteropHelper(this).Handle;
+        HideFromAltTab();
+        EnsureTopmost();
+    }
+
+    /// <summary>
+    /// Raises the overlay back to the top of the topmost band when another topmost window ended
+    /// up above it (the plain Topmost flag is applied only once, so it is not enough). Moving,
+    /// resizing and activating are suppressed: the overlay must never steal focus.
+    /// The shell (Start menu, Alt-Tab, taskbar flyouts) is deliberately above topmost windows
+    /// and is left alone, and the overlay's own context menu keeps its place while open.
+    /// </summary>
+    private void EnsureTopmost()
+    {
+        if (!IsVisible || _menuOpen) return;
+        IntPtr handle = _hwnd != IntPtr.Zero ? _hwnd : new WindowInteropHelper(this).Handle;
+        if (handle == IntPtr.Zero || !NeedsTopmostRaise(handle)) return;
+        SetWindowPos(handle, HwndTopmost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
+    }
+
+    private static bool NeedsTopmostRaise(IntPtr handle)
+    {
+        // Losing the topmost ex-style (for example after a shell transition) always needs a fix.
+        if ((GetWindowLongPtr(handle, GwlExstyle).ToInt64() & WsExTopmost) == 0) return true;
+
+        // GetWindow(GW_HWNDPREV) is the window directly above ours in z-order. No window above
+        // means the overlay already owns the top of the band.
+        IntPtr above = GetWindow(handle, GwHwndPrev);
+        if (above == IntPtr.Zero) return false;
+        if ((GetWindowLongPtr(above, GwlExstyle).ToInt64() & WsExTopmost) == 0) return false;
+
+        // Start menu / Alt-Tab / shell flyouts are topmost on purpose; do not cover them.
+        return !IsShellForeground();
+    }
+
+    private static bool IsShellForeground()
+    {
+        IntPtr foreground = GetForegroundWindow();
+        if (foreground == IntPtr.Zero) return false;
+        GetWindowThreadProcessId(foreground, out uint processId);
+        if (processId == 0) return false;
+        try
+        {
+            using var process = System.Diagnostics.Process.GetProcessById((int)processId);
+            return ShellProcessNames.Contains(process.ProcessName);
+        }
+        catch
+        {
+            // The foreground process may exit or be protected; assume it is not the shell.
+            return false;
+        }
+    }
+
+    private static readonly HashSet<string> ShellProcessNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "explorer", "StartMenuExperienceHost", "ShellExperienceHost", "SearchHost", "TextInputHost", "LockApp"
+    };
+
+    private const int GwlExstyle = -20;
+    private const int WsExTopmost = 0x8;
+    private const uint GwHwndPrev = 3;
+
     private void HideFromAltTab()
     {
-        var helper = new WindowInteropHelper(this); const int GwlExstyle = -20, WsExToolWindow = 0x80, WsExAppWindow = 0x40000;
+        var helper = new WindowInteropHelper(this); const int WsExToolWindow = 0x80, WsExAppWindow = 0x40000;
         IntPtr style = GetWindowLongPtr(helper.Handle, GwlExstyle);
         SetWindowLongPtr(helper.Handle, GwlExstyle, new IntPtr((style.ToInt64() | WsExToolWindow) & ~WsExAppWindow));
     }
 
+    [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "SetWindowPos", SetLastError = true)] private static extern bool SetWindowPos(IntPtr hWnd, IntPtr hWndInsertAfter, int x, int y, int cx, int cy, uint uFlags);
     [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "GetWindowLongPtr", SetLastError = true)] private static extern IntPtr GetWindowLongPtr(IntPtr hWnd, int nIndex);
     [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "SetWindowLongPtr", SetLastError = true)] private static extern IntPtr SetWindowLongPtr(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [System.Runtime.InteropServices.DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint processId);
 }

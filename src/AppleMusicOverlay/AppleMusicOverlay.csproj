@@ -11,6 +11,7 @@
     <RootNamespace>AppleMusicOverlay</RootNamespace>
     <AssemblyTitle>MusicFloat</AssemblyTitle>
     <Product>MusicFloat</Product>
+    <Version>14.26</Version>
     <Description>Lightweight Windows music overlay powered by SMTC.</Description>
     <RuntimeIdentifiers>win-x64;win-arm64</RuntimeIdentifiers>
     <ApplicationManifest>app.manifest</ApplicationManifest>
