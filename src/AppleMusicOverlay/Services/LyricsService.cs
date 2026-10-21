@@ -273,14 +273,14 @@ public sealed class LyricsService
 
         Add(artist);
 
+        // Apple Music sometimes reports the whole billing as "Artist — Album - Single"; the
+        // primary credit is the part before the dash, so try that first.
+        Add(Regex.Split(artist, @"\s+[—–]\s+|\s+-\s+")[0]);
+
         // "A & B", "A, B", "A、B", "A feat. B": providers usually index the main credit only.
         // "/" is intentionally not a separator so band names such as AC/DC survive.
         string primary = Regex.Split(artist, @"\s*(?:,|&|;|、|／|\+|\bfeat\.?|\bft\.?|\bfeaturing\b|\bwith\b|\bx\b|\bvs\.?\b)\s*", RegexOptions.IgnoreCase)[0];
         Add(primary);
-
-        // Apple Music sometimes reports the whole billing as "Artist — Album - Single"; the
-        // primary credit is the part before the dash.
-        Add(Regex.Split(artist, @"\s+[—–]\s+|\s+-\s+")[0]);
 
         if (variants.Count == 0) variants.Add(string.Empty);
         var bounded = variants.Take(4).ToList();
@@ -394,7 +394,7 @@ public sealed class LyricsService
         handler.SslOptions.EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;
         var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(8) };
         // LRCLIB asks clients to identify themselves; generic agents are rate limited harder.
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.31 (https://github.com/QPONH/Apple-Music-Hotkeys)");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.33 (https://github.com/QPONH/Apple-Music-Hotkeys)");
         client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
         return client;
     }
@@ -725,7 +725,10 @@ public sealed class LyricsService
     {
         try
         {
-            string keyword = string.IsNullOrWhiteSpace(artist) ? title : $"{artist} {title}";
+            // Apple Music can report "Artist — Album - Single"; the album part only pollutes the
+            // search keyword and made KuGou return nothing.
+            string searchArtist = Regex.Split(artist, @"\s+[—–]\s+|\s+-\s+")[0].Trim();
+            string keyword = string.IsNullOrWhiteSpace(searchArtist) ? title : $"{searchArtist} {title}";
             string url = "https://songsearch.kugou.com/song_search_v2?page=1&pagesize=8&userid=-1&platform=WebFilter&filter=2&iscorrection=1&privilege_filter=0&keyword="
                 + Uri.EscapeDataString(keyword);
             using HttpResponseMessage search = await SendAsync(() => BrowserRequest(url), token);
@@ -733,7 +736,7 @@ public sealed class LyricsService
 
             string body = await search.Content.ReadAsStringAsync(token);
             List<KugouHit> hits = ReadKugouHits(body);
-            KugouHit? hit = PickKugouHit(hits, title, artist, duration);
+            KugouHit? hit = PickKugouHit(hits, title, searchArtist, duration);
             if (hit is null) return (null, false);
 
             int durationMs = hit.Value.DurationSeconds > 0

@@ -49,6 +49,9 @@ public sealed class LyricsWindow : Window
     // Watermark used to keep the displayed line from stepping backwards for one tick.
     private int _lastLineIndex = -1;
     private TimeSpan _lastLinePosition;
+    // "无法连接歌词服务器" retries itself; the manual button only makes it immediate.
+    private int _retryAttempt;
+    private DateTime _nextRetryUtc = DateTime.MaxValue;
 
     public LyricsWindow(LyricsService service, OverlaySettings settings, Action? openSettings = null, Action? exitApplication = null)
     {
@@ -69,7 +72,7 @@ public sealed class LyricsWindow : Window
         }
         SourceInitialized += (_, _) => OnSourceInitialized();
         PreviewMouseLeftButtonDown += DragAnywhere;
-        Loaded += async (_, _) => { _timer.Start(); _topmostTimer.Start(); EnsureTopmost(); await UpdateAsync(); };
+        Loaded += async (_, _) => { _timer.Start(); _topmostTimer.Start(); ApplyClickThrough(); EnsureTopmost(); await UpdateAsync(); };
         Closed += (_, _) => { _timer.Stop(); _topmostTimer.Stop(); };
         IsVisibleChanged += (_, _) => EnsureTopmost();
         Activated += (_, _) => EnsureTopmost();
@@ -176,9 +179,11 @@ public sealed class LyricsWindow : Window
                 bool waitingForArtist = string.IsNullOrWhiteSpace(artist)
                     && _lookupStatus is null
                     && DateTime.UtcNow - _trackSeenUtc < TimeSpan.FromMilliseconds(1500);
-                // Each track is looked up once. Connection failures and misses stay on screen
-                // until the user hits 「重新查找歌词」 in settings (or the lyric context menu).
-                if (!waitingForArtist && !_lookupRunning && _lookupStatus is null)
+                // A track is looked up once; only a connection failure retries by itself (a miss
+                // stays until the user hits 「重新查找歌词」). LRCLIB is intermittently blocked on
+                // some networks, so a one-shot attempt used to leave "无法连接歌词服务器" forever.
+                bool retryDue = _lookupStatus == LyricsLookupStatus.Unavailable && DateTime.UtcNow >= _nextRetryUtc;
+                if (!waitingForArtist && !_lookupRunning && (_lookupStatus is null || retryDue))
                     BeginLookup(playback, _trackKey);
                 // A lookup that hits the on-disk cache finishes in a few milliseconds, so the
                 // "正在查找歌词" text is suppressed for a short grace period instead of flashing.
@@ -206,11 +211,23 @@ public sealed class LyricsWindow : Window
         _lookupStatus = null;
         _lookupRunning = false;
         _correctionPending = false;
+        _retryAttempt = 0;
+        _nextRetryUtc = DateTime.MaxValue;
         _lastLineIndex = -1;
         _lastLinePosition = TimeSpan.Zero;
         // Invalidate any lookup that is still in flight for the previous track.
         _generation++;
     }
+
+    /// <summary>Connection failures retry on their own: 5 s, 10 s, 20 s, 30 s, then once a minute.</summary>
+    private static TimeSpan UnavailableRetryDelay(int attempt) => attempt switch
+    {
+        <= 1 => TimeSpan.FromSeconds(5),
+        2 => TimeSpan.FromSeconds(10),
+        3 => TimeSpan.FromSeconds(20),
+        4 => TimeSpan.FromSeconds(30),
+        _ => TimeSpan.FromSeconds(60)
+    };
 
     /// <summary>
     /// The extrapolated SMTC position can dip by a few hundred milliseconds when a fresh sample
@@ -291,6 +308,8 @@ public sealed class LyricsWindow : Window
         {
             _lines = result.Lyrics.Lines;
             _lookupStatus = LyricsLookupStatus.Found;
+            _retryAttempt = 0;
+            _nextRetryUtc = DateTime.MaxValue;
             // Start from a clean watermark: the first lyric line of a fresh track may be behind the
             // previous track's last line index.
             _lastLineIndex = -1;
@@ -299,6 +318,11 @@ public sealed class LyricsWindow : Window
         }
 
         _lookupStatus = result.Status;
+        if (result.Status == LyricsLookupStatus.Unavailable)
+        {
+            _retryAttempt++;
+            _nextRetryUtc = DateTime.UtcNow + UnavailableRetryDelay(_retryAttempt);
+        }
     }
 
     private string StatusMessage()
@@ -311,7 +335,9 @@ public sealed class LyricsWindow : Window
         if (_lookupRunning && _lookupStatus is null) return "正在查找歌词……";
         return _lookupStatus switch
         {
-            LyricsLookupStatus.Unavailable => "无法连接歌词服务器。请到设置中点击「重新查找歌词」。",
+            LyricsLookupStatus.Unavailable => _retryAttempt > 0
+                ? $"连接失败，正在自动重试（{_retryAttempt}）……"
+                : "连接歌词服务器失败……",
             LyricsLookupStatus.NotFound => "未识别到歌词。请到设置中点击「重新查找歌词」。",
             LyricsLookupStatus.Found => "正在读取同步歌词……",
             _ => _lookupRunning ? "正在查找歌词……" : "正在读取同步歌词……"
@@ -340,6 +366,15 @@ public sealed class LyricsWindow : Window
             // Without the dark plate, white lyrics over a bright window (Apple Music itself, a
             // browser) are practically invisible. A soft outline keeps them readable.
             root.Effect = new DropShadowEffect { Color = Colors.Black, ShadowDepth = 0, BlurRadius = 7, Opacity = 0.9 };
+        }
+
+        // A track whose whole lyric is one line ("纯音乐，请欣赏" and similar notices) reads better
+        // as a single block: vertically centred and hugging the right edge.
+        if (_lines.Count == 1 && !string.IsNullOrWhiteSpace(current) && string.IsNullOrWhiteSpace(next))
+        {
+            root.Child = CreateSingleLineLyrics(current, lyricsBrush);
+            Content = root;
+            return;
         }
         var alignment = _settings.LyricsAlignment switch { "Left" => HorizontalAlignment.Left, "Right" => HorizontalAlignment.Right, _ => HorizontalAlignment.Center };
         if (_settings.LyricsOrientation == "Vertical")
@@ -382,6 +417,39 @@ public sealed class LyricsWindow : Window
             root.Child = rows;
         }
         Content = root;
+    }
+
+    /// <summary>
+    /// One-line lyrics (instrumental notices): a vertical column for CJK, a horizontal line for
+    /// word-based text, both pinned to the right edge and centred vertically.
+    /// </summary>
+    private FrameworkElement CreateSingleLineLyrics(string text, Brush brush)
+    {
+        if (_settings.LyricsOrientation == "Vertical" && !IsMostlyWordBased(text))
+        {
+            StackPanel column = CreateVerticalLine(text, 1.0, brush, ContentHeight());
+            column.HorizontalAlignment = HorizontalAlignment.Right;
+            column.VerticalAlignment = VerticalAlignment.Center;
+            return column;
+        }
+
+        // A single horizontal line is shrunk to fit instead of wrapping mid-word.
+        double maxWidth = ContentWidth();
+        double fontSize = Math.Clamp(_settings.LyricsFontSize, 10, 120);
+        double natural = MeasureTextWidth(text, fontSize);
+        if (natural > maxWidth && natural > 0) fontSize = Math.Max(6, fontSize * maxWidth / natural);
+
+        return new TextBlock
+        {
+            Text = text,
+            Foreground = brush,
+            FontSize = fontSize,
+            TextWrapping = TextWrapping.NoWrap,
+            TextAlignment = TextAlignment.Right,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Center,
+            MaxWidth = maxWidth
+        };
     }
 
     /// <summary>
@@ -778,7 +846,40 @@ public sealed class LyricsWindow : Window
     {
         _hwnd = new WindowInteropHelper(this).Handle;
         HideFromAltTab();
+        ApplyClickThrough();
+        HwndSource.FromHwnd(_hwnd)?.AddHook(WindowMessageHook);
         EnsureTopmost();
+    }
+
+    private const int WmNcHitTest = 0x0084;
+    private static readonly IntPtr HtTransparent = new(-1);
+
+    /// <summary>
+    /// Second safety net for the click-through mode: WS_EX_TRANSPARENT already keeps the window out
+    /// of hit testing, and HTTRANSPARENT covers shells where the style alone is not enough.
+    /// </summary>
+    private IntPtr WindowMessageHook(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam, ref bool handled)
+    {
+        if (message == WmNcHitTest && !_settings.LyricsBackgroundEnabled)
+        {
+            handled = true;
+            return HtTransparent;
+        }
+        return IntPtr.Zero;
+    }
+
+    /// <summary>
+    /// With the dark plate switched off the overlay is just floating text: WS_EX_TRANSPARENT makes
+    /// the whole window invisible to the mouse so clicks reach the app underneath (even on a
+    /// glyph). With the plate on it stays interactive for dragging and the context menu.
+    /// </summary>
+    private void ApplyClickThrough()
+    {
+        if (_hwnd == IntPtr.Zero) return;
+
+        long style = GetWindowLongPtr(_hwnd, GwlExstyle).ToInt64();
+        style = _settings.LyricsBackgroundEnabled ? style & ~WsExTransparent : style | WsExTransparent;
+        SetWindowLongPtr(_hwnd, GwlExstyle, new IntPtr(style));
     }
 
     /// <summary>
@@ -836,6 +937,7 @@ public sealed class LyricsWindow : Window
 
     private const int GwlExstyle = -20;
     private const int WsExTopmost = 0x8;
+    private const long WsExTransparent = 0x20;
     private const uint GwHwndPrev = 3;
 
     private void HideFromAltTab()
