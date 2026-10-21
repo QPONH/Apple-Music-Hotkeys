@@ -1,50 +1,39 @@
-MusicFloat v14.26 —— Apple Music 歌词浮窗 + 全局快捷键
+MusicFloat v14.31 —— Apple Music 歌词浮窗 + 全局快捷键
 （Apple-Music-Hotkeys 修改版）
 
 使用方法
 1. 把压缩包完整解压到任意文件夹。
-2. 二选一运行（两个都是单文件，任选其一即可）：
-   · MusicFloat.exe                —— 体积小，需要先安装 .NET 8 Desktop Runtime x64。
-   · MusicFloat-self-contained.exe —— 自带 .NET 运行时，不需要安装任何东西；首次启动稍慢几百毫秒。
-3. 启动后出现设置窗口（或已按设置隐藏到托盘）；在设置里勾选“歌词”并点“应用”即可显示歌词浮窗。
+2. 直接运行 MusicFloat.exe（单文件，自带 .NET 运行时，不需要另外安装）。
+3. 启动后出现设置窗口（或已按设置隐藏到托盘）；在设置里勾选“启用”并点“应用”即可显示歌词浮窗。
 
-本版修复的三个问题
-· 有时 Apple Music 明明有歌词却提示找不到：
-  网络 / TLS 握手偶发失败或接口限流时，不再把“没找到”永久记住，而是自动重试
-  （2s → 4s → 8s → 16s → 30s → … → 3min）；同时对 “Song (feat. X)”“Song - Remastered”
-  “A & B” 这类写法生成标题/艺人变体，并按标题 + 艺人 + 时长择优，避免匹配到现场版或翻唱。
-· 关闭 Apple Music 后出现“未知来源”的歌词：
-  浮窗只认 Apple Music 的 SMTC 会话，不再退回到浏览器 / 直播 / 其他播放器；
-  播放器退出后残留的 Closed 会话也会被忽略。没有 Apple Music 会话时显示
-  “未识别到正在播放的 Apple Music 歌曲”。
-· 歌词浮窗不总在最上方：
-  除 Topmost 之外每 0.8 秒自检一次，被其他置顶窗口压住时用 SetWindowPos 重新置顶
-  （不抢焦点、不改变位置大小）；开始菜单 / Alt-Tab 等系统界面出现时不抢，浮窗右键菜单打开时暂停。
+本版相对 14.30 的变化（修「歌词是别的歌」）
+· 匹配更严格：一个结果必须“歌名对得上”且“艺人能对上”；只有歌名像而艺人完全不同时，
+  只有当时长与正在播放的歌相差不超过 2.5 秒才会被采纳（同曲异名/同名翻唱的兜底）。
+  以前同名的别的歌、现场版、翻唱都可能顶掉真正的歌词。
+· 切歌瞬间艺人串错时自动纠正：Apple Music 有时先报新歌名、下一拍才更新艺人，
+  用旧艺人查出来的歌词是别的歌的。现在艺人一变就重新查一次：
+  还没歌词时立刻重查；已经显示歌词时在后台重查，查到再替换，不会闪空。
+· 本地缓存加了版本号：旧版本按宽松规则缓存的错词会被丢弃一次，之后重新查询，
+  不会继续把错的词发给你。
+· 时长未知时不再乱配：标题单搜只接受同名且长度接近的结果。
+· 顺带把播放进度改成“按真实时间推进、遇到跳转再对齐”：
+  不再依赖 SMTC 的 LastUpdatedTime（Apple Music 的这个时间戳并不准），
+  避免歌词整段跑在声音前面。
+
+上一版（14.30）的内容仍然有效
+· 只含“作词/作曲”等制作信息的结果不再当作歌词。
+· “艺人 — 专辑 - Single” 会拆出艺人再匹配。
+· 没有底板时歌词带描边；浮窗离屏时自动回屏幕中央；退出不再弹错误。
+· 诊断：每次查歌词会在 crash.log 记一行
+  “LyricsResult: 歌名 | 艺人 | Found/NotFound/Unavailable | 行数”。
+
+再往前（14.28 / 14.29）
+· 四等分排版、中英混排、超长单词、换句闪回、本地歌词缓存。
+· 歌词偏移请保持 0 附近。
 
 歌词浮窗操作
 · 右键菜单：打开设置 / 重新查找歌词 / 退出 MusicFloat。
 · 开启背景后可直接拖动窗口；拖边缘可调整大小（位置尺寸会自动保存）。
 · 设置里可调整字号、颜色、透明度、横排/竖排、歌词偏移等。
-
-运行时依赖（仅 MusicFloat.exe 需要）
-.NET 8 Desktop Runtime x64：
-https://dotnet.microsoft.com/download/dotnet/8.0/runtime
-在页面中选择 “.NET Desktop Runtime 8.x - Windows x64”。
-
----
-
-MusicFloat v14.26 (English)
-
-1. Extract the archive to any folder.
-2. Run one of the two single-file builds:
-   - MusicFloat.exe                - small, requires the .NET 8 Desktop Runtime x64.
-   - MusicFloat-self-contained.exe - bundles the runtime, nothing to install.
-3. Open the settings window, enable "Lyrics" and click Apply to show the floating lyrics.
-
-Fixes in this build
-- Lyrics are no longer permanently cached as "not found" when a request fails;
-  lookups retry with backoff and match title/artist variants by duration.
-- The overlay only follows the Apple Music SMTC session, so closing Apple Music
-  no longer shows lyrics of browsers or other players.
-- The overlay re-asserts HWND_TOPMOST while visible so it stays above other
-  always-on-top windows (without stealing focus or covering the Start menu).
+· 查找失败不会自动重试；歌词明显不对时，点设置里的「重新查找歌词」
+  （或浮窗右键 → 重新查找歌词）会忽略缓存重新匹配。

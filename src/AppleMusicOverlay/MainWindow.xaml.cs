@@ -381,7 +381,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
                 buildTime = System.IO.File.GetLastWriteTime(path).ToString("yyyy-MM-dd HH:mm");
         }
         catch { }
-        VersionText.Text = $"v14.26 · 构建 {buildTime} · {Environment.OSVersion.Version}";
+        VersionText.Text = $"v14.31 · 构建 {buildTime} · {Environment.OSVersion.Version}";
     }
 
     private bool _lowIntegrityWarningShown;
@@ -491,6 +491,19 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         if (_isLoadingSettings) return;
         _draftSettings.LyricsEnabled = LyricsEnabledCheckBox.IsChecked == true;
         MarkDraftChanged();
+    }
+
+    private void LyricsRetry_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_settings.LyricsEnabled)
+        {
+            StatusText = "请先勾选「启用」并点击「应用」，再重新查找歌词。";
+            return;
+        }
+
+        if (_lyricsWindow is not { IsVisible: true }) ShowLyricsWindow();
+        _lyricsWindow?.RequestManualReload();
+        StatusText = "正在重新查找当前歌曲的歌词……";
     }
 
     private void LyricsOffsetBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -905,6 +918,10 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
 
     public void ShowSettings()
     {
+        // A tray/menu command can still be queued while the app is shutting down. Showing a
+        // window that has already been closed throws "关闭窗口后，无法设置可见性…", which used to
+        // surface as an "运行异常" dialog on exit. A closed window is gone from Application.Windows.
+        if (_isExiting || Application.Current is null || !Application.Current.Windows.Cast<Window>().Contains(this)) return;
         Show();
         WindowState = WindowState.Normal;
         Activate();

@@ -2,7 +2,7 @@ using Windows.Media.Control;
 
 namespace AppleMusicOverlay.Services;
 
-public sealed record PlaybackSnapshot(string Title, string Artist, TimeSpan Position, TimeSpan Duration);
+public sealed record PlaybackSnapshot(string Title, string Artist, string Album, TimeSpan Position, TimeSpan Duration, bool IsPlaying);
 
 /// <summary>
 /// Apple Music playback controls through Windows SMTC.
@@ -13,8 +13,12 @@ public sealed class SmtcMediaSessionService
 {
     private GlobalSystemMediaTransportControlsSessionManager? _manager;
 
-    private async Task<GlobalSystemMediaTransportControlsSessionManager> GetManagerAsync(CancellationToken cancellationToken) =>
-        _manager ??= await GlobalSystemMediaTransportControlsSessionManager.RequestAsync().AsTask(cancellationToken);
+    private async Task<GlobalSystemMediaTransportControlsSessionManager> GetManagerAsync(CancellationToken cancellationToken)
+    {
+        if (_manager is not null) return _manager;
+        _manager = await GlobalSystemMediaTransportControlsSessionManager.RequestAsync().AsTask(cancellationToken);
+        return _manager;
+    }
 
     /// <summary>Returns the Apple Music session, or null when Apple Music is not running / idle.</summary>
     private async Task<GlobalSystemMediaTransportControlsSession?> GetAppleMusicSessionAsync(CancellationToken cancellationToken = default)
@@ -58,6 +62,7 @@ public sealed class SmtcMediaSessionService
         }
         catch (Exception ex) when (IsSessionGone(ex))
         {
+            _manager = null;
             return null;
         }
     }
@@ -79,24 +84,98 @@ public sealed class SmtcMediaSessionService
             if (properties is null || string.IsNullOrWhiteSpace(properties.Title)) return null;
 
             var timeline = session.GetTimelineProperties();
-            return new PlaybackSnapshot(
-                properties.Title,
-                ResolveArtist(properties),
+            bool playing = info?.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
+            double rate = info?.PlaybackRate is double value && value > 0.05 && value < 4 ? value : 1.0;
+            TimeSpan duration = ReadDuration(timeline);
+            TimeSpan position = AdvancePosition(
+                $"{properties.Title}\n{ResolveArtist(properties)}",
                 timeline?.Position ?? TimeSpan.Zero,
-                timeline?.EndTime ?? TimeSpan.Zero);
+                playing,
+                rate,
+                duration);
+            return new PlaybackSnapshot(
+                properties.Title.Trim(),
+                ResolveArtist(properties).Trim(),
+                (properties.AlbumTitle ?? string.Empty).Trim(),
+                position,
+                duration,
+                playing);
         }
         catch (Exception ex) when (IsSessionGone(ex))
         {
             // Apple Music was closed or restarted between enumeration and property access.
-            // This is polled every 350 ms, so it must stay silent instead of filling the crash
-            // log with thousands of "RPC server unavailable" entries.
+            // The SMTC manager itself also goes stale after these RPC failures; drop it so the
+            // next poll creates a fresh one instead of failing until the process restarts.
+            _manager = null;
             return null;
         }
     }
 
+    private string _positionTrackKey = string.Empty;
+    private TimeSpan _positionAnchor;
+    private DateTime _positionAnchorUtc;
+
+    /// <summary>
+    /// Advances the reported position to "now". SMTC only refreshes <c>TimelineProperties.Position</c>
+    /// about once per second, and <c>LastUpdatedTime</c> is not a reliable clock (for Apple Music it
+    /// can lag far behind the reported position). Trusting it made the overlay jump ahead of the
+    /// audio, so the elapsed time since our own previous poll is used instead: the position runs at
+    /// real time and snaps to the reported value when that value is ahead (seek forward) or more
+    /// than two seconds behind (seek back). Pausing freezes it.
+    /// </summary>
+    private TimeSpan AdvancePosition(string trackKey, TimeSpan reported, bool playing, double rate, TimeSpan duration)
+    {
+        DateTime now = DateTime.UtcNow;
+        TimeSpan position;
+
+        if (!playing || !string.Equals(trackKey, _positionTrackKey, StringComparison.Ordinal))
+        {
+            position = reported;
+            _positionTrackKey = trackKey;
+            _positionAnchor = position;
+            _positionAnchorUtc = now;
+        }
+        else
+        {
+            double elapsed = (now - _positionAnchorUtc).TotalSeconds;
+            if (elapsed < 0) elapsed = 0;
+            TimeSpan predicted = _positionAnchor + TimeSpan.FromSeconds(elapsed * rate);
+
+            if (reported > predicted + TimeSpan.FromMilliseconds(400)) position = reported;   // sample is ahead
+            else if (reported < predicted - TimeSpan.FromSeconds(2)) position = reported;     // real seek back
+            else position = predicted;
+
+            _positionAnchor = position;
+            _positionAnchorUtc = now;
+        }
+
+        if (position < TimeSpan.Zero) position = TimeSpan.Zero;
+        if (duration > TimeSpan.Zero && position > duration) position = duration;
+        return position;
+    }
+
+    /// <summary>
+    /// Track length for lyric matching. Apple Music occasionally reports an absolute or empty
+    /// end time; using that raw value made every real lyric miss the duration check.
+    /// </summary>
+    private static TimeSpan ReadDuration(GlobalSystemMediaTransportControlsSessionTimelineProperties? timeline)
+    {
+        if (timeline is null) return TimeSpan.Zero;
+
+        TimeSpan duration = TimeSpan.Zero;
+        if (timeline.EndTime > timeline.StartTime)
+            duration = timeline.EndTime - timeline.StartTime;
+        if ((duration <= TimeSpan.Zero || duration > TimeSpan.FromMinutes(30)) && timeline.MaxSeekTime > timeline.MinSeekTime)
+            duration = timeline.MaxSeekTime - timeline.MinSeekTime;
+
+        // Unknown is safer than a bogus length: callers treat zero as "do not filter on duration".
+        if (duration < TimeSpan.FromSeconds(1) || duration > TimeSpan.FromMinutes(30)) return TimeSpan.Zero;
+        return duration;
+    }
+
     /// <summary>Exceptions SMTC throws when the player owning a session disappears.</summary>
     private static bool IsSessionGone(Exception ex) =>
-        ex is System.Runtime.InteropServices.COMException or ObjectDisposedException;
+        ex is System.Runtime.InteropServices.COMException or ObjectDisposedException or TimeoutException;
 
     /// <summary>
     /// Some tracks report an empty Artist but a filled AlbumArtist; using it instead of an empty

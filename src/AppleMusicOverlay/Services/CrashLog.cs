@@ -21,4 +21,18 @@ public static class CrashLog
         }
         catch { /* Logging must never become a new failure path. */ }
     }
+
+    /// <summary>One line per track lookup, so a "no lyrics" report can be diagnosed from the log.</summary>
+    public static void WriteNote(string source, string message)
+    {
+        try
+        {
+            lock (Sync)
+            {
+                Directory.CreateDirectory(AppPaths.SettingsDirectory);
+                File.AppendAllText(LogPath, $"[{DateTimeOffset.Now:yyyy-MM-dd HH:mm:ss zzz}] {source}: {message}{Environment.NewLine}", Encoding.UTF8);
+            }
+        }
+        catch { /* Logging must never become a new failure path. */ }
+    }
 }
