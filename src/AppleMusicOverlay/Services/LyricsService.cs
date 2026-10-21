@@ -394,7 +394,7 @@ public sealed class LyricsService
         handler.SslOptions.EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;
         var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(8) };
         // LRCLIB asks clients to identify themselves; generic agents are rate limited harder.
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.33 (https://github.com/QPONH/Apple-Music-Hotkeys)");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.35 (https://github.com/QPONH/Apple-Music-Hotkeys)");
         client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
         return client;
     }

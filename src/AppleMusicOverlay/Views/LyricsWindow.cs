@@ -454,47 +454,57 @@ public sealed class LyricsWindow : Window
 
     /// <summary>
     /// Non-word lyrics (Chinese, Japanese, Korean): the window is split into four equal cells.
-    /// The current sentence is laid out in the top-left cell (reads downwards, wrapping into new
-    /// columns) and the next sentence in the bottom-right cell (anchored to the bottom edge, so it
-    /// grows upwards). Each block is limited to half the window height, which keeps a long current
-    /// line from running into the next sentence.
+    /// The current sentence is centred inside the top-left cell (reads downwards, wrapping into new
+    /// columns at the cell height) and the next sentence is centred inside the bottom-right cell.
+    /// Each block is limited to half the window height, so a long current line cannot run into the
+    /// next sentence. Positions are computed on a Canvas instead of Grid cells: a Grid clips a
+    /// child that is wider than its cell, which used to cut long Latin words exactly at the middle
+    /// of the overlay. On a Canvas a wide block may extend into the empty neighbouring cell and is
+    /// never clipped.
     /// </summary>
-    private Grid CreateQuadrantLyrics(string current, string next, Brush brush, bool vertical)
+    private Canvas CreateQuadrantLyrics(string current, string next, Brush brush, bool vertical)
     {
-        var grid = new Grid
-        {
-            HorizontalAlignment = HorizontalAlignment.Stretch,
-            VerticalAlignment = VerticalAlignment.Stretch
-        };
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
-        grid.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        double contentWidth = ContentWidth();
+        double contentHeight = ContentHeight();
+        double cellWidth = Math.Max(1, contentWidth / 2);
+        double cellHeight = Math.Max(1, contentHeight / 2);
 
-        double cellWidth = Math.Max(1, ContentWidth() / 2);
-        double cellHeight = Math.Max(1, ContentHeight() / 2);
+        var canvas = new Canvas
+        {
+            Width = contentWidth,
+            Height = contentHeight,
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top
+        };
 
         FrameworkElement currentBlock = vertical
             ? CreateVerticalLine(current, 1.0, brush, cellHeight)
             : CreateCornerText(current, 1.0, brush, TextAlignment.Left, cellWidth);
-        currentBlock.HorizontalAlignment = HorizontalAlignment.Left;
-        currentBlock.VerticalAlignment = VerticalAlignment.Top;
-        Grid.SetColumn(currentBlock, 0);
-        Grid.SetRow(currentBlock, 0);
-        grid.Children.Add(currentBlock);
+        Size currentSize = MeasureBlock(currentBlock);
+        Canvas.SetLeft(currentBlock, currentSize.Width <= cellWidth ? Math.Max(0, (cellWidth - currentSize.Width) / 2) : 0);
+        Canvas.SetTop(currentBlock, Math.Max(0, (cellHeight - currentSize.Height) / 2));
+        canvas.Children.Add(currentBlock);
 
         if (!string.IsNullOrWhiteSpace(next))
         {
             FrameworkElement nextBlock = vertical
                 ? CreateVerticalLine(next, 0.55, brush, cellHeight)
                 : CreateCornerText(next, 0.55, brush, TextAlignment.Right, cellWidth);
-            nextBlock.HorizontalAlignment = HorizontalAlignment.Right;
-            nextBlock.VerticalAlignment = VerticalAlignment.Bottom;
-            Grid.SetColumn(nextBlock, 1);
-            Grid.SetRow(nextBlock, 1);
-            grid.Children.Add(nextBlock);
+            Size nextSize = MeasureBlock(nextBlock);
+            double left = nextSize.Width <= cellWidth
+                ? cellWidth + (cellWidth - nextSize.Width) / 2
+                : Math.Max(0, contentWidth - nextSize.Width);
+            Canvas.SetLeft(nextBlock, left);
+            Canvas.SetTop(nextBlock, cellHeight + Math.Max(0, (cellHeight - nextSize.Height) / 2));
+            canvas.Children.Add(nextBlock);
         }
-        return grid;
+        return canvas;
+    }
+
+    private static Size MeasureBlock(FrameworkElement block)
+    {
+        block.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        return block.DesiredSize;
     }
 
     /// <summary>Usable size inside the 12 px border padding; falls back to the configured size
@@ -699,12 +709,26 @@ public sealed class LyricsWindow : Window
         var columns = new StackPanel { Orientation = Orientation.Horizontal, UseLayoutRounding = false };
         StackPanel? column = null;
         double usedHeight = 0;
+        double columnWidth = 0;
+
+        void CloseColumn()
+        {
+            if (column is null) return;
+            // Explicit width: a long Latin word widens its column instead of spilling over the
+            // neighbouring one, so glyphs and words never draw on top of each other.
+            column.Width = Math.Max(1, columnWidth);
+        }
+
         foreach (VerticalToken token in TokenizeVertical(text))
         {
             char character = token.Text[0];
             bool isGap = !token.IsWord && (char.IsWhiteSpace(character) || character is '\u3000');
             double cellHeight = token.IsWord ? WordCellHeight(fontSize) : GlyphCellHeight(character, fontSize);
-            if (column is not null && usedHeight > 0 && usedHeight + cellHeight > available) column = null;
+            if (column is not null && usedHeight > 0 && usedHeight + cellHeight > available)
+            {
+                CloseColumn();
+                column = null;
+            }
             if (column is null)
             {
                 // Never open a column with a space: the gap would look like an empty row.
@@ -712,14 +736,28 @@ public sealed class LyricsWindow : Window
                 column = new StackPanel { Orientation = Orientation.Vertical, Margin = new Thickness(0, 0, 2, 0), UseLayoutRounding = false };
                 columns.Children.Add(column);
                 usedHeight = 0;
+                columnWidth = 0;
             }
-            column.Children.Add(token.IsWord
+
+            FrameworkElement cell = token.IsWord
                 ? CreateWordCell(token.Text, fontSize, cellHeight, opacity, brush)
-                : CreateGlyphCell(character, fontSize, cellHeight, opacity, brush, glyphFont));
+                : CreateGlyphCell(character, fontSize, cellHeight, opacity, brush, glyphFont);
+            // Cells line up on the column's left edge so a widened column still reads as one column.
+            cell.HorizontalAlignment = HorizontalAlignment.Left;
+            column.Children.Add(cell);
+            columnWidth = Math.Max(columnWidth, MeasureCellWidth(cell));
             usedHeight += cellHeight;
         }
+
+        CloseColumn();
         if (columns.Children.Count == 0) columns.Children.Add(new StackPanel { Orientation = Orientation.Vertical });
         return columns;
+    }
+
+    private static double MeasureCellWidth(FrameworkElement cell)
+    {
+        cell.Measure(new Size(double.PositiveInfinity, double.PositiveInfinity));
+        return Math.Max(1, cell.DesiredSize.Width);
     }
 
     private static double WordCellHeight(double fontSize) => fontSize;
@@ -766,15 +804,10 @@ public sealed class LyricsWindow : Window
 
     private TextBlock CreateWordCell(string word, double fontSize, double cellHeight, double opacity, Brush brush)
     {
-        // A text block measured inside a quarter-width grid cell is squeezed to the cell width and
-        // then clipped when arranged: a Latin word inside a CJK line was cut off exactly at the
-        // middle of the overlay. Measure the word itself and give the cell that exact width; a word
-        // wider than the whole overlay shrinks instead of being truncated.
-        double maxWidth = ContentWidth();
-        double naturalWidth = MeasureTextWidth(word, fontSize);
-        double scale = naturalWidth > maxWidth ? maxWidth / naturalWidth : 1.0;
-        double effectiveFontSize = Math.Max(6, fontSize * scale);
-        double width = Math.Max(1, Math.Min(maxWidth, MeasureTextWidth(word, effectiveFontSize) + 2));
+        // The word keeps its font size. Its cell is simply as wide as the word itself; the column
+        // it lives in grows with it, so the word may extend past the quarter cell (into the empty
+        // neighbouring cell) without ever covering other lyrics.
+        double width = Math.Max(fontSize * 1.5, MeasureTextWidth(word, fontSize) + 4);
 
         var cell = new TextBlock
         {
@@ -782,7 +815,7 @@ public sealed class LyricsWindow : Window
             // Word cells keep Latin metrics, so the glyph font used for CJK fallback is not needed.
             FontFamily = new FontFamily("Segoe UI"),
             Foreground = brush,
-            FontSize = effectiveFontSize,
+            FontSize = fontSize,
             Width = width,
             LineHeight = Math.Max(1, cellHeight),
             LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
