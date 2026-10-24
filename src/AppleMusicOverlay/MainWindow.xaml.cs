@@ -776,7 +776,33 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         try
         {
             NormalizeLyricsInputs();
+
+            // Window geometry is updated live by LyricsWindow, while _draftSettings is a
+            // staged snapshot created earlier. Preserve the latest live/saved bounds before
+            // copying that older snapshot so clicking Apply cannot reset the overlay position
+            // or size to stale/default values.
+            double lyricsWindowWidth = _settings.LyricsWindowWidth;
+            double lyricsWindowHeight = _settings.LyricsWindowHeight;
+            double? lyricsWindowLeft = _settings.LyricsWindowLeft;
+            double? lyricsWindowTop = _settings.LyricsWindowTop;
+            if (_lyricsWindow is { IsVisible: true } liveLyricsWindow)
+            {
+                if (liveLyricsWindow.ActualWidth > 0)
+                    lyricsWindowWidth = liveLyricsWindow.ActualWidth;
+                if (liveLyricsWindow.ActualHeight > 0)
+                    lyricsWindowHeight = liveLyricsWindow.ActualHeight;
+                if (!double.IsNaN(liveLyricsWindow.Left) && !double.IsInfinity(liveLyricsWindow.Left))
+                    lyricsWindowLeft = liveLyricsWindow.Left;
+                if (!double.IsNaN(liveLyricsWindow.Top) && !double.IsInfinity(liveLyricsWindow.Top))
+                    lyricsWindowTop = liveLyricsWindow.Top;
+            }
+
             CopySettings(_draftSettings, _settings);
+            _settings.LyricsWindowWidth = Math.Max(180, lyricsWindowWidth);
+            _settings.LyricsWindowHeight = Math.Max(70, lyricsWindowHeight);
+            _settings.LyricsWindowLeft = lyricsWindowLeft;
+            _settings.LyricsWindowTop = lyricsWindowTop;
+
             if (!RegisterHotkeys())
             {
                 StatusText = "部分快捷键无法注册，请检查冲突后重试。";

@@ -40,19 +40,26 @@ public sealed class GlobalHotkeyService : IDisposable
             return false;
         }
 
-        if (action is AppAction.VolumeUp or AppAction.VolumeDown)
-            return _keyboardHook.Register(action, hotkeyText);
-
+        // Use the same WM_HOTKEY path for volume controls as for track/playback controls.
+        // In the reported full-screen-game scenario, other shortcuts continue to work while
+        // the low-level-hook-only volume path stops seeing the chord. Keeping RegisterHotKey
+        // as the primary path makes volume behavior consistent with the known-working actions.
         IntPtr handle = EnsureHandle();
         int id = _nextId++;
         bool registered = RegisterHotKey(handle, id, hotkey.Modifiers | ModNoRepeat, hotkey.VirtualKey);
-        if (!registered)
+        if (registered)
         {
-            return false;
+            _hotkeys[id] = new RegisteredHotkey(action, hotkeyText.Trim());
+            return true;
         }
 
-        _hotkeys[id] = new RegisteredHotkey(action, hotkeyText.Trim());
-        return true;
+        // Some shortcuts may already be claimed by Windows or another application. Preserve
+        // the old low-level-hook fallback for volume controls when RegisterHotKey cannot claim
+        // the chord; do not let a fallback hook intercept chords that have registered normally.
+        if (action is AppAction.VolumeUp or AppAction.VolumeDown)
+            return _keyboardHook.Register(action, hotkeyText);
+
+        return false;
     }
 
     public void Clear()
