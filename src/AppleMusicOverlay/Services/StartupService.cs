@@ -25,28 +25,40 @@ public static class StartupService
 
     /// <summary>
     /// Best-effort registry update. The Run key can be locked down by policy or security
-    /// software, and that must never abort an unrelated settings change.
+    /// software, and that must never abort an unrelated settings change. Existing commands
+    /// are compared by path so moving the app does not leave a stale startup target.
     /// </summary>
     public static bool TrySetEnabled(bool enabled, out string? error)
     {
         error = null;
         try
         {
-            // Skip the write entirely when the stored state already matches: most applies
-            // only change lyric settings and never need to touch the Run key.
-            if (IsEnabled == enabled) return true;
-
-            using RegistryKey key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true)
-                ?? Registry.CurrentUser.CreateSubKey(RunKeyPath);
+            // Open writable even when the setting appears disabled: IsEnabled intentionally
+            // treats access errors as false, which must not turn a failed disable into success.
+            using RegistryKey? existing = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
             if (!enabled)
             {
-                key.DeleteValue(ValueName, throwOnMissingValue: false);
+                if (existing is null) return true;
+                existing.DeleteValue(ValueName, throwOnMissingValue: false);
                 return true;
             }
 
             string executablePath = Environment.ProcessPath
                 ?? throw new InvalidOperationException("无法确定程序路径。");
-            key.SetValue(ValueName, $"\"{executablePath}\"");
+            string expectedValue = $"\"{executablePath}\"";
+            if (existing?.GetValue(ValueName) is string current
+                && string.Equals(current, expectedValue, StringComparison.OrdinalIgnoreCase))
+                return true;
+
+            if (existing is not null)
+            {
+                existing.SetValue(ValueName, expectedValue);
+                return true;
+            }
+
+            using RegistryKey created = Registry.CurrentUser.CreateSubKey(RunKeyPath)
+                ?? throw new InvalidOperationException("无法创建开机启动注册表项。");
+            created.SetValue(ValueName, expectedValue);
             return true;
         }
         catch (Exception ex)

@@ -1,4 +1,4 @@
-using AppleMusicOverlay.Models;
+﻿using AppleMusicOverlay.Models;
 
 namespace AppleMusicOverlay.Services;
 
@@ -18,14 +18,25 @@ public sealed record HotkeyApplyResult(bool Success, string Message, HotkeyApply
 
 public static class KeyboardHotkeyBindingManager
 {
-    public static Dictionary<AppAction, string> CreateSnapshot(OverlaySettings settings) => new()
+    private sealed record HotkeyInfo(
+        string UiLabel, string ConflictLabel,
+        Func<OverlaySettings, string> Get,
+        Action<OverlaySettings, string> Set);
+
+    private static readonly IReadOnlyDictionary<AppAction, HotkeyInfo> Hotkeys = new Dictionary<AppAction, HotkeyInfo>
     {
-        [AppAction.PreviousTrack] = settings.KeyboardPrevious.Trim(),
-        [AppAction.NextTrack] = settings.KeyboardNext.Trim(),
-        [AppAction.TogglePlayPause] = settings.KeyboardToggle.Trim(),
-        [AppAction.VolumeUp] = settings.KeyboardVolumeUp.Trim(),
-        [AppAction.VolumeDown] = settings.KeyboardVolumeDown.Trim()
+        [AppAction.PreviousTrack] = new("上一曲", "上一曲", s => s.KeyboardPrevious, (s, v) => s.KeyboardPrevious = v),
+        [AppAction.NextTrack] = new("下一曲", "下一曲", s => s.KeyboardNext, (s, v) => s.KeyboardNext = v),
+        [AppAction.TogglePlayPause] = new("播放/暂停", "播放 / 暂停", s => s.KeyboardToggle, (s, v) => s.KeyboardToggle = v),
+        [AppAction.VolumeUp] = new("音量+", "Apple Music 音量 +5%", s => s.KeyboardVolumeUp, (s, v) => s.KeyboardVolumeUp = v),
+        [AppAction.VolumeDown] = new("音量-", "Apple Music 音量 -5%", s => s.KeyboardVolumeDown, (s, v) => s.KeyboardVolumeDown = v)
     };
+
+    public static Dictionary<AppAction, string> CreateSnapshot(OverlaySettings settings) =>
+        Hotkeys.ToDictionary(entry => entry.Key, entry => entry.Value.Get(settings).Trim());
+
+    public static string GetSettingValue(OverlaySettings settings, AppAction action) => Hotkeys[action].Get(settings);
+    public static string GetUiLabel(AppAction action) => Hotkeys.TryGetValue(action, out var info) ? info.UiLabel : action.ToString();
 
     public static HotkeyApplyResult Apply(OverlaySettings settings, AppAction action, string hotkeyText, IHotkeySnapshotRegistrar registrar)
     {
@@ -43,31 +54,17 @@ public static class KeyboardHotkeyBindingManager
 
     private static AppAction? FindDuplicate(Dictionary<AppAction, string> values, AppAction current, string value)
     {
-        if (string.IsNullOrWhiteSpace(value)) return null;
+        if (!HotkeyParser.TryParse(value, out HotkeyDefinition wanted)) return null;
         foreach (var pair in values)
-            if (pair.Key != current && string.Equals(pair.Value, value, StringComparison.OrdinalIgnoreCase)) return pair.Key;
+        {
+            if (pair.Key != current
+                && HotkeyParser.TryParse(pair.Value, out HotkeyDefinition existing)
+                && existing == wanted)
+                return pair.Key;
+        }
         return null;
     }
 
-    private static void SetSetting(OverlaySettings settings, AppAction action, string value)
-    {
-        switch (action)
-        {
-            case AppAction.PreviousTrack: settings.KeyboardPrevious = value; break;
-            case AppAction.NextTrack: settings.KeyboardNext = value; break;
-            case AppAction.TogglePlayPause: settings.KeyboardToggle = value; break;
-            case AppAction.VolumeUp: settings.KeyboardVolumeUp = value; break;
-            case AppAction.VolumeDown: settings.KeyboardVolumeDown = value; break;
-        }
-    }
-
-    private static string GetLabel(AppAction action) => action switch
-    {
-        AppAction.PreviousTrack => "上一曲",
-        AppAction.NextTrack => "下一曲",
-        AppAction.TogglePlayPause => "播放 / 暂停",
-        AppAction.VolumeUp => "Apple Music 音量 +5%",
-        AppAction.VolumeDown => "Apple Music 音量 -5%",
-        _ => action.ToString()
-    };
+    private static void SetSetting(OverlaySettings settings, AppAction action, string value) => Hotkeys[action].Set(settings, value);
+    private static string GetLabel(AppAction action) => Hotkeys.TryGetValue(action, out var info) ? info.ConflictLabel : action.ToString();
 }

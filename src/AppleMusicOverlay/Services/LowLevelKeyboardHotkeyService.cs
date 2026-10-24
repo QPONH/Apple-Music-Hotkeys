@@ -90,7 +90,12 @@ internal sealed class LowLevelKeyboardHotkeyService : IDisposable
                 if (isUp && _suppressedKeys.Remove(key))
                     return (IntPtr)1;
 
-                if (isDown && !_suppressedKeys.Contains(key))
+                // Suppress auto-repeat key-down messages as well. Previously the first
+                // press was swallowed but repeats leaked through to the foreground app.
+                if (isDown && _suppressedKeys.Contains(key))
+                    return (IntPtr)1;
+
+                if (isDown)
                 {
                     uint modifiers = GetCurrentModifiers();
                     foreach (var pair in _hotkeys)

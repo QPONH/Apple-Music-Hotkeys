@@ -1,4 +1,4 @@
-using System.Globalization;
+﻿using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Net.Http;
@@ -13,7 +13,7 @@ using System.Text.RegularExpressions;
 
 namespace AppleMusicOverlay.Services;
 
-public sealed record LyricLine(TimeSpan Start, string Text);
+public sealed record LyricLine(TimeSpan Start, string Text, string? Translation = null);
 public sealed record LyricsResult(string Title, string Artist, IReadOnlyList<LyricLine> Lines);
 
 /// <summary>Outcome of one lyric lookup.</summary>
@@ -195,9 +195,20 @@ public sealed class LyricsService
         string cacheKey = BuildCacheKey(title, artist);
         if (forceRefresh)
         {
-            // "重新查找歌词" must not be answered from the cache, otherwise a wrong match could
-            // never be corrected by hand.
-            lock (_cacheGate) _lyricsCache.Remove(cacheKey);
+            // A manual refresh must invalidate memory and disk. Otherwise a failed refresh leaves
+            // the old answer in lyrics-cache.json and it reappears after the next restart.
+            bool cacheEntryRemoved;
+            lock (_cacheGate)
+            {
+                cacheEntryRemoved = _lyricsCache.Remove(cacheKey) || _cacheOrder.Contains(cacheKey);
+                if (cacheEntryRemoved)
+                {
+                    string[] retainedKeys = _cacheOrder.Where(key => !string.Equals(key, cacheKey, StringComparison.Ordinal)).ToArray();
+                    _cacheOrder.Clear();
+                    foreach (string key in retainedKeys) _cacheOrder.Enqueue(key);
+                }
+            }
+            if (cacheEntryRemoved) SaveCacheToDisk();
         }
         else
         {
@@ -215,71 +226,84 @@ public sealed class LyricsService
 
     private async Task<LyricsLookupResult> LookupAsync(string title, string artist, string album, TimeSpan duration, CancellationToken token)
     {
-        // One shot per track (the overlay no longer polls). LRCLIB, NetEase and KuGou run together
-        // so a hung TLS handshake to one host cannot turn a song that has lyrics into "未识别到歌词".
         var candidates = BuildCandidates(title, artist).ToList();
         if (candidates.Count == 0) return LyricsLookupResult.NotFound;
 
-        Task<(LrcLibResponse? Data, bool Failed)> lrclibTask = TryLrclibCandidatesAsync(candidates, album, duration, token);
-        Task<(LrcLibResponse? Data, bool Failed)> neteaseTask = TryNeteaseCandidatesAsync(candidates, duration, token);
-        Task<(LrcLibResponse? Data, bool Failed)> kugouTask = TryKugouAsync(title, artist, duration, token);
+        // Providers run concurrently, but the first acceptable result should cancel the others.
+        // This avoids continuing several network searches after the overlay already has its lyrics.
+        using var lookupCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
+        CancellationToken lookupToken = lookupCancellation.Token;
+        Task<(LrcLibResponse? Data, bool Failed)> lrclibTask = TryLrclibCandidatesAsync(candidates, album, duration, lookupToken);
+        Task<(LrcLibResponse? Data, bool Failed)> neteaseTask = TryNeteaseCandidatesAsync(candidates, duration, lookupToken);
+        Task<(LrcLibResponse? Data, bool Failed)> kugouTask = TryKugouAsync(title, artist, duration, lookupToken);
+        Task[] providerTasks = { lrclibTask, neteaseTask, kugouTask };
         var fallbacks = new[] { neteaseTask, kugouTask };
-        // LRCLIB has the best synced lyrics, but only gets a short head start. After that a
-        // finished Chinese-catalog hit is shown instead of waiting out a dead connection.
-        Task grace = Task.Delay(TimeSpan.FromSeconds(6), token);
+        // The caller caps each attempt at 3.25 s, so the fallback grace period must be shorter
+        // than that limit or the Chinese providers could be canceled before they are considered.
+        Task grace = Task.Delay(TimeSpan.FromMilliseconds(1200), lookupToken);
 
-        while (true)
+        try
         {
-            var pending = new List<Task>();
-            if (!lrclibTask.IsCompleted) pending.Add(lrclibTask);
+            while (true)
+            {
+                var pending = new List<Task>();
+                if (!lrclibTask.IsCompleted) pending.Add(lrclibTask);
+                foreach (Task<(LrcLibResponse? Data, bool Failed)> task in fallbacks)
+                    if (!task.IsCompleted) pending.Add(task);
+                if (!grace.IsCompleted) pending.Add(grace);
+                if (pending.Count == 0 || pending.All(task => task == grace)) break;
+
+                await Task.WhenAny(pending);
+
+                if (lrclibTask.IsCompleted)
+                {
+                    LyricsLookupResult? found = TryBuild(title, artist, duration, await lrclibTask);
+                    if (found is not null) return found;
+                }
+
+                if (lrclibTask.IsCompleted || grace.IsCompleted)
+                {
+                    foreach (Task<(LrcLibResponse? Data, bool Failed)> task in fallbacks)
+                    {
+                        if (!task.IsCompleted) continue;
+                        LyricsLookupResult? found = TryBuild(title, artist, duration, await task);
+                        if (found is not null) return found;
+                    }
+                }
+
+                if (lrclibTask.IsCompleted && fallbacks.All(task => task.IsCompleted)) break;
+            }
+
+            LyricsLookupResult? lrclibFound = TryBuild(title, artist, duration, await lrclibTask);
+            if (lrclibFound is not null) return lrclibFound;
             foreach (Task<(LrcLibResponse? Data, bool Failed)> task in fallbacks)
             {
-                if (!task.IsCompleted) pending.Add(task);
-            }
-            if (!grace.IsCompleted) pending.Add(grace);
-            if (pending.Count == 0 || pending.All(task => task == grace)) break;
-
-            await Task.WhenAny(pending);
-
-            if (lrclibTask.IsCompleted)
-            {
-                LyricsLookupResult? found = TryBuild(title, artist, duration, await lrclibTask);
+                LyricsLookupResult? found = TryBuild(title, artist, duration, await task);
                 if (found is not null) return found;
             }
 
-            if (lrclibTask.IsCompleted || grace.IsCompleted)
+            bool anyFailed = (await lrclibTask).Failed || (await neteaseTask).Failed || (await kugouTask).Failed;
+            // lyrics.ovh is plain-text and often slow. Only spend that request on non-CJK tracks,
+            // which are the ones it can actually answer, and only after the synced sources missed.
+            if (!ContainsCjk(title) && !ContainsCjk(artist))
             {
-                foreach (Task<(LrcLibResponse? Data, bool Failed)> task in fallbacks)
-                {
-                    if (!task.IsCompleted) continue;
-                    LyricsLookupResult? found = TryBuild(title, artist, duration, await task);
-                    if (found is not null) return found;
-                }
+                (LrcLibResponse? ovh, bool ovhFailed) = await TryLyricsOvhAsync(candidates[0].Title, candidates[0].Artist, lookupToken);
+                anyFailed |= ovhFailed;
+                LyricsLookupResult? ovhFound = TryBuild(candidates[0].Title, candidates[0].Artist, duration, (ovh, ovhFailed));
+                if (ovhFound is not null) return ovhFound;
             }
 
-            if (lrclibTask.IsCompleted && fallbacks.All(task => task.IsCompleted)) break;
+            return anyFailed ? LyricsLookupResult.Unavailable : LyricsLookupResult.NotFound;
         }
-
-        LyricsLookupResult? lrclibFound = TryBuild(title, artist, duration, await lrclibTask);
-        if (lrclibFound is not null) return lrclibFound;
-        foreach (Task<(LrcLibResponse? Data, bool Failed)> task in fallbacks)
+        finally
         {
-            LyricsLookupResult? found = TryBuild(title, artist, duration, await task);
-            if (found is not null) return found;
+            lookupCancellation.Cancel();
+            // Observe every provider task so a late cancellation/fault cannot become an
+            // unobserved task exception. Cancellation is expected when another provider wins.
+            try { await Task.WhenAll(providerTasks.Append(grace)).ConfigureAwait(false); }
+            catch (OperationCanceledException) { }
+            catch (Exception ex) { CrashLog.Write(ex, "Lyrics:ProviderCompletion"); }
         }
-
-        bool anyFailed = (await lrclibTask).Failed || (await neteaseTask).Failed || (await kugouTask).Failed;
-        // lyrics.ovh is plain-text and often slow. Only spend that request on non-CJK tracks,
-        // which are the ones it can actually answer, and only after the synced sources missed.
-        if (!ContainsCjk(title) && !ContainsCjk(artist))
-        {
-            (LrcLibResponse? ovh, bool ovhFailed) = await TryLyricsOvhAsync(candidates[0].Title, candidates[0].Artist, token);
-            anyFailed |= ovhFailed;
-            LyricsLookupResult? ovhFound = TryBuild(candidates[0].Title, candidates[0].Artist, duration, (ovh, ovhFailed));
-            if (ovhFound is not null) return ovhFound;
-        }
-
-        return anyFailed ? LyricsLookupResult.Unavailable : LyricsLookupResult.NotFound;
     }
 
     private static LyricsLookupResult? TryBuild(string title, string artist, TimeSpan duration, (LrcLibResponse? Data, bool Failed) outcome)
@@ -305,7 +329,46 @@ public sealed class LyricsService
         // "作曲 : …") for tracks whose real lyrics they do not have. Treating that as a hit made
         // the overlay show two lines of credits for the whole song, so ask the next provider.
         lines = WithoutCreditLines(lines);
-        return lines.Count == 0 ? LyricsLookupResult.NotFound : LyricsLookupResult.Found(new LyricsResult(title, artist, lines));
+        if (lines.Count == 0) return LyricsLookupResult.NotFound;
+
+        // NetEase can return a separate timestamped translation lyric (tlyric). Match each
+        // translation to the nearest original line; other providers simply leave this empty.
+        if (!string.IsNullOrWhiteSpace(data.TranslationLyrics))
+        {
+            List<LyricLine> translated = ParseLrc(data.TranslationLyrics);
+            if (translated.Count > 0)
+                lines = AttachTranslations(lines, translated);
+            else
+            {
+                string[] plainTranslations = data.TranslationLyrics.Replace("\r", string.Empty).Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                if (plainTranslations.Length == lines.Count)
+                    lines = lines.Select((line, index) => line with { Translation = plainTranslations[index] }).ToList();
+            }
+        }
+        return LyricsLookupResult.Found(new LyricsResult(title, artist, lines));
+    }
+
+    /// <summary>Matches sorted source/translation timelines in linear time instead of sorting the
+    /// entire translation list again for every lyric line.</summary>
+    private static List<LyricLine> AttachTranslations(IReadOnlyList<LyricLine> lines, IReadOnlyList<LyricLine> translations)
+    {
+        var result = new List<LyricLine>(lines.Count);
+        int translationIndex = 0;
+        foreach (LyricLine line in lines)
+        {
+            while (translationIndex + 1 < translations.Count
+                && Math.Abs((translations[translationIndex + 1].Start - line.Start).TotalMilliseconds)
+                    < Math.Abs((translations[translationIndex].Start - line.Start).TotalMilliseconds))
+            {
+                translationIndex++;
+            }
+
+            LyricLine candidate = translations[translationIndex];
+            result.Add(Math.Abs((candidate.Start - line.Start).TotalSeconds) <= 2.0
+                ? line with { Translation = candidate.Text }
+                : line);
+        }
+        return result;
     }
 
     /// <summary>Metadata lines that are never sung lyrics.</summary>
@@ -646,6 +709,23 @@ public sealed class LyricsService
         return (null, failed);
     }
 
+    private static double? ScoreCandidate(string wantedTitle, string wantedArtist, string itemTitle,
+        string itemArtist, double? durationDiff) =>
+        ScoreCandidate(wantedTitle, itemTitle, MatchesText(itemArtist, wantedArtist), durationDiff);
+
+    private static double? ScoreCandidate(string wantedTitle, string itemTitle, bool artistMatch, double? durationDiff)
+    {
+        bool titleExact = wantedTitle.Length > 0 && itemTitle == wantedTitle;
+        if (!IsPlausibleHit(titleExact || MatchesText(itemTitle, wantedTitle), artistMatch, durationDiff)) return null;
+        double score = (titleExact ? -8 : -3) + (artistMatch ? -4 : 6);
+        return durationDiff is double diff ? score + Math.Min(diff, 60) * 0.15 : score;
+    }
+
+    private static bool MatchesText(string candidate, string wanted) =>
+        candidate.Length > 0 && wanted.Length > 0 && (candidate == wanted
+            || candidate.Contains(wanted, StringComparison.Ordinal)
+            || wanted.Contains(candidate, StringComparison.Ordinal));
+
     /// <summary>
     /// A hit is only accepted when it carries the playing artist, or when its length matches the
     /// playing track within a couple of seconds. Accepting a same-titled hit from another artist
@@ -677,23 +757,14 @@ public sealed class LyricsService
             string itemTitle = NormalizeForCompare(item.TrackName);
             string itemArtist = NormalizeForCompare(item.ArtistName);
 
-            bool titleExact = wantedTitle.Length > 0 && itemTitle == wantedTitle;
-            bool titleLoose = titleExact || (wantedTitle.Length > 0 && itemTitle.Length > 0 &&
-                (itemTitle.Contains(wantedTitle, StringComparison.Ordinal) || wantedTitle.Contains(itemTitle, StringComparison.Ordinal)));
-            bool artistMatch = itemArtist.Length > 0 && wantedArtist.Length > 0 &&
-                (itemArtist == wantedArtist || itemArtist.Contains(wantedArtist, StringComparison.Ordinal) || wantedArtist.Contains(itemArtist, StringComparison.Ordinal));
-
             double? durationDiff = wantedSeconds >= 5 && item.Duration is > 0
-                ? Math.Abs(item.Duration.Value - wantedSeconds)
-                : null;
-            if (!IsPlausibleHit(titleLoose, artistMatch, durationDiff)) continue;
+                ? Math.Abs(item.Duration.Value - wantedSeconds) : null;
+            double? score = ScoreCandidate(wantedTitle, wantedArtist, itemTitle, itemArtist, durationDiff);
+            if (score is not double candidateScore) continue;
 
-            double score = (titleExact ? -8 : -3) + (artistMatch ? -4 : 6);
-            if (durationDiff is double diff) score += Math.Min(diff, 60) * 0.15;
-
-            if (score < bestScore)
+            if (candidateScore < bestScore)
             {
-                bestScore = score;
+                bestScore = candidateScore;
                 best = item;
             }
         }
@@ -767,7 +838,7 @@ public sealed class LyricsService
         NeteaseLyricsResponse? data = await lyrics.Content.ReadFromJsonAsync<NeteaseLyricsResponse>(token);
         string? synced = data?.Lrc?.Lyric;
         if (string.IsNullOrWhiteSpace(synced)) return (null, failed);
-        return (new LrcLibResponse { TrackName = title, ArtistName = artist, SyncedLyrics = synced }, false);
+        return (new LrcLibResponse { TrackName = title, ArtistName = artist, SyncedLyrics = synced, TranslationLyrics = data?.Tlyric?.Lyric }, false);
     }
 
     private static HttpRequestMessage BrowserRequest(string url)
@@ -803,38 +874,20 @@ public sealed class LyricsService
             if (song.Id <= 0) continue;
 
             string itemTitle = NormalizeForCompare(song.Name);
-            bool titleExact = wantedTitle.Length > 0 && itemTitle == wantedTitle;
-            bool titleLoose = titleExact || (wantedTitle.Length > 0 && itemTitle.Length > 0 &&
-                (itemTitle.Contains(wantedTitle, StringComparison.Ordinal) || wantedTitle.Contains(itemTitle, StringComparison.Ordinal)));
-            bool artistMatch = song.ArtistList?.Any(a =>
-            {
-                string value = NormalizeForCompare(a.Name);
-                return value.Length > 0 && wantedArtist.Length > 0 &&
-                       (value == wantedArtist || value.Contains(wantedArtist, StringComparison.Ordinal) || wantedArtist.Contains(value, StringComparison.Ordinal));
-            }) == true;
-
+            bool artistMatch = song.ArtistList?.Any(a => MatchesText(NormalizeForCompare(a.Name), wantedArtist)) == true;
             double? durationDiff = wantedSeconds >= 5 && song.LengthMs is > 0
-                ? Math.Abs(song.LengthMs.Value / 1000d - wantedSeconds)
-                : null;
-            if (!IsPlausibleHit(titleLoose, artistMatch, durationDiff)) continue;
+                ? Math.Abs(song.LengthMs.Value / 1000d - wantedSeconds) : null;
+            double? score = ScoreCandidate(wantedTitle, itemTitle, artistMatch, durationDiff);
+            if (score is not double candidateScore) continue;
 
-            double score = (titleExact ? -8 : -3) + (artistMatch ? -4 : 6);
-            if (durationDiff is double diff) score += Math.Min(diff, 60) * 0.15;
-
-            if (score < bestScore)
+            if (candidateScore < bestScore)
             {
-                bestScore = score;
+                bestScore = candidateScore;
                 best = song;
             }
         }
 
         return best;
-    }
-
-    private static double DurationDistance(double? milliseconds, double wantedSeconds)
-    {
-        if (milliseconds is not > 0 || wantedSeconds <= 0) return 0;
-        return Math.Abs(milliseconds.Value / 1000d - wantedSeconds);
     }
 
     private static async Task<(LrcLibResponse? Data, bool Failed)> TryKugouAsync(string title, string artist, TimeSpan duration, CancellationToken token)
@@ -929,23 +982,14 @@ public sealed class LyricsService
             string itemTitle = NormalizeForCompare(hit.Song);
             string itemArtist = NormalizeForCompare(hit.Singer);
 
-            bool titleExact = wantedTitle.Length > 0 && itemTitle == wantedTitle;
-            bool titleLoose = titleExact || (wantedTitle.Length > 0 && itemTitle.Length > 0 &&
-                (itemTitle.Contains(wantedTitle, StringComparison.Ordinal) || wantedTitle.Contains(itemTitle, StringComparison.Ordinal)));
-            bool artistMatch = itemArtist.Length > 0 && wantedArtist.Length > 0 &&
-                (itemArtist == wantedArtist || itemArtist.Contains(wantedArtist, StringComparison.Ordinal) || wantedArtist.Contains(itemArtist, StringComparison.Ordinal));
-
             double? durationDiff = wantedSeconds >= 5 && hit.DurationSeconds > 0
-                ? Math.Abs(hit.DurationSeconds - wantedSeconds)
-                : null;
-            if (!IsPlausibleHit(titleLoose, artistMatch, durationDiff)) continue;
+                ? Math.Abs(hit.DurationSeconds - wantedSeconds) : null;
+            double? score = ScoreCandidate(wantedTitle, wantedArtist, itemTitle, itemArtist, durationDiff);
+            if (score is not double candidateScore) continue;
 
-            double score = (titleExact ? -8 : -3) + (artistMatch ? -4 : 6);
-            if (durationDiff is double diff) score += Math.Min(diff, 60) * 0.15;
-
-            if (score < bestScore)
+            if (candidateScore < bestScore)
             {
-                bestScore = score;
+                bestScore = candidateScore;
                 best = hit;
             }
         }
@@ -1114,7 +1158,10 @@ public sealed class LyricsService
                 _lyricsCache[key] = lyrics;
                 _cacheOrder.Enqueue(key);
                 while (_cacheOrder.Count > MaxCacheEntries)
-                    _lyricsCache.Remove(_cacheOrder.Dequeue());
+                {
+                    string oldestKey = _cacheOrder.Dequeue();
+                    if (!_cacheOrder.Contains(oldestKey)) _lyricsCache.Remove(oldestKey);
+                }
             }
             else
             {
@@ -1141,14 +1188,16 @@ public sealed class LyricsService
                 if (entries is null) return;
 
                 // Oldest first so the eviction order below matches the original usage order.
-                foreach (CachedLyrics entry in entries.OrderBy(entry => entry.UsedAt))
+                foreach (CachedLyrics entry in entries.OfType<CachedLyrics>().OrderBy(entry => entry.UsedAt))
                 {
                     if (entry.Schema < 2) continue;
                     if (string.IsNullOrWhiteSpace(entry.Key) || entry.Lines is null || entry.Lines.Count == 0) continue;
                     if (_lyricsCache.ContainsKey(entry.Key)) continue;
                     var lines = entry.Lines
-                        .Where(line => !string.IsNullOrWhiteSpace(line.Text))
-                        .Select(line => new LyricLine(TimeSpan.FromSeconds(Math.Max(0, line.Start)), line.Text))
+                        .Where(line => line is not null && !string.IsNullOrWhiteSpace(line.Text)
+                            && double.IsFinite(line.Start) && line.Start >= 0 && line.Start <= TimeSpan.FromDays(1).TotalSeconds)
+                        .Select(line => new LyricLine(TimeSpan.FromSeconds(line.Start), line.Text, line.Translation))
+                        .OrderBy(line => line.Start)
                         .ToList();
                     // Old cache files may still hold credit-only payloads; they are not lyrics.
                     lines = WithoutCreditLines(lines);
@@ -1187,16 +1236,26 @@ public sealed class LyricsService
                     List<CachedLyrics> snapshot;
                     lock (_cacheGate)
                     {
-                        snapshot = _lyricsCache
-                            .Select(pair => new CachedLyrics
-                            {
-                                Key = pair.Key,
-                                Title = pair.Value.Title,
-                                Artist = pair.Value.Artist,
-                                UsedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                                Lines = pair.Value.Lines.Select(line => new CachedLine { Start = line.Start.TotalSeconds, Text = line.Text }).ToList()
-                            })
+                        var orderedKeys = _cacheOrder
+                            .Where(_lyricsCache.ContainsKey)
+                            .Distinct(StringComparer.Ordinal)
                             .ToList();
+                        foreach (string key in _lyricsCache.Keys)
+                            if (!orderedKeys.Contains(key, StringComparer.Ordinal)) orderedKeys.Add(key);
+
+                        long baseTimestamp = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+                        snapshot = orderedKeys.Select((key, index) =>
+                        {
+                            LyricsResult value = _lyricsCache[key];
+                            return new CachedLyrics
+                            {
+                                Key = key,
+                                Title = value.Title,
+                                Artist = value.Artist,
+                                UsedAt = baseTimestamp + index,
+                                Lines = value.Lines.Select(line => new CachedLine { Start = line.Start.TotalSeconds, Text = line.Text, Translation = line.Translation }).ToList()
+                            };
+                        }).ToList();
                     }
 
                     Directory.CreateDirectory(AppPaths.SettingsDirectory);
@@ -1234,6 +1293,7 @@ public sealed class LyricsService
     {
         public double Start { get; set; }
         public string Text { get; set; } = string.Empty;
+        public string? Translation { get; set; }
     }
 
     #endregion
@@ -1249,6 +1309,7 @@ public sealed class LyricsService
         [JsonPropertyName("duration")] public double? Duration { get; set; }
         [JsonPropertyName("syncedLyrics")] public string? SyncedLyrics { get; set; }
         [JsonPropertyName("plainLyrics")] public string? PlainLyrics { get; set; }
+        [JsonIgnore] public string? TranslationLyrics { get; set; }
     }
 
     private sealed class ItunesSearchResponse
@@ -1294,7 +1355,7 @@ public sealed class LyricsService
         public List<NeteaseArtist>? ArtistList => Artists ?? Ar;
     }
     private sealed class NeteaseArtist { [JsonPropertyName("name")] public string? Name { get; set; } }
-    private sealed class NeteaseLyricsResponse { [JsonPropertyName("lrc")] public NeteaseLrc? Lrc { get; set; } }
+    private sealed class NeteaseLyricsResponse { [JsonPropertyName("lrc")] public NeteaseLrc? Lrc { get; set; } [JsonPropertyName("tlyric")] public NeteaseLrc? Tlyric { get; set; } }
     private sealed class NeteaseLrc { [JsonPropertyName("lyric")] public string? Lyric { get; set; } }
 
     #endregion

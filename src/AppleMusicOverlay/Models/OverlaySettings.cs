@@ -2,18 +2,31 @@ namespace AppleMusicOverlay.Models;
 
 public sealed class OverlaySettings
 {
-    public int SchemaVersion { get; set; } = 5;
+    public int SchemaVersion { get; set; } = 7;
     public bool LyricsEnabled { get; set; }
     public double LyricsFontSize { get; set; } = 26;
+    /// <summary>Base font size used by lyric translations, independently of the source lyric size.</summary>
+    public double LyricsTranslationFontSize { get; set; } = 16;
     /// <summary>Overall opacity of the lyrics overlay (0.05 - 1.0).</summary>
     public double LyricsOpacity { get; set; } = 1.0;
     /// <summary>Hex foreground color of the lyric text, e.g. "#FFFFFF".</summary>
     public string LyricsColor { get; set; } = "#FFFFFF";
+    public string LyricsCurrentColor { get; set; } = "#FFFFFF";
+    public string LyricsNextColor { get; set; } = "#B8C0CC";
     public string LyricsAlignment { get; set; } = "Center";
     public string LyricsOrientation { get; set; } = "Horizontal";
     public string LyricsVerticalAlignment { get; set; } = "Center";
     /// <summary>Horizontal anchor of the lyric block in vertical mode: Left, Center or Right.</summary>
     public string LyricsVerticalAnchor { get; set; } = "Center";
+    /// <summary>Vertical layout: RightStacked, Diagonal (upper-left/current and lower-right/next), or RightAligned (fixed right alignment with a larger sentence gap).</summary>
+    public string LyricsWordVerticalLayout { get; set; } = "RightStacked";
+    public string LyricsNonWordVerticalLayout { get; set; } = "Diagonal";
+    /// <summary>Controls whether the next lyric is displayed, hidden, or replaced with the current line's translation.</summary>
+    public string LyricsNextLineMode { get; set; } = "NextLine";
+    public bool LyricsTranslationEnabled { get; set; }
+    public string LyricsHorizontalTranslationLayout { get; set; } = "BottomRightSmall";
+    /// <summary>Where translations are placed in the right-aligned vertical lyric layout.</summary>
+    public string LyricsVerticalTranslationLayout { get; set; } = "BottomSmall";
     public int LyricsOffsetMilliseconds { get; set; }
     public bool LyricsBackgroundEnabled { get; set; } = true;
     public double LyricsWindowWidth { get; set; } = 620;

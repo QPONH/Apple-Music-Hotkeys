@@ -1,9 +1,12 @@
-using System.ComponentModel;
+﻿using System.ComponentModel;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media;
 using AppleMusicOverlay.Models;
 using AppleMusicOverlay.Services;
 using Forms = System.Windows.Forms;
@@ -29,6 +32,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
     private bool _isExiting;
     private bool _isLoadingSettings;
     private bool _startupInitialized;
+    private string _hotkeyRegistrationWarning = string.Empty;
     private string _statusText = "快捷键已加载。";
 
     public event PropertyChangedEventHandler? PropertyChanged;
@@ -41,8 +45,8 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
     public MainWindow()
     {
         _settings = _settingsService.Load();
+        NormalizeSettings(_settings);
         _draftSettings = CloneSettings(_settings);
-        NormalizeDraftValues();
         _lyricsService = new LyricsService(_mediaService);
         _startupPlaybackRecoveryService = new StartupPlaybackRecoveryService(_mediaService);
         // XAML default values (Text="0", IsChecked="True", ...) raise the change handlers while
@@ -54,6 +58,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         {
             DataContext = this;
             InitializeComponent();
+            AttachComboBoxPlacementHandlers(this);
             LoadSettingsToUi();
             UpdateVersionText();
         }
@@ -71,20 +76,238 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         UpdateMaximizeButtonGlyph();
     }
 
+    /// <summary>Remove the text caret/selection when the user clicks an unused part of the settings window.</summary>
+    private void MainWindow_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (Keyboard.FocusedElement is not TextBoxBase) return;
+
+        DependencyObject? node = e.OriginalSource as DependencyObject;
+        while (node is not null && node != this)
+        {
+            // Keep normal interaction with inputs and clickable controls unchanged. A click on
+            // the blank card/page background should dismiss keyboard focus from the TextBox.
+            if (node is TextBoxBase or ComboBox or ButtonBase or Slider or ScrollBar)
+                return;
+            node = GetParentForFocusDismissal(node);
+        }
+        Keyboard.ClearFocus();
+    }
+
+    private static DependencyObject? GetParentForFocusDismissal(DependencyObject child)
+    {
+        if (child is Visual or System.Windows.Media.Media3D.Visual3D)
+            return VisualTreeHelper.GetParent(child);
+        if (child is FrameworkContentElement frameworkContent)
+            return frameworkContent.Parent;
+        if (child is ContentElement content)
+            return ContentOperations.GetParent(content);
+        return LogicalTreeHelper.GetParent(child);
+    }
+
+    private void AttachComboBoxPlacementHandlers(DependencyObject root)
+    {
+        if (root is ComboBox comboBox)
+        {
+            // Configure placement before WPF opens the Popup. DropDownOpened alone is too late
+            // on some DPI/scaling combinations: the popup is already clipped before it can move.
+            comboBox.PreviewMouseDown += ComboBox_PreviewMouseDown;
+            comboBox.PreviewKeyDown += ComboBox_PreviewKeyDown;
+            comboBox.PreviewMouseWheel += ComboBox_PreviewMouseWheel;
+            comboBox.DropDownOpened += ComboBox_DropDownOpened;
+        }
+
+        foreach (object child in LogicalTreeHelper.GetChildren(root))
+        {
+            if (child is DependencyObject dependencyChild)
+                AttachComboBoxPlacementHandlers(dependencyChild);
+        }
+    }
+
+    private void ComboBox_PreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        if (sender is ComboBox comboBox && !comboBox.IsDropDownOpen)
+            ConfigureComboBoxPopup(comboBox);
+    }
+
+    private void ComboBox_PreviewKeyDown(object sender, KeyEventArgs e)
+    {
+        if (sender is not ComboBox comboBox || comboBox.IsDropDownOpen) return;
+        bool opensDropDown = e.Key is Key.F4 or Key.Space or Key.Enter
+            || (e.Key == Key.Down && Keyboard.Modifiers.HasFlag(ModifierKeys.Alt));
+        if (opensDropDown) ConfigureComboBoxPopup(comboBox);
+    }
+
+    /// <summary>
+    /// When a ComboBox menu is closed, do not let the mouse wheel silently change
+    /// the selected option, even if the control still has keyboard focus. Route the wheel to the containing page's
+    /// outer ScrollViewer instead, so the page remains scrollable using the same scrollbar.
+    /// </summary>
+    private void ComboBox_PreviewMouseWheel(object sender, MouseWheelEventArgs e)
+    {
+        if (sender is not ComboBox comboBox || comboBox.IsDropDownOpen)
+            return;
+
+        ScrollViewer? pageScrollViewer = FindAncestorScrollViewer(comboBox);
+        if (pageScrollViewer is not null)
+        {
+            double wheelLines = SystemParameters.WheelScrollLines;
+            if (wheelLines <= 0) wheelLines = 3;
+            double offsetDelta = -(e.Delta / 120.0) * wheelLines * 16.0;
+            pageScrollViewer.ScrollToVerticalOffset(pageScrollViewer.VerticalOffset + offsetDelta);
+        }
+
+        // Suppress ComboBox's built-in wheel-to-selection behavior while its menu is closed.
+        e.Handled = true;
+    }
+
+    private static ScrollViewer? FindAncestorScrollViewer(DependencyObject child)
+    {
+        DependencyObject? node = GetParentForFocusDismissal(child);
+        while (node is not null)
+        {
+            if (node is ScrollViewer scrollViewer)
+                return scrollViewer;
+            node = GetParentForFocusDismissal(node);
+        }
+        return null;
+    }
+
+    private void ComboBox_DropDownOpened(object? sender, EventArgs e)
+    {
+        // PreviewMouseDown / PreviewKeyDown prepare placement before the native popup opens.
+        // Only apply a fallback here if an unusual opening path skipped those preview events;
+        // changing placement after the popup is visible can itself cause clipping.
+        if (sender is ComboBox comboBox
+            && comboBox.Template.FindName("PART_Popup", comboBox) is Popup popup
+            && popup.Placement != PlacementMode.Custom)
+        {
+            ConfigureComboBoxPopup(comboBox);
+        }
+    }
+
+    /// <summary>
+    /// Positions the drop-down against the monitor work area before it opens. The menu height
+    /// is constrained to the room on the chosen side, and the popup callback chooses above or
+    /// below using the actual measured popup height. This avoids relying on a post-open move,
+    /// which was too late when the Lyrics controls were near the bottom edge of the window.
+    /// </summary>
+    private void ConfigureComboBoxPopup(ComboBox comboBox)
+    {
+        if (comboBox.Template.FindName("PART_Popup", comboBox) is not Popup popup)
+            return;
+
+        const double gap = 6;
+        const double maxMenuHeight = 230;
+        const double borderAllowance = 4;
+
+        var spaces = GetComboBoxPopupSpace(comboBox);
+        // Estimate the natural menu height to avoid opening upward for small lists that fit below.
+        double estimatedHeight = Math.Min(maxMenuHeight, Math.Max(44, comboBox.Items.Count * 37.0 + 14));
+        bool placeAbove = spaces.Below < estimatedHeight + gap && spaces.Above > spaces.Below;
+        if (spaces.Below >= estimatedHeight + gap)
+            placeAbove = false;
+        else if (spaces.Above >= estimatedHeight + gap)
+            placeAbove = true;
+
+        double available = Math.Max(18, (placeAbove ? spaces.Above : spaces.Below) - gap - borderAllowance);
+        double maxHeight = Math.Min(maxMenuHeight, available);
+        comboBox.MaxDropDownHeight = maxHeight;
+        popup.PlacementTarget = comboBox;
+        popup.HorizontalOffset = 0;
+        popup.VerticalOffset = 0;
+        popup.CustomPopupPlacementCallback = (popupSize, targetSize, offset) =>
+        {
+            var currentSpaces = GetComboBoxPopupSpace(comboBox);
+            bool shouldPlaceAbove;
+            if (currentSpaces.Below >= popupSize.Height + gap)
+                shouldPlaceAbove = false;
+            else if (currentSpaces.Above >= popupSize.Height + gap)
+                shouldPlaceAbove = true;
+            else
+                shouldPlaceAbove = currentSpaces.Above > currentSpaces.Below;
+
+            var position = shouldPlaceAbove
+                ? new Point(0, -popupSize.Height - gap)
+                : new Point(0, targetSize.Height + gap);
+            return new[] { new CustomPopupPlacement(position, PopupPrimaryAxis.Vertical) };
+        };
+        popup.Placement = PlacementMode.Custom;
+
+        if (popup.Child is FrameworkElement popupContent)
+        {
+            popupContent.MaxHeight = maxHeight;
+            if (popupContent is Border border && border.Child is ScrollViewer scrollViewer)
+            {
+                scrollViewer.MaxHeight = Math.Max(12, maxHeight - border.Padding.Top - border.Padding.Bottom - 2);
+                scrollViewer.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
+                scrollViewer.HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled;
+            }
+        }
+    }
+
+    /// <summary>Returns the DIP distance from a ComboBox to the monitor's top and bottom work-area edges.</summary>
+    private static (double Above, double Below) GetComboBoxPopupSpace(ComboBox comboBox)
+    {
+        try
+        {
+            Point screenPoint = comboBox.PointToScreen(new Point(0, 0));
+            var screen = Forms.Screen.FromPoint(new System.Drawing.Point(
+                (int)Math.Round(screenPoint.X), (int)Math.Round(screenPoint.Y)));
+            var workArea = screen.WorkingArea;
+            double dpiScaleY = Math.Max(0.5, VisualTreeHelper.GetDpi(comboBox).DpiScaleY);
+            double targetBottom = screenPoint.Y + comboBox.ActualHeight * dpiScaleY;
+            double above = (screenPoint.Y - workArea.Top) / dpiScaleY;
+            double below = (workArea.Bottom - targetBottom) / dpiScaleY;
+            return (Math.Max(0, above), Math.Max(0, below));
+        }
+        catch
+        {
+            // Keep a usable default if the control is not connected to a presentation source yet.
+            return (1000, 1000);
+        }
+    }
+
     /// <summary>Clamps the loaded values into the ranges the UI accepts, so the first render
     /// never looks like a user edit.</summary>
-    private void NormalizeDraftValues()
+    private void NormalizeDraftValues() => NormalizeSettings(_draftSettings);
+
+    /// <summary>Validate persisted values before either the UI or services use them.</summary>
+    private static void NormalizeSettings(OverlaySettings settings)
     {
-        _draftSettings.LyricsFontSize = double.IsNaN(_draftSettings.LyricsFontSize) ? 26 : Math.Clamp(_draftSettings.LyricsFontSize, 10, 120);
-        _draftSettings.LyricsOpacity = LyricStyle.ClampOpacity(_draftSettings.LyricsOpacity);
-        _draftSettings.LyricsColor = LyricStyle.Normalize(_draftSettings.LyricsColor);
-        _draftSettings.LyricsOffsetMilliseconds = Math.Clamp(_draftSettings.LyricsOffsetMilliseconds, -5000, 5000);
-        _draftSettings.LyricsAlignment = _draftSettings.LyricsAlignment is "Left" or "Right" ? _draftSettings.LyricsAlignment : "Center";
-        _draftSettings.LyricsOrientation = _draftSettings.LyricsOrientation == "Vertical" ? "Vertical" : "Horizontal";
-        _draftSettings.LyricsVerticalAlignment = _draftSettings.LyricsVerticalAlignment is "Top" or "Bottom" ? _draftSettings.LyricsVerticalAlignment : "Center";
-        _draftSettings.LyricsVerticalAnchor = _draftSettings.LyricsVerticalAnchor is "Left" or "Right" ? _draftSettings.LyricsVerticalAnchor : "Center";
-        _draftSettings.LyricsWindowWidth = Math.Max(180, _draftSettings.LyricsWindowWidth);
-        _draftSettings.LyricsWindowHeight = Math.Max(70, _draftSettings.LyricsWindowHeight);
+        settings.KeyboardPrevious ??= "Ctrl+Shift+Left";
+        settings.KeyboardNext ??= "Ctrl+Shift+Right";
+        settings.KeyboardToggle ??= "Ctrl+Shift+Space";
+        settings.KeyboardVolumeUp ??= "Ctrl+Shift+Up";
+        settings.KeyboardVolumeDown ??= "Ctrl+Shift+Down";
+
+        settings.RecoveryWaitSeconds = Math.Clamp(settings.RecoveryWaitSeconds, 0, 600);
+        settings.RecoveryQueueXPercent = Math.Clamp(settings.RecoveryQueueXPercent, 0, 100);
+        settings.RecoveryQueueYPercent = Math.Clamp(settings.RecoveryQueueYPercent, 0, 100);
+        settings.RecoverySongXPercent = Math.Clamp(settings.RecoverySongXPercent, 0, 100);
+        settings.RecoverySongYPercent = Math.Clamp(settings.RecoverySongYPercent, 0, 100);
+        settings.RecoveryQueueMethod = settings.RecoveryQueueMethod is "Keyboard" or "Mouse" ? settings.RecoveryQueueMethod : "Keyboard";
+        settings.RecoverySongMethod = settings.RecoverySongMethod is "Keyboard" or "Mouse" ? settings.RecoverySongMethod : "Mouse";
+
+        settings.LyricsFontSize = !double.IsFinite(settings.LyricsFontSize) ? 26 : Math.Clamp(settings.LyricsFontSize, 10, 120);
+        settings.LyricsTranslationFontSize = !double.IsFinite(settings.LyricsTranslationFontSize) ? 16 : Math.Clamp(settings.LyricsTranslationFontSize, 8, 96);
+        settings.LyricsOpacity = LyricStyle.ClampOpacity(settings.LyricsOpacity);
+        settings.LyricsColor = LyricStyle.Normalize(settings.LyricsColor);
+        settings.LyricsCurrentColor = LyricStyle.Normalize(settings.LyricsCurrentColor);
+        settings.LyricsNextColor = LyricStyle.Normalize(settings.LyricsNextColor);
+        settings.LyricsHorizontalTranslationLayout = settings.LyricsHorizontalTranslationLayout is "LeftLarge" or "RightLarge" or "Diagonal" ? settings.LyricsHorizontalTranslationLayout : "BottomRightSmall";
+        settings.LyricsOffsetMilliseconds = Math.Clamp(settings.LyricsOffsetMilliseconds, -5000, 5000);
+        settings.LyricsAlignment = settings.LyricsAlignment is "Left" or "Right" ? settings.LyricsAlignment : "Center";
+        settings.LyricsOrientation = settings.LyricsOrientation == "Vertical" ? "Vertical" : "Horizontal";
+        settings.LyricsVerticalAlignment = settings.LyricsVerticalAlignment is "Top" or "Bottom" ? settings.LyricsVerticalAlignment : "Center";
+        settings.LyricsVerticalAnchor = settings.LyricsVerticalAnchor is "Left" or "Right" ? settings.LyricsVerticalAnchor : "Center";
+        settings.LyricsWordVerticalLayout = settings.LyricsWordVerticalLayout is "Diagonal" or "RightAligned" ? settings.LyricsWordVerticalLayout : "RightStacked";
+        settings.LyricsNonWordVerticalLayout = settings.LyricsNonWordVerticalLayout is "RightStacked" or "RightAligned" ? settings.LyricsNonWordVerticalLayout : "Diagonal";
+        settings.LyricsNextLineMode = settings.LyricsNextLineMode is "Hidden" or "Translation" ? settings.LyricsNextLineMode : "NextLine";
+        settings.LyricsVerticalTranslationLayout = settings.LyricsVerticalTranslationLayout is "LeftVertical" or "RightVertical" ? settings.LyricsVerticalTranslationLayout : "BottomSmall";
+        settings.LyricsWindowWidth = double.IsFinite(settings.LyricsWindowWidth) ? Math.Clamp(settings.LyricsWindowWidth, 180, 3000) : 620;
+        settings.LyricsWindowHeight = double.IsFinite(settings.LyricsWindowHeight) ? Math.Clamp(settings.LyricsWindowHeight, 70, 2000) : 180;
+        if (settings.LyricsWindowLeft is double left && !double.IsFinite(left)) settings.LyricsWindowLeft = null;
+        if (settings.LyricsWindowTop is double top && !double.IsFinite(top)) settings.LyricsWindowTop = null;
     }
 
     /// <summary>
@@ -138,7 +361,6 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
     /// <see cref="_isLoadingSettings"/> so nested loads (reset, constructor) stay quiet.</summary>
     private void LoadSettingsToUi()
     {
-        {
         PreviousBox.Text = _draftSettings.KeyboardPrevious;
         NextBox.Text = _draftSettings.KeyboardNext;
         ToggleBox.Text = _draftSettings.KeyboardToggle;
@@ -156,19 +378,36 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         RecoveryQueueMethodBox.SelectedValue = _draftSettings.RecoveryQueueMethod;
         RecoverySongMethodBox.SelectedValue = _draftSettings.RecoverySongMethod;
         LyricsEnabledCheckBox.IsChecked = _draftSettings.LyricsEnabled;
-        LyricsFontSizeBox.Text = _draftSettings.LyricsFontSize.ToString("0");
-        LyricsOpacityBox.Text = (_draftSettings.LyricsOpacity * 100).ToString("0");
+        LyricsFontSizeBox.Text = _draftSettings.LyricsFontSize.ToString("0.##", CultureInfo.CurrentCulture);
+        LyricsTranslationFontSizeBox.Text = _draftSettings.LyricsTranslationFontSize.ToString("0.##", CultureInfo.CurrentCulture);
+        LyricsOpacityBox.Text = (_draftSettings.LyricsOpacity * 100).ToString("0.##", CultureInfo.CurrentCulture);
         LyricsColorBox.Text = _draftSettings.LyricsColor;
+        LyricsCurrentColorBox.Text = _draftSettings.LyricsCurrentColor;
+        LyricsNextColorBox.Text = _draftSettings.LyricsNextColor;
+        LyricsHorizontalTranslationLayoutBox.SelectedValue = _draftSettings.LyricsHorizontalTranslationLayout;
         UpdateLyricsColorSwatch();
         LyricsAlignmentBox.SelectedValue = _draftSettings.LyricsAlignment;
         LyricsOrientationBox.SelectedValue = _draftSettings.LyricsOrientation;
         LyricsVerticalAlignmentBox.SelectedValue = _draftSettings.LyricsVerticalAlignment;
         LyricsOffsetBox.Text = _draftSettings.LyricsOffsetMilliseconds.ToString();
-        LyricsVerticalAlignmentBox.IsEnabled = _draftSettings.LyricsOrientation == "Vertical";
         LyricsVerticalAnchorBox.SelectedValue = _draftSettings.LyricsVerticalAnchor;
-        LyricsVerticalAnchorBox.IsEnabled = _draftSettings.LyricsOrientation == "Vertical";
+        LyricsWordVerticalLayoutBox.SelectedValue = _draftSettings.LyricsWordVerticalLayout;
+        LyricsNonWordVerticalLayoutBox.SelectedValue = _draftSettings.LyricsNonWordVerticalLayout;
+        LyricsNextLineModeBox.SelectedValue = _draftSettings.LyricsNextLineMode;
+        LyricsVerticalTranslationLayoutBox.SelectedValue = _draftSettings.LyricsVerticalTranslationLayout;
+        LyricsTranslationCheckBox.IsChecked = _draftSettings.LyricsTranslationEnabled;
         LyricsBackgroundCheckBox.IsChecked = _draftSettings.LyricsBackgroundEnabled;
-        }
+        UpdateVerticalControlsEnabled();
+    }
+
+    private void UpdateVerticalControlsEnabled()
+    {
+        bool enabled = _draftSettings.LyricsOrientation == "Vertical";
+        LyricsVerticalAlignmentBox.IsEnabled = enabled;
+        LyricsVerticalAnchorBox.IsEnabled = enabled;
+        LyricsWordVerticalLayoutBox.IsEnabled = enabled;
+        LyricsNonWordVerticalLayoutBox.IsEnabled = enabled;
+        LyricsVerticalTranslationLayoutBox.IsEnabled = enabled;
     }
 
     private void HotkeyBox_PreviewMouseDown(object sender, MouseButtonEventArgs e)
@@ -291,46 +530,87 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         IReadOnlyDictionary<AppAction, string> hotkeys,
         AppAction? requiredAction)
     {
-        _hotkeyService.Clear();
+        IReadOnlyDictionary<AppAction, string> previousSnapshot = requiredAction.HasValue
+            ? KeyboardHotkeyBindingManager.CreateSnapshot(_draftSettings)
+            : KeyboardHotkeyBindingManager.CreateSnapshot(_settings);
+
+        try
+        {
+            _hotkeyService.Clear();
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, "Hotkeys:ClearBeforeRegister");
+            _hotkeyRegistrationWarning = "无法重置现有快捷键，因此本次快捷键更改未生效。";
+            if (_capturingBox is null) StatusText = _hotkeyRegistrationWarning;
+            return false;
+        }
+
+        _hotkeyRegistrationWarning = string.Empty;
         var failedActions = new List<AppAction>();
+        var registeredCombinations = new Dictionary<HotkeyDefinition, AppAction>();
 
         foreach ((AppAction action, string hotkeyText) in hotkeys)
         {
             if (string.IsNullOrWhiteSpace(hotkeyText)) continue;
-            if (_hotkeyService.Register(action, hotkeyText)) continue;
+
+            // Settings from older versions or a hand-edited JSON file may contain the same
+            // chord under different spellings (for example, "Ctrl+Esc" and "Control+Escape").
+            // The low-level volume hook can accept both, but then only the first action fires.
+            if (HotkeyParser.TryParse(hotkeyText, out HotkeyDefinition parsed)
+                && registeredCombinations.TryGetValue(parsed, out _))
+            {
+                failedActions.Add(action);
+                if (requiredAction == action)
+                {
+                    // Roll back to the snapshot that was active before this attempt. During
+                    // hotkey capture that is the draft snapshot, not necessarily saved settings.
+                    RegisterHotkeySnapshotDirect(previousSnapshot, requiredAction: null);
+                    return false;
+                }
+                continue;
+            }
+
+            bool registered;
+            try
+            {
+                registered = _hotkeyService.Register(action, hotkeyText);
+            }
+            catch (Exception ex)
+            {
+                CrashLog.Write(ex, $"Hotkeys:Register:{action}");
+                registered = false;
+            }
+
+            if (registered)
+            {
+                if (HotkeyParser.TryParse(hotkeyText, out parsed))
+                    registeredCombinations.TryAdd(parsed, action);
+                continue;
+            }
 
             failedActions.Add(action);
             if (requiredAction == action)
             {
-                // The newly requested shortcut itself is unavailable. Restore the
-                // previous configuration on a best-effort basis before reporting failure.
-                _hotkeyService.Clear();
-                RegisterHotkeySnapshotDirect(
-                    KeyboardHotkeyBindingManager.CreateSnapshot(_settings),
-                    requiredAction: null);
+                // The newly requested shortcut itself is unavailable. Restore the snapshot
+                // active before this attempt, then report failure to the binding editor.
+                RegisterHotkeySnapshotDirect(previousSnapshot, requiredAction: null);
                 return false;
             }
         }
 
         if (failedActions.Count > 0 && _capturingBox == null)
         {
-            StatusText = "部分快捷键未能注册（可能被系统或其他程序占用）：" +
-                         string.Join("、", failedActions.Select(GetActionLabel)) +
-                         "。仍可继续自定义这些快捷键。";
+            _hotkeyRegistrationWarning = "部分快捷键未能注册或与其他快捷键重复：" +
+                                         string.Join("、", failedActions.Distinct().Select(GetActionLabel)) +
+                                         "。其余功能已应用；请更换冲突的快捷键。";
+            StatusText = _hotkeyRegistrationWarning;
         }
 
         return true;
     }
 
-    private static string GetActionLabel(AppAction action) => action switch
-    {
-        AppAction.PreviousTrack => "上一曲",
-        AppAction.NextTrack => "下一曲",
-        AppAction.TogglePlayPause => "播放/暂停",
-        AppAction.VolumeUp => "音量+",
-        AppAction.VolumeDown => "音量-",
-        _ => action.ToString()
-    };
+    private static string GetActionLabel(AppAction action) => KeyboardHotkeyBindingManager.GetUiLabel(action);
 
     private async void HotkeyService_ActionRequested(object? sender, AppAction action)
     {
@@ -486,10 +766,19 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         _lyricsWindow.Show();
     }
 
-    private void LyricsEnabled_Changed(object sender, RoutedEventArgs e)
+    private void BooleanSetting_Changed(object sender, RoutedEventArgs e)
     {
-        if (_isLoadingSettings) return;
-        _draftSettings.LyricsEnabled = LyricsEnabledCheckBox.IsChecked == true;
+        if (_isLoadingSettings || sender is not CheckBox box || box.Tag is not string setting) return;
+        bool value = box.IsChecked == true;
+        switch (setting)
+        {
+            case nameof(OverlaySettings.LyricsEnabled): _draftSettings.LyricsEnabled = value; break;
+            case nameof(OverlaySettings.CloseToTray): _draftSettings.CloseToTray = value; break;
+            case nameof(OverlaySettings.HideWindowOnStartup): _draftSettings.HideWindowOnStartup = value; break;
+            case nameof(OverlaySettings.StartWithWindows): _draftSettings.StartWithWindows = value; break;
+            case nameof(OverlaySettings.StartupPlaybackRecovery): _draftSettings.StartupPlaybackRecovery = value; break;
+            default: return;
+        }
         MarkDraftChanged();
     }
 
@@ -526,25 +815,44 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
 
     private void LyricsOpacityBox_LostFocus(object sender, RoutedEventArgs e)
     {
-        LyricsOpacityBox.Text = (_draftSettings.LyricsOpacity * 100).ToString("0");
+        LyricsOpacityBox.Text = (_draftSettings.LyricsOpacity * 100).ToString("0.##", CultureInfo.CurrentCulture);
     }
 
-    private void LyricsColorBox_TextChanged(object sender, TextChangedEventArgs e)
+    private void LyricsColor_TextChanged(object sender, TextChangedEventArgs e)
     {
-        if (_isLoadingSettings || _draftSettings is null) return;
-        // Partial input such as "#F" or "#FF12" stays untouched until it forms a full color.
-        if (!LyricStyle.TryParseColor(LyricsColorBox.Text, out _)) return;
-        _draftSettings.LyricsColor = LyricStyle.Normalize(LyricsColorBox.Text);
-        UpdateLyricsColorSwatch();
+        if (_isLoadingSettings || _draftSettings is null || sender is not TextBox box
+            || !LyricStyle.TryParseColor(box.Text, out _)) return;
+        SetLyricsColor(box, LyricStyle.Normalize(box.Text));
+        if (box == LyricsColorBox) UpdateLyricsColorSwatch();
         MarkDraftChanged();
     }
 
-    private void LyricsColorBox_LostFocus(object sender, RoutedEventArgs e)
+    private void LyricsColor_LostFocus(object sender, RoutedEventArgs e)
     {
-        _draftSettings.LyricsColor = LyricStyle.Normalize(LyricsColorBox.Text);
-        LyricsColorBox.Text = _draftSettings.LyricsColor;
-        UpdateLyricsColorSwatch();
+        if (sender is not TextBox box) return;
+        string previous = GetLyricsColor(box);
+        string color = LyricStyle.TryParseColor(box.Text, out _) ? LyricStyle.Normalize(box.Text) : previous;
+        box.Text = color;
+        SetLyricsColor(box, color);
+        if (box == LyricsColorBox) UpdateLyricsColorSwatch();
         MarkDraftChanged();
+    }
+
+    private string GetLyricsColor(TextBox box) => box.Name switch
+    {
+        nameof(LyricsCurrentColorBox) => _draftSettings.LyricsCurrentColor,
+        nameof(LyricsNextColorBox) => _draftSettings.LyricsNextColor,
+        _ => _draftSettings.LyricsColor
+    };
+
+    private void SetLyricsColor(TextBox box, string color)
+    {
+        switch (box.Name)
+        {
+            case nameof(LyricsCurrentColorBox): _draftSettings.LyricsCurrentColor = color; break;
+            case nameof(LyricsNextColorBox): _draftSettings.LyricsNextColor = color; break;
+            default: _draftSettings.LyricsColor = color; break;
+        }
     }
 
     private void LyricsPickColor_Click(object sender, RoutedEventArgs e)
@@ -572,12 +880,49 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
     /// </summary>
     private void NormalizeLyricsInputs()
     {
+        // ApplyButton is deliberately not focusable; a TextBox may retain focus when clicked,
+        // so LostFocus-only handlers are not a reliable commit boundary.
+        _draftSettings.LyricsFontSize = ParseFiniteNumber(LyricsFontSizeBox.Text, _draftSettings.LyricsFontSize, 10, 120);
+        LyricsFontSizeBox.Text = _draftSettings.LyricsFontSize.ToString("0.##");
+
+        _draftSettings.LyricsTranslationFontSize = ParseFiniteNumber(LyricsTranslationFontSizeBox.Text, _draftSettings.LyricsTranslationFontSize, 8, 96);
+        LyricsTranslationFontSizeBox.Text = _draftSettings.LyricsTranslationFontSize.ToString("0.##");
+
+        _draftSettings.LyricsOffsetMilliseconds = int.TryParse(LyricsOffsetBox.Text, out int offset)
+            ? Math.Clamp(offset, -5000, 5000) : _draftSettings.LyricsOffsetMilliseconds;
+        LyricsOffsetBox.Text = _draftSettings.LyricsOffsetMilliseconds.ToString();
+
+        NormalizeRecoveryWaitSeconds();
+        NormalizeRecoveryCoordinates();
+
         _draftSettings.LyricsOpacity = LyricStyle.ParseOpacityPercent(LyricsOpacityBox.Text, _draftSettings.LyricsOpacity);
-        LyricsOpacityBox.Text = (_draftSettings.LyricsOpacity * 100).ToString("0");
-        _draftSettings.LyricsColor = LyricStyle.Normalize(LyricsColorBox.Text);
+        LyricsOpacityBox.Text = (_draftSettings.LyricsOpacity * 100).ToString("0.##", CultureInfo.CurrentCulture);
+        _draftSettings.LyricsColor = NormalizeColorOrKeep(LyricsColorBox.Text, _draftSettings.LyricsColor);
+        _draftSettings.LyricsCurrentColor = NormalizeColorOrKeep(LyricsCurrentColorBox.Text, _draftSettings.LyricsCurrentColor);
+        _draftSettings.LyricsNextColor = NormalizeColorOrKeep(LyricsNextColorBox.Text, _draftSettings.LyricsNextColor);
         LyricsColorBox.Text = _draftSettings.LyricsColor;
+        LyricsCurrentColorBox.Text = _draftSettings.LyricsCurrentColor;
+        LyricsNextColorBox.Text = _draftSettings.LyricsNextColor;
         UpdateLyricsColorSwatch();
     }
+
+    private static bool TryParseFiniteNumber(string text, out double value)
+    {
+        if ((double.TryParse(text, NumberStyles.Float, CultureInfo.CurrentCulture, out value)
+                || double.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
+            && double.IsFinite(value))
+            return true;
+        value = 0;
+        return false;
+    }
+
+    private static double ParseFiniteNumber(string text, double fallback, double minimum, double maximum) =>
+        TryParseFiniteNumber(text, out double value)
+            ? Math.Clamp(value, minimum, maximum)
+            : Math.Clamp(fallback, minimum, maximum);
+
+    private static string NormalizeColorOrKeep(string text, string previous) =>
+        LyricStyle.TryParseColor(text, out _) ? LyricStyle.Normalize(text) : previous;
 
     private sealed class Win32WindowHandle : Forms.IWin32Window
     {
@@ -589,16 +934,25 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
     {
         if (_isLoadingSettings) return;
 
-        _draftSettings.LyricsFontSize = double.TryParse(LyricsFontSizeBox.Text, out double size) ? Math.Clamp(size, 10, 120) : 26;
+        _draftSettings.LyricsFontSize = TryParseFiniteNumber(LyricsFontSizeBox.Text, out double size)
+            ? Math.Clamp(size, 10, 120) : _draftSettings.LyricsFontSize;
+        _draftSettings.LyricsTranslationFontSize = TryParseFiniteNumber(LyricsTranslationFontSizeBox.Text, out double translationSize)
+            ? Math.Clamp(translationSize, 8, 96) : _draftSettings.LyricsTranslationFontSize;
         _draftSettings.LyricsAlignment = LyricsAlignmentBox.SelectedValue?.ToString() ?? "Center";
         _draftSettings.LyricsOrientation = LyricsOrientationBox.SelectedValue?.ToString() ?? "Horizontal";
         _draftSettings.LyricsVerticalAlignment = LyricsVerticalAlignmentBox.SelectedValue?.ToString() ?? "Center";
         _draftSettings.LyricsVerticalAnchor = LyricsVerticalAnchorBox.SelectedValue?.ToString() ?? "Center";
+        _draftSettings.LyricsWordVerticalLayout = LyricsWordVerticalLayoutBox.SelectedValue?.ToString() ?? "RightStacked";
+        _draftSettings.LyricsNonWordVerticalLayout = LyricsNonWordVerticalLayoutBox.SelectedValue?.ToString() ?? "Diagonal";
+        _draftSettings.LyricsNextLineMode = LyricsNextLineModeBox.SelectedValue?.ToString() ?? "NextLine";
+        _draftSettings.LyricsVerticalTranslationLayout = LyricsVerticalTranslationLayoutBox.SelectedValue?.ToString() ?? "BottomSmall";
+        _draftSettings.LyricsTranslationEnabled = LyricsTranslationCheckBox.IsChecked == true;
+        _draftSettings.LyricsHorizontalTranslationLayout = LyricsHorizontalTranslationLayoutBox.SelectedValue?.ToString() ?? "BottomRightSmall";
         if (int.TryParse(LyricsOffsetBox.Text, out int offset)) _draftSettings.LyricsOffsetMilliseconds = Math.Clamp(offset, -5000, 5000);
-        LyricsVerticalAlignmentBox.IsEnabled = _draftSettings.LyricsOrientation == "Vertical";
-        LyricsVerticalAnchorBox.IsEnabled = _draftSettings.LyricsOrientation == "Vertical";
+        UpdateVerticalControlsEnabled();
         _draftSettings.LyricsBackgroundEnabled = LyricsBackgroundCheckBox.IsChecked == true;
-        if (double.TryParse(LyricsFontSizeBox.Text, out size)) LyricsFontSizeBox.Text = _draftSettings.LyricsFontSize.ToString("0");
+        if (TryParseFiniteNumber(LyricsFontSizeBox.Text, out _)) LyricsFontSizeBox.Text = _draftSettings.LyricsFontSize.ToString("0.##", CultureInfo.CurrentCulture);
+        if (TryParseFiniteNumber(LyricsTranslationFontSizeBox.Text, out _)) LyricsTranslationFontSizeBox.Text = _draftSettings.LyricsTranslationFontSize.ToString("0.##", CultureInfo.CurrentCulture);
         MarkDraftChanged();
     }
 
@@ -611,27 +965,6 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
             StatusText = $"{label}失败：{ex.Message}";
             return false;
         }
-    }
-
-    private void CloseToTray_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_isLoadingSettings) return;
-        _draftSettings.CloseToTray = CloseToTrayCheckBox.IsChecked == true;
-        MarkDraftChanged();
-    }
-
-    private void HideOnStartup_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_isLoadingSettings) return;
-        _draftSettings.HideWindowOnStartup = HideOnStartupCheckBox.IsChecked == true;
-        MarkDraftChanged();
-    }
-
-    private void StartupPlaybackRecovery_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_isLoadingSettings) return;
-        _draftSettings.StartupPlaybackRecovery = StartupPlaybackRecoveryCheckBox.IsChecked == true;
-        MarkDraftChanged();
     }
 
     private async void CaptureQueuePosition_Click(object sender, RoutedEventArgs e)
@@ -688,24 +1021,34 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
     private void RecoveryWaitSeconds_LostFocus(object sender, RoutedEventArgs e)
     {
         if (_isLoadingSettings) return;
-        _draftSettings.RecoveryWaitSeconds = int.TryParse(RecoveryWaitSecondsBox.Text, out int seconds)
-            ? Math.Clamp(seconds, 0, 600) : 2;
-        RecoveryWaitSecondsBox.Text = _draftSettings.RecoveryWaitSeconds.ToString();
+        NormalizeRecoveryWaitSeconds(useDefaultOnInvalid: true);
         MarkDraftChanged();
     }
 
     private void RecoveryCoordinates_LostFocus(object sender, RoutedEventArgs e)
     {
         if (_isLoadingSettings) return;
-        _draftSettings.RecoveryQueueXPercent = ReadPercent(RecoveryQueueXBox, 85);
-        _draftSettings.RecoveryQueueYPercent = ReadPercent(RecoveryQueueYBox, 3);
-        _draftSettings.RecoverySongXPercent = ReadPercent(RecoverySongXBox, 24);
-        _draftSettings.RecoverySongYPercent = ReadPercent(RecoverySongYBox, 12);
+        NormalizeRecoveryCoordinates(useDefaultsOnInvalid: true);
+        MarkDraftChanged();
+    }
+
+    private void NormalizeRecoveryWaitSeconds(bool useDefaultOnInvalid = false)
+    {
+        _draftSettings.RecoveryWaitSeconds = int.TryParse(RecoveryWaitSecondsBox.Text, out int seconds)
+            ? Math.Clamp(seconds, 0, 600) : useDefaultOnInvalid ? 2 : _draftSettings.RecoveryWaitSeconds;
+        RecoveryWaitSecondsBox.Text = _draftSettings.RecoveryWaitSeconds.ToString();
+    }
+
+    private void NormalizeRecoveryCoordinates(bool useDefaultsOnInvalid = false)
+    {
+        _draftSettings.RecoveryQueueXPercent = ReadPercent(RecoveryQueueXBox, useDefaultsOnInvalid ? 85 : _draftSettings.RecoveryQueueXPercent);
+        _draftSettings.RecoveryQueueYPercent = ReadPercent(RecoveryQueueYBox, useDefaultsOnInvalid ? 3 : _draftSettings.RecoveryQueueYPercent);
+        _draftSettings.RecoverySongXPercent = ReadPercent(RecoverySongXBox, useDefaultsOnInvalid ? 24 : _draftSettings.RecoverySongXPercent);
+        _draftSettings.RecoverySongYPercent = ReadPercent(RecoverySongYBox, useDefaultsOnInvalid ? 12 : _draftSettings.RecoverySongYPercent);
         RecoveryQueueXBox.Text = _draftSettings.RecoveryQueueXPercent.ToString();
         RecoveryQueueYBox.Text = _draftSettings.RecoveryQueueYPercent.ToString();
         RecoverySongXBox.Text = _draftSettings.RecoverySongXPercent.ToString();
         RecoverySongYBox.Text = _draftSettings.RecoverySongYPercent.ToString();
-        MarkDraftChanged();
     }
 
     private static int ReadPercent(TextBox box, int fallback) =>
@@ -759,13 +1102,6 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         }
     }
 
-    private void StartWithWindows_Changed(object sender, RoutedEventArgs e)
-    {
-        if (_isLoadingSettings) return;
-        _draftSettings.StartWithWindows = StartWithWindowsCheckBox.IsChecked == true;
-        MarkDraftChanged();
-    }
-
     private void ApplySettings_Click(object sender, RoutedEventArgs e)
     {
         if (_capturingBox != null)
@@ -776,10 +1112,16 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         try
         {
             NormalizeLyricsInputs();
+            OverlaySettings previouslyApplied = CloneSettings(_settings);
             CopySettings(_draftSettings, _settings);
             if (!RegisterHotkeys())
             {
-                StatusText = "部分快捷键无法注册，请检查冲突后重试。";
+                // Keep the last applied settings intact if the hotkey service cannot be reset.
+                // The edited draft remains in the UI so the user can retry without losing work.
+                CopySettings(previouslyApplied, _settings);
+                StatusText = string.IsNullOrWhiteSpace(_hotkeyRegistrationWarning)
+                    ? "快捷键无法重新注册，设置尚未应用。"
+                    : _hotkeyRegistrationWarning;
                 return;
             }
             // Persist the settings first: the startup registration below is best-effort and
@@ -804,9 +1146,12 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
                 _startupRecoveryCancellation?.Cancel();
             }
             ApplyButton.IsEnabled = false;
-            StatusText = startupOk
+            string applyStatus = startupOk
                 ? "设置已应用并保存。"
                 : $"设置已应用并保存；开机启动未能写入注册表（{startupError}），其余设置已生效。";
+            StatusText = string.IsNullOrWhiteSpace(_hotkeyRegistrationWarning)
+                ? applyStatus
+                : applyStatus + Environment.NewLine + _hotkeyRegistrationWarning;
         }
         catch (Exception ex)
         {
@@ -834,15 +1179,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
             property.SetValue(destination, property.GetValue(source));
     }
 
-    private string GetDraftSettingValue(string tag) => tag switch
-    {
-        "PreviousTrack" => _draftSettings.KeyboardPrevious,
-        "NextTrack" => _draftSettings.KeyboardNext,
-        "TogglePlayPause" => _draftSettings.KeyboardToggle,
-        "VolumeUp" => _draftSettings.KeyboardVolumeUp,
-        "VolumeDown" => _draftSettings.KeyboardVolumeDown,
-        _ => string.Empty
-    };
+    private string GetDraftSettingValue(string tag) => KeyboardHotkeyBindingManager.GetSettingValue(_draftSettings, ParseAction(tag));
 
     private sealed class DraftHotkeyRegistrar : IHotkeySnapshotRegistrar
     {
@@ -940,16 +1277,6 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         Application.Current.Shutdown();
     }
 
-    private string GetSettingValue(string tag) => tag switch
-    {
-        "PreviousTrack" => _settings.KeyboardPrevious,
-        "NextTrack" => _settings.KeyboardNext,
-        "TogglePlayPause" => _settings.KeyboardToggle,
-        "VolumeUp" => _settings.KeyboardVolumeUp,
-        "VolumeDown" => _settings.KeyboardVolumeDown,
-        _ => string.Empty
-    };
-
     private void SetBoxText(string tag, string value)
     {
         switch (tag)
@@ -962,15 +1289,8 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         }
     }
 
-    private static AppAction ParseAction(string tag) => tag switch
-    {
-        "PreviousTrack" => AppAction.PreviousTrack,
-        "NextTrack" => AppAction.NextTrack,
-        "TogglePlayPause" => AppAction.TogglePlayPause,
-        "VolumeUp" => AppAction.VolumeUp,
-        "VolumeDown" => AppAction.VolumeDown,
-        _ => throw new ArgumentOutOfRangeException(nameof(tag), tag, null)
-    };
+    private static AppAction ParseAction(string tag) => Enum.TryParse(tag, out AppAction action) && Enum.IsDefined(action)
+        ? action : throw new ArgumentOutOfRangeException(nameof(tag), tag, null);
 
     private static string FormatHotkey(ModifierKeys modifiers, string key)
     {

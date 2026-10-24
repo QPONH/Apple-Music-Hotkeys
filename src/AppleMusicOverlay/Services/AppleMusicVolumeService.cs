@@ -40,10 +40,11 @@ public sealed class AppleMusicVolumeService : IDisposable
                 }
             }
         }
-        catch
+        catch (Exception ex)
         {
             // Keep the hotkey handler alive if an audio endpoint/session disappears
-            // while Windows is refreshing the audio session list.
+            // while Windows is refreshing the audio session list, but retain diagnostics.
+            CrashLog.Write(ex, "AppleMusicVolume:TryChange");
         }
 
         return false;

@@ -32,11 +32,15 @@ public static class LyricStyle
         if (text.Length is not (7 or 9)) return false;
         try
         {
-            color = (Color)ColorConverter.ConvertFromString(text);
-            return true;
+            if (ColorConverter.ConvertFromString(text) is Color parsed)
+            {
+                color = parsed;
+                return true;
+            }
         }
         catch (FormatException) { }
         catch (NotSupportedException) { }
+        catch (ArgumentException) { }
         return false;
     }
 
@@ -64,7 +68,7 @@ public static class LyricStyle
         {
             return ClampOpacity(fallback);
         }
-        if (value > 0 && value <= MaxOpacity && cleaned.Contains('.')) return ClampOpacity(value);
+        if (value > 0 && value <= MaxOpacity && (cleaned.Contains('.') || cleaned.Contains(','))) return ClampOpacity(value);
         return ClampOpacity(value / 100d);
     }
 }

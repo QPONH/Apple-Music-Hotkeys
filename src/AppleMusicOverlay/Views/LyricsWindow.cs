@@ -1,4 +1,4 @@
-using System.Windows;
+﻿using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
@@ -29,6 +29,8 @@ public sealed class LyricsWindow : Window
     // Topmost is only a one-shot z-order flag: another topmost window that appears later (or the
     // player itself) ends up above the overlay. Re-asserting it while visible keeps it on top.
     private readonly DispatcherTimer _topmostTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
+    private readonly DispatcherTimer _boundsSaveTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(300) };
+    private readonly CancellationTokenSource _lifetimeCancellation = new();
     private IReadOnlyList<LyricLine> _lines = Array.Empty<LyricLine>();
     private string _trackKey = string.Empty;
     private string _titleKey = string.Empty;
@@ -44,6 +46,7 @@ public sealed class LyricsWindow : Window
     private bool _menuOpen;
     private bool _updating;
     private bool _forceRefresh;
+    private CancellationTokenSource? _lookupCancellation;
     private string _prefetchAttemptedTrackKey = string.Empty;
     // The artist changed after lyrics were already shown: re-check in the background.
     private bool _correctionPending;
@@ -80,7 +83,20 @@ public sealed class LyricsWindow : Window
         SourceInitialized += (_, _) => OnSourceInitialized();
         PreviewMouseLeftButtonDown += DragAnywhere;
         Loaded += async (_, _) => { _timer.Start(); _topmostTimer.Start(); ApplyClickThrough(); EnsureTopmost(); await UpdateAsync(); };
-        Closed += (_, _) => { _timer.Stop(); _topmostTimer.Stop(); };
+        _boundsSaveTimer.Tick += (_, _) =>
+        {
+            _boundsSaveTimer.Stop();
+            SaveBoundsCore();
+        };
+        Closed += (_, _) =>
+        {
+            _timer.Stop();
+            _topmostTimer.Stop();
+            _boundsSaveTimer.Stop();
+            _lifetimeCancellation.Cancel();
+            CancelCurrentLookup();
+            SaveBoundsCore();
+        };
         IsVisibleChanged += (_, _) => EnsureTopmost();
         Activated += (_, _) => EnsureTopmost();
         Deactivated += (_, _) => EnsureTopmost();
@@ -121,12 +137,12 @@ public sealed class LyricsWindow : Window
 
     private async Task UpdateAsync()
     {
-        // A slow SMTC call can outlive the 350 ms timer; never run two updates at once.
+        // A slow SMTC call can outlive the 120 ms timer; never run two updates at once.
         if (_updating) return;
         _updating = true;
         try
         {
-            var playback = await _service.GetCurrentPlaybackAsync();
+            var playback = await _service.GetCurrentPlaybackAsync(_lifetimeCancellation.Token);
             if (playback is null)
             {
                 // SMTC drops the Apple Music session for a moment during track changes and RPC
@@ -222,9 +238,14 @@ public sealed class LyricsWindow : Window
             int index = _lines.TakeWhile(line => line.Start <= adjustedPosition).Count() - 1;
             if (index < 0) index = 0;
             index = StableLineIndex(index, adjustedPosition);
-            Render(_lines[index].Text, index + 1 < _lines.Count ? _lines[index + 1].Text : string.Empty);
+            Render(_lines[index].Text, index + 1 < _lines.Count ? _lines[index + 1].Text : string.Empty, _lines[index].Translation ?? string.Empty, index + 1 < _lines.Count ? _lines[index + 1].Translation ?? string.Empty : string.Empty);
         }
-        catch (Exception ex) { CrashLog.Write(ex, "LyricsWindow"); Render("歌词读取异常；详情已写入日志", ""); }
+        catch (OperationCanceledException) when (_lifetimeCancellation.IsCancellationRequested) { }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, "LyricsWindow");
+            if (!_lifetimeCancellation.IsCancellationRequested) Render("歌词读取异常；详情已写入日志", "");
+        }
         finally { _updating = false; }
     }
 
@@ -241,11 +262,22 @@ public sealed class LyricsWindow : Window
         string key = title + "\n" + artist + "\n" + playback.Album;
         if (string.Equals(key, _prefetchAttemptedTrackKey, StringComparison.Ordinal)) return;
         _prefetchAttemptedTrackKey = key;
-        _ = _service.PrefetchNextAlbumTrackLyricsAsync(playback);
+        _ = _service.PrefetchNextAlbumTrackLyricsAsync(playback, _lifetimeCancellation.Token);
+    }
+
+    private void CancelCurrentLookup()
+    {
+        CancellationTokenSource? current = _lookupCancellation;
+        _lookupCancellation = null;
+        if (current is null) return;
+        try { current.Cancel(); }
+        catch (ObjectDisposedException) { }
+        current.Dispose();
     }
 
     private void ResetLookupState()
     {
+        CancelCurrentLookup();
         _lines = Array.Empty<LyricLine>();
         _lookupStatus = null;
         _lookupRunning = false;
@@ -309,70 +341,88 @@ public sealed class LyricsWindow : Window
     {
         if (_retryDeadlineUtc == DateTime.MaxValue)
             _retryDeadlineUtc = DateTime.UtcNow + RetryWindow;
+        CancelCurrentLookup();
         _lookupRunning = true;
         _correctionPending = false;
         int generation = _generation;
         bool forceRefresh = _forceRefresh;
         _forceRefresh = false;
-        _ = LookupAsync(playback, key, generation, forceRefresh);
+        var lookupCancellation = CancellationTokenSource.CreateLinkedTokenSource(_lifetimeCancellation.Token);
+        _lookupCancellation = lookupCancellation;
+        _ = LookupAsync(playback, key, generation, forceRefresh, lookupCancellation.Token, lookupCancellation);
     }
 
-    private async Task LookupAsync(PlaybackSnapshot playback, string key, int generation, bool forceRefresh)
+    private async Task LookupAsync(PlaybackSnapshot playback, string key, int generation, bool forceRefresh,
+        CancellationToken lookupToken, CancellationTokenSource lookupSource)
     {
-        LyricsLookupResult result;
-        using var attemptTimeout = new CancellationTokenSource(LookupAttemptTimeout);
         try
         {
-            result = await _service.GetLyricsAsync(
-                playback.Title, playback.Artist, playback.Album, playback.Duration,
-                forceRefresh, attemptTimeout.Token);
-        }
-        catch (OperationCanceledException) when (attemptTimeout.IsCancellationRequested)
-        {
-            // A single attempt must not consume the entire 15-second retry window.
-            result = LyricsLookupResult.Unavailable;
-        }
-        catch (Exception ex)
-        {
-            CrashLog.Write(ex, "LyricsWindow:Lookup");
-            result = LyricsLookupResult.Unavailable;
-        }
-
-        // The user skipped to another track while the request was running: drop the result.
-        if (generation != _generation || !string.Equals(key, _trackKey, StringComparison.Ordinal)) return;
-
-        _lookupRunning = false;
-        // One diagnostic line per lookup: enough to tell "provider has no lyrics" apart from
-        // "rendering is broken" when a user reports that the overlay shows nothing.
-        CrashLog.WriteNote("LyricsResult",
-            $"{playback.Title} | {playback.Artist} | {result.Status} | {result.Lyrics?.Lines.Count ?? 0} lines" +
-            (forceRefresh ? " | forced" : string.Empty));
-        if (result.Lyrics is not null)
-        {
-            _lines = result.Lyrics.Lines;
-            _lookupStatus = LyricsLookupStatus.Found;
-            _retryAttempt = 0;
-            _nextRetryUtc = DateTime.MaxValue;
-            // Start from a clean watermark: the first lyric line of a fresh track may be behind the
-            // previous track's last line index.
-            _lastLineIndex = -1;
-            _lastLinePosition = TimeSpan.Zero;
-            return;
-        }
-
-        _lookupStatus = result.Status;
-        if (result.Status == LyricsLookupStatus.Unavailable)
-        {
-            _retryAttempt++;
-            if (_retryAttempt > MaxAutomaticRetries)
+            LyricsLookupResult result;
+            using var attemptTimeout = CancellationTokenSource.CreateLinkedTokenSource(lookupToken);
+            attemptTimeout.CancelAfter(LookupAttemptTimeout);
+            try
             {
-                // Initial lookup plus three retries have failed. Stop polling this track.
-                _lookupStatus = LyricsLookupStatus.NotFound;
-                _nextRetryUtc = DateTime.MaxValue;
+                result = await _service.GetLyricsAsync(
+                    playback.Title, playback.Artist, playback.Album, playback.Duration,
+                    forceRefresh, attemptTimeout.Token);
             }
-            else
+            catch (OperationCanceledException) when (lookupToken.IsCancellationRequested)
             {
-                _nextRetryUtc = DateTime.UtcNow + UnavailableRetryDelay();
+                // The track changed or the overlay closed; do not count cancellation as a network failure.
+                return;
+            }
+            catch (OperationCanceledException) when (attemptTimeout.IsCancellationRequested)
+            {
+                // A single attempt must not consume the entire 15-second retry window.
+                result = LyricsLookupResult.Unavailable;
+            }
+            catch (Exception ex)
+            {
+                CrashLog.Write(ex, "LyricsWindow:Lookup");
+                result = LyricsLookupResult.Unavailable;
+            }
+
+            // The user skipped to another track while the request was running: drop the result.
+            if (lookupToken.IsCancellationRequested || generation != _generation
+                || !string.Equals(key, _trackKey, StringComparison.Ordinal)) return;
+
+            _lookupRunning = false;
+            CrashLog.WriteNote("LyricsResult",
+                $"{playback.Title} | {playback.Artist} | {result.Status} | {result.Lyrics?.Lines.Count ?? 0} lines" +
+                (forceRefresh ? " | forced" : string.Empty));
+            if (result.Lyrics is not null)
+            {
+                _lines = result.Lyrics.Lines;
+                _lookupStatus = LyricsLookupStatus.Found;
+                _retryAttempt = 0;
+                _nextRetryUtc = DateTime.MaxValue;
+                _lastLineIndex = -1;
+                _lastLinePosition = TimeSpan.Zero;
+                return;
+            }
+
+            _lookupStatus = result.Status;
+            if (result.Status == LyricsLookupStatus.Unavailable)
+            {
+                _retryAttempt++;
+                if (_retryAttempt > MaxAutomaticRetries)
+                {
+                    // Initial lookup plus three retries have failed. Stop polling this track.
+                    _lookupStatus = LyricsLookupStatus.NotFound;
+                    _nextRetryUtc = DateTime.MaxValue;
+                }
+                else
+                {
+                    _nextRetryUtc = DateTime.UtcNow + UnavailableRetryDelay();
+                }
+            }
+        }
+        finally
+        {
+            if (ReferenceEquals(_lookupCancellation, lookupSource))
+            {
+                _lookupCancellation = null;
+                lookupSource.Dispose();
             }
         }
     }
@@ -394,17 +444,37 @@ public sealed class LyricsWindow : Window
         };
     }
 
-    private void Render(string current, string next)
+    private void Render(string current, string next, string currentTranslation = "", string nextTranslation = "")
     {
+        // The selected next-line mode applies to all orientations. In translation mode, the
+        // current sentence's translation occupies the next-sentence position rather than being
+        // drawn again in a separate translation slot.
+        bool nextIsTranslation = _settings.LyricsTranslationEnabled
+            && _settings.LyricsNextLineMode == "Translation"
+            && !string.IsNullOrWhiteSpace(currentTranslation);
+        if (_settings.LyricsNextLineMode == "Hidden")
+        {
+            next = string.Empty;
+            nextTranslation = string.Empty;
+        }
+        else if (nextIsTranslation)
+        {
+            next = currentTranslation;
+            currentTranslation = string.Empty;
+            nextTranslation = string.Empty;
+        }
+
         // Rebuilding the visual tree on every tick (even for unchanged text) made the overlay
         // flicker and burn CPU; only rebuild when the displayed text really changes.
-        string signature = current + "\u001F" + next;
+        string signature = current + "\u001F" + next + "\u001F" + currentTranslation + "\u001F" + nextTranslation + "\u001F" + _settings.LyricsTranslationEnabled + "\u001F" + _settings.LyricsWordVerticalLayout + "\u001F" + _settings.LyricsNonWordVerticalLayout + "\u001F" + _settings.LyricsHorizontalTranslationLayout + "\u001F" + _settings.LyricsVerticalTranslationLayout + "\u001F" + _settings.LyricsNextLineMode + "\u001F" + _settings.LyricsTranslationFontSize + "\u001F" + _settings.LyricsCurrentColor + "\u001F" + _settings.LyricsNextColor;
         if (string.Equals(signature, _renderSignature, StringComparison.Ordinal)) return;
         _renderSignature = signature;
 
         // The color and the overall opacity are read on every render so the overlay follows
         // the applied settings without rebuilding the window by hand.
         Brush lyricsBrush = LyricStyle.CreateBrush(_settings.LyricsColor);
+        Brush currentBrush = LyricStyle.CreateBrush(_settings.LyricsCurrentColor);
+        Brush nextBrush = nextIsTranslation ? lyricsBrush : LyricStyle.CreateBrush(_settings.LyricsNextColor);
         var root = new Border
         {
             Background = _settings.LyricsBackgroundEnabled ? new SolidColorBrush(Color.FromArgb(155, 0, 0, 0)) : Brushes.Transparent,
@@ -422,51 +492,68 @@ public sealed class LyricsWindow : Window
         // as a single block: vertically centred and hugging the right edge.
         // Status placeholders use the same single-line layout as instrumental tracks, so
         // "正在查找歌词" does not jump to a different alignment while the lookup is in flight.
-        if ((_lines.Count == 1 || _lines.Count == 0) && !string.IsNullOrWhiteSpace(current) && string.IsNullOrWhiteSpace(next))
+        if ((_lines.Count == 1 || _lines.Count == 0) && !string.IsNullOrWhiteSpace(current)
+            && string.IsNullOrWhiteSpace(next)
+            && (!_settings.LyricsTranslationEnabled || string.IsNullOrWhiteSpace(currentTranslation)))
         {
-            root.Child = CreateSingleLineLyrics(current, lyricsBrush);
+            root.Child = CreateSingleLineLyrics(current, currentBrush);
             Content = root;
             return;
         }
         var alignment = _settings.LyricsAlignment switch { "Left" => HorizontalAlignment.Left, "Right" => HorizontalAlignment.Right, _ => HorizontalAlignment.Center };
         if (_settings.LyricsOrientation == "Vertical")
         {
-            // Vertical mode has its own horizontal anchor so the column can hug the window's
-            // left or right edge independently of the horizontal-mode alignment.
-            var anchor = _settings.LyricsVerticalAnchor switch
+            bool wordBased = IsMostlyWordBased(current);
+            string layout = wordBased ? _settings.LyricsWordVerticalLayout : _settings.LyricsNonWordVerticalLayout;
+            if (layout == "Diagonal")
             {
-                "Left" => HorizontalAlignment.Left,
-                "Right" => HorizontalAlignment.Right,
-                _ => HorizontalAlignment.Center
-            };
-            if (IsMostlyWordBased(current))
-            {
-                // More than half of the line is a space-delimited script ("I love you 我爱你",
-                // English hook lines in a CJK song): read it as stacked words, right aligned,
-                // instead of squeezing the words into CJK glyph columns.
-                root.Child = CreateStackedWordLines(current, next, lyricsBrush, anchor);
+                root.HorizontalAlignment = HorizontalAlignment.Stretch;
+                root.VerticalAlignment = VerticalAlignment.Stretch;
+                root.Child = CreateQuadrantLyrics(current, next, currentBrush, nextBrush, lyricsBrush, true, currentTranslation, nextTranslation, nextIsTranslation);
             }
             else
             {
-                // CJK and other non-word scripts: the window is split into four cells, the current
-                // line fills the top-left cell, the next line the bottom-right cell.
-                root.HorizontalAlignment = HorizontalAlignment.Stretch;
-                root.VerticalAlignment = VerticalAlignment.Stretch;
-                root.Child = CreateQuadrantLyrics(current, next, lyricsBrush, vertical: true);
+                bool forceRightAlignment = layout == "RightAligned";
+                var anchor = forceRightAlignment ? HorizontalAlignment.Right : _settings.LyricsVerticalAnchor switch
+                {
+                    "Left" => HorizontalAlignment.Left,
+                    "Right" => HorizontalAlignment.Right,
+                    _ => HorizontalAlignment.Right
+                };
+                root.Child = CreateRightStackedLyrics(current, next, currentTranslation, nextTranslation, currentBrush, nextBrush, lyricsBrush, wordBased, anchor, forceRightAlignment, nextIsTranslation);
             }
         }
-        else if (!IsMostlyWordBased(current))
+        else if (!IsMostlyWordBased(current) && !_settings.LyricsTranslationEnabled)
         {
             root.HorizontalAlignment = HorizontalAlignment.Stretch;
             root.VerticalAlignment = VerticalAlignment.Stretch;
-            root.Child = CreateQuadrantLyrics(current, next, lyricsBrush, vertical: false);
+            root.Child = CreateQuadrantLyrics(current, next, currentBrush, nextBrush, lyricsBrush, false, currentTranslation, nextTranslation, nextIsTranslation);
         }
         else
         {
-            var rows = new StackPanel { HorizontalAlignment = alignment };
-            rows.Children.Add(CreateText(current, 1.0, lyricsBrush));
-            if (!string.IsNullOrWhiteSpace(next)) rows.Children.Add(CreateText(next, 0.55, lyricsBrush));
-            root.Child = rows;
+            if (_settings.LyricsTranslationEnabled)
+                root.Child = CreateHorizontalTranslationLayout(current, next, currentTranslation, nextTranslation, currentBrush, nextBrush, lyricsBrush, alignment, nextIsTranslation);
+            else
+            {
+                var rows = new StackPanel { HorizontalAlignment = alignment };
+                rows.Children.Add(CreateText(current, 1.0, currentBrush));
+                if (_settings.LyricsTranslationEnabled && !string.IsNullOrWhiteSpace(currentTranslation))
+                    rows.Children.Add(CreateTranslationText(currentTranslation, 0.72, lyricsBrush));
+                if (!string.IsNullOrWhiteSpace(next))
+                {
+                    if (nextIsTranslation)
+                    {
+                        rows.Children.Add(CreateTranslationText(next, 0.82, nextBrush, 1.0));
+                    }
+                    else
+                    {
+                        rows.Children.Add(CreateText(next, 0.55, nextBrush));
+                        if (_settings.LyricsTranslationEnabled && !string.IsNullOrWhiteSpace(nextTranslation))
+                            rows.Children.Add(CreateTranslationText(nextTranslation, 0.45, lyricsBrush));
+                    }
+                }
+                root.Child = rows;
+            }
         }
         Content = root;
     }
@@ -475,6 +562,46 @@ public sealed class LyricsWindow : Window
     /// One-line lyrics (instrumental notices): a vertical column for CJK, a horizontal line for
     /// word-based text, both pinned to the right edge and centred vertically.
     /// </summary>
+    private FrameworkElement CreateHorizontalTranslationLayout(string current, string next, string currentTranslation, string nextTranslation, Brush currentBrush, Brush nextBrush, Brush translationBrush, HorizontalAlignment alignment, bool nextIsTranslation)
+    {
+        double w = ContentWidth(), h = ContentHeight();
+        var canvas = new Canvas { Width = w, Height = h, HorizontalAlignment = HorizontalAlignment.Stretch, VerticalAlignment = VerticalAlignment.Stretch };
+        bool diagonal = _settings.LyricsHorizontalTranslationLayout == "Diagonal";
+        bool leftLarge = _settings.LyricsHorizontalTranslationLayout == "LeftLarge";
+        bool rightLarge = _settings.LyricsHorizontalTranslationLayout == "RightLarge";
+        double lyricW = leftLarge || rightLarge ? w * 0.58 : w;
+        TextBlock Add(string text, Brush brush, double opacity, double size, TextAlignment textAlignment, double width)
+        {
+            var block = new TextBlock { Text = text, Foreground = brush, Opacity = opacity, FontSize = size, TextWrapping = TextWrapping.Wrap, TextAlignment = textAlignment, Width = Math.Max(1, width) };
+            canvas.Children.Add(block); return block;
+        }
+        double baseSize = Math.Clamp(_settings.LyricsFontSize, 10, 120);
+        double translationBaseSize = GetTranslationFontSize(leftLarge || rightLarge ? 1.1 : 0.82);
+        var currentBlock = Add(current, currentBrush, 1, leftLarge || rightLarge ? baseSize * .82 : baseSize, leftLarge ? TextAlignment.Right : alignment == HorizontalAlignment.Left ? TextAlignment.Left : alignment == HorizontalAlignment.Right ? TextAlignment.Right : TextAlignment.Center, lyricW);
+        Canvas.SetLeft(currentBlock, leftLarge ? w - lyricW : 0); Canvas.SetTop(currentBlock, diagonal ? 0 : 2);
+        if (!string.IsNullOrWhiteSpace(next))
+        {
+            double nextSize = nextIsTranslation ? GetTranslationFontSize(1.0) : leftLarge || rightLarge ? baseSize * .82 : baseSize;
+            var nextBlock = Add(next, nextBrush, nextIsTranslation ? .82 : .58, nextSize, leftLarge ? TextAlignment.Right : alignment == HorizontalAlignment.Left ? TextAlignment.Left : alignment == HorizontalAlignment.Right ? TextAlignment.Right : TextAlignment.Center, lyricW);
+            Canvas.SetLeft(nextBlock, leftLarge ? w - lyricW : 0); Canvas.SetTop(nextBlock, h * .55);
+        }
+        if (_settings.LyricsTranslationEnabled && !string.IsNullOrWhiteSpace(currentTranslation))
+        {
+            double tw = leftLarge || rightLarge ? w - lyricW : w * .48;
+            var tr = Add(currentTranslation, translationBrush, .9, translationBaseSize, leftLarge ? TextAlignment.Left : TextAlignment.Right, tw);
+            Canvas.SetLeft(tr, leftLarge ? 0 : rightLarge ? lyricW : diagonal ? w * .52 : w * .52);
+            Canvas.SetTop(tr, diagonal ? 0 : leftLarge || rightLarge ? 0 : h * .28);
+        }
+        if (_settings.LyricsTranslationEnabled && !string.IsNullOrWhiteSpace(nextTranslation))
+        {
+            double tw = leftLarge || rightLarge ? w - lyricW : w * .48;
+            var tr = Add(nextTranslation, translationBrush, .7, translationBaseSize, leftLarge ? TextAlignment.Left : TextAlignment.Right, tw);
+            Canvas.SetLeft(tr, leftLarge ? 0 : rightLarge ? lyricW : diagonal ? 0 : w * .52);
+            Canvas.SetTop(tr, diagonal ? h * .62 : leftLarge || rightLarge ? h * .55 : h * .78);
+        }
+        return canvas;
+    }
+
     private FrameworkElement CreateSingleLineLyrics(string text, Brush brush)
     {
         if (_settings.LyricsOrientation == "Vertical" && !IsMostlyWordBased(text))
@@ -514,7 +641,7 @@ public sealed class LyricsWindow : Window
     /// of the overlay. On a Canvas a wide block may extend into the empty neighbouring cell and is
     /// never clipped.
     /// </summary>
-    private Canvas CreateQuadrantLyrics(string current, string next, Brush brush, bool vertical)
+    private Canvas CreateQuadrantLyrics(string current, string next, Brush currentBrush, Brush nextBrush, Brush translationBrush, bool vertical, string currentTranslation, string nextTranslation, bool nextIsTranslation = false)
     {
         double contentWidth = ContentWidth();
         double contentHeight = ContentHeight();
@@ -530,8 +657,8 @@ public sealed class LyricsWindow : Window
         };
 
         FrameworkElement currentBlock = vertical
-            ? CreateVerticalLine(current, 1.0, brush, cellHeight)
-            : CreateCornerText(current, 1.0, brush, TextAlignment.Left, cellWidth);
+            ? CreateVerticalLine(current, 1.0, currentBrush, cellHeight)
+            : CreateCornerText(current, 1.0, currentBrush, TextAlignment.Left, cellWidth);
         Size currentSize = MeasureBlock(currentBlock);
         Canvas.SetLeft(currentBlock, currentSize.Width <= cellWidth ? Math.Max(0, (cellWidth - currentSize.Width) / 2) : 0);
         Canvas.SetTop(currentBlock, Math.Max(0, (cellHeight - currentSize.Height) / 2));
@@ -540,8 +667,8 @@ public sealed class LyricsWindow : Window
         if (!string.IsNullOrWhiteSpace(next))
         {
             FrameworkElement nextBlock = vertical
-                ? CreateVerticalLine(next, 0.55, brush, cellHeight)
-                : CreateCornerText(next, 0.55, brush, TextAlignment.Right, cellWidth);
+                ? CreateVerticalLine(next, nextIsTranslation ? 0.82 : 0.55, nextBrush, cellHeight, nextIsTranslation ? GetTranslationFontSize(1.0) : null)
+                : CreateCornerText(next, nextIsTranslation ? 0.82 : 0.55, nextBrush, TextAlignment.Right, cellWidth, nextIsTranslation ? GetTranslationFontSize(1.0) : null);
             Size nextSize = MeasureBlock(nextBlock);
             double left = nextSize.Width <= cellWidth
                 ? cellWidth + (cellWidth - nextSize.Width) / 2
@@ -550,8 +677,119 @@ public sealed class LyricsWindow : Window
             Canvas.SetTop(nextBlock, cellHeight + Math.Max(0, (cellHeight - nextSize.Height) / 2));
             canvas.Children.Add(nextBlock);
         }
+
+        // In diagonal layout, translations occupy the opposite corners: current translation top-right,
+        // next-line translation bottom-left. This keeps source lyrics and translations visually paired.
+        if (_settings.LyricsTranslationEnabled && !string.IsNullOrWhiteSpace(currentTranslation))
+        {
+            FrameworkElement translation = vertical
+                ? CreateVerticalLine(currentTranslation, 0.72, translationBrush, cellHeight, GetTranslationFontSize(0.9))
+                : CreateCornerText(currentTranslation, 0.72, translationBrush, TextAlignment.Right, cellWidth, GetTranslationFontSize(0.9));
+            Size size = MeasureBlock(translation);
+            Canvas.SetLeft(translation, Math.Max(cellWidth, contentWidth - size.Width));
+            Canvas.SetTop(translation, Math.Max(0, (cellHeight - size.Height) / 2));
+            canvas.Children.Add(translation);
+        }
+        if (_settings.LyricsTranslationEnabled && !string.IsNullOrWhiteSpace(nextTranslation))
+        {
+            FrameworkElement translation = vertical
+                ? CreateVerticalLine(nextTranslation, 0.45, translationBrush, cellHeight, GetTranslationFontSize(0.75))
+                : CreateCornerText(nextTranslation, 0.45, translationBrush, TextAlignment.Left, cellWidth, GetTranslationFontSize(0.75));
+            Size size = MeasureBlock(translation);
+            Canvas.SetLeft(translation, Math.Max(0, (cellWidth - size.Width) / 2));
+            Canvas.SetTop(translation, cellHeight + Math.Max(0, (cellHeight - size.Height) / 2));
+            canvas.Children.Add(translation);
+        }
         return canvas;
     }
+
+    private FrameworkElement CreateRightStackedLyrics(string current, string next, string currentTranslation, string nextTranslation, Brush currentBrush, Brush nextBrush, Brush translationBrush, bool wordBased, HorizontalAlignment anchor, bool forceRightAlignment, bool nextIsTranslation)
+    {
+        var panel = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            HorizontalAlignment = anchor,
+            VerticalAlignment = _settings.LyricsVerticalAlignment switch { "Top" => VerticalAlignment.Top, "Bottom" => VerticalAlignment.Bottom, _ => VerticalAlignment.Center }
+        };
+        panel.Children.Add(CreateRightStackedSentence(current, currentTranslation, currentBrush, translationBrush, wordBased, anchor, forceRightAlignment, 1.0));
+        if (!string.IsNullOrWhiteSpace(next))
+        {
+            // The explicit right-aligned vertical layout separates the two sentences more clearly.
+            panel.Children.Add(new Border { Height = forceRightAlignment
+                ? Math.Max(14, _settings.LyricsFontSize * 0.9)
+                : Math.Max(4, _settings.LyricsFontSize * 0.35) });
+            panel.Children.Add(CreateRightStackedSentence(next, nextIsTranslation ? string.Empty : nextTranslation, nextIsTranslation ? translationBrush : nextBrush, translationBrush, wordBased, anchor, forceRightAlignment, nextIsTranslation ? 0.82 : 0.55, nextIsTranslation));
+        }
+        return panel;
+    }
+
+    private FrameworkElement CreateRightStackedSentence(string text, string translation, Brush textBrush, Brush translationBrush, bool wordBased, HorizontalAlignment anchor, bool forceRightAlignment, double opacity, bool isTranslation = false)
+    {
+        FrameworkElement lyric = isTranslation
+            ? wordBased
+                ? CreateTranslationText(text, opacity, textBrush, 1.0)
+                : CreateVerticalLine(text, opacity, textBrush, ContentHeight(), GetTranslationFontSize(1.0))
+            : wordBased
+                ? CreateStackedWordLines(text, string.Empty, textBrush, anchor)
+                : CreateVerticalLine(text, opacity, textBrush, ContentHeight());
+        lyric.HorizontalAlignment = anchor;
+
+        bool hasTranslation = _settings.LyricsTranslationEnabled && !string.IsNullOrWhiteSpace(translation);
+        string translationLayout = _settings.LyricsVerticalTranslationLayout;
+        if (forceRightAlignment && hasTranslation && (translationLayout is "LeftVertical" or "RightVertical"))
+        {
+            FrameworkElement translationColumn = CreateVerticalLine(translation, opacity * 0.9, translationBrush, ContentHeight(), GetTranslationFontSize(1.0));
+            translationColumn.VerticalAlignment = VerticalAlignment.Top;
+            var row = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right,
+                VerticalAlignment = VerticalAlignment.Top
+            };
+            var gap = new Border { Width = Math.Max(4, _settings.LyricsFontSize * 0.2) };
+            if (translationLayout == "LeftVertical")
+            {
+                row.Children.Add(translationColumn);
+                row.Children.Add(gap);
+                row.Children.Add(lyric);
+            }
+            else
+            {
+                row.Children.Add(lyric);
+                row.Children.Add(gap);
+                row.Children.Add(translationColumn);
+            }
+            return row;
+        }
+
+        var block = new StackPanel
+        {
+            Orientation = Orientation.Vertical,
+            HorizontalAlignment = anchor,
+            VerticalAlignment = VerticalAlignment.Top
+        };
+        block.Children.Add(lyric);
+        if (hasTranslation)
+        {
+            double translationScale = forceRightAlignment && translationLayout == "BottomSmall" ? 0.55 : 0.62;
+            block.Children.Add(CreateTranslationText(translation, opacity * 0.72, translationBrush, translationScale));
+        }
+        return block;
+    }
+
+    private double GetTranslationFontSize(double scale = 1.0) => Math.Max(8, Math.Clamp(_settings.LyricsTranslationFontSize, 8, 96) * scale);
+
+    private TextBlock CreateTranslationText(string text, double opacity, Brush brush, double sizeScale = 0.62) => new()
+    {
+        Text = text,
+        Foreground = brush,
+        FontSize = GetTranslationFontSize(sizeScale),
+        Opacity = opacity,
+        TextWrapping = TextWrapping.Wrap,
+        TextAlignment = TextAlignment.Right,
+        HorizontalAlignment = HorizontalAlignment.Right,
+        MaxWidth = ContentWidth()
+    };
 
     private static Size MeasureBlock(FrameworkElement block)
     {
@@ -574,11 +812,11 @@ public sealed class LyricsWindow : Window
         return !visible.IsEmpty && visible.Width >= 40 && visible.Height >= 40;
     }
 
-    private TextBlock CreateCornerText(string text, double opacity, Brush brush, TextAlignment alignment, double maxWidth) => new()
+    private TextBlock CreateCornerText(string text, double opacity, Brush brush, TextAlignment alignment, double maxWidth, double? fontSizeOverride = null) => new()
     {
         Text = text,
         Foreground = brush,
-        FontSize = Math.Clamp(_settings.LyricsFontSize, 10, 120),
+        FontSize = fontSizeOverride ?? Math.Clamp(_settings.LyricsFontSize, 10, 120),
         Opacity = opacity,
         TextWrapping = TextWrapping.Wrap,
         TextAlignment = alignment,
@@ -744,9 +982,9 @@ public sealed class LyricsWindow : Window
     /// <summary>One vertical column cell: either a single glyph or a whole word drawn horizontally.</summary>
     private readonly record struct VerticalToken(string Text, bool IsWord);
 
-    private StackPanel CreateVerticalLine(string text, double opacity, Brush brush, double heightBudget)
+    private StackPanel CreateVerticalLine(string text, double opacity, Brush brush, double heightBudget, double? fontSizeOverride = null)
     {
-        double fontSize = Math.Clamp(_settings.LyricsFontSize, 10, 120);
+        double fontSize = fontSizeOverride ?? Math.Clamp(_settings.LyricsFontSize, 10, 120);
         // WPF fallback fonts can have different vertical metrics. Chinese glyphs rendered
         // through a fallback font may therefore create visibly larger gaps than Japanese.
         // Select a script-appropriate font and constrain every glyph cell to one em.
@@ -869,18 +1107,9 @@ public sealed class LyricsWindow : Window
             Foreground = brush,
             FontSize = fontSize,
             Width = width,
-            LineHeight = Math.Max(1, cellHeight),
-            LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
-            Padding = new Thickness(0),
-            Margin = new Thickness(0, 0, Math.Max(1, fontSize * 0.16), 0),
-            Height = Math.Max(1, cellHeight),
-            MinHeight = Math.Max(1, cellHeight),
-            MaxHeight = Math.Max(1, cellHeight),
-            TextWrapping = TextWrapping.NoWrap,
-            Opacity = opacity,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center
+            Margin = new Thickness(0, 0, Math.Max(1, fontSize * 0.16), 0)
         };
+        ConfigureVerticalCell(cell, cellHeight, opacity);
         TextOptions.SetTextFormattingMode(cell, TextFormattingMode.Display);
         return cell;
     }
@@ -897,20 +1126,24 @@ public sealed class LyricsWindow : Window
             FontFamily = glyphFont,
             Foreground = brush,
             FontSize = glyphSize,
-            LineHeight = Math.Max(1, cellHeight),
-            LineStackingStrategy = LineStackingStrategy.BlockLineHeight,
-            Padding = new Thickness(0),
-            Margin = new Thickness(0),
-            Height = Math.Max(1, cellHeight),
-            MinHeight = Math.Max(1, cellHeight),
-            MaxHeight = Math.Max(1, cellHeight),
-            TextWrapping = TextWrapping.NoWrap,
-            Opacity = opacity,
-            HorizontalAlignment = HorizontalAlignment.Center,
-            VerticalAlignment = VerticalAlignment.Center
+            Margin = new Thickness(0)
         };
+        ConfigureVerticalCell(glyph, cellHeight, opacity);
         TextOptions.SetTextFormattingMode(glyph, TextFormattingMode.Display);
         return glyph;
+    }
+
+    private static void ConfigureVerticalCell(TextBlock cell, double cellHeight, double opacity)
+    {
+        double height = Math.Max(1, cellHeight);
+        cell.LineHeight = height;
+        cell.LineStackingStrategy = LineStackingStrategy.BlockLineHeight;
+        cell.Padding = new Thickness(0);
+        cell.Height = cell.MinHeight = cell.MaxHeight = height;
+        cell.TextWrapping = TextWrapping.NoWrap;
+        cell.Opacity = opacity;
+        cell.HorizontalAlignment = HorizontalAlignment.Center;
+        cell.VerticalAlignment = VerticalAlignment.Center;
     }
 
     private void DragAnywhere(object sender, MouseButtonEventArgs e)
@@ -920,11 +1153,27 @@ public sealed class LyricsWindow : Window
 
     private void SaveBounds()
     {
-        // The vertical lyric layout is built from the window size, so a resize must rebuild it.
+        // Rebuild width-dependent layouts immediately, but persist the final bounds only after
+        // the drag/resize settles. Saving settings.json for every pointer movement caused needless
+        // I/O and made a partial file much more likely if the process was interrupted.
         _renderSignature = string.Empty;
-        if (!IsLoaded || double.IsNaN(Left) || double.IsNaN(Top)) return;
-        _settings.LyricsWindowWidth = ActualWidth; _settings.LyricsWindowHeight = ActualHeight; _settings.LyricsWindowLeft = Left; _settings.LyricsWindowTop = Top;
-        _settingsService.Save(_settings);
+        if (!IsLoaded || !double.IsFinite(Left) || !double.IsFinite(Top)) return;
+        _boundsSaveTimer.Stop();
+        _boundsSaveTimer.Start();
+    }
+
+    private void SaveBoundsCore()
+    {
+        if (!IsLoaded || !double.IsFinite(Left) || !double.IsFinite(Top)
+            || !double.IsFinite(ActualWidth) || !double.IsFinite(ActualHeight)
+            || ActualWidth < 1 || ActualHeight < 1) return;
+
+        _settings.LyricsWindowWidth = ActualWidth;
+        _settings.LyricsWindowHeight = ActualHeight;
+        _settings.LyricsWindowLeft = Left;
+        _settings.LyricsWindowTop = Top;
+        try { _settingsService.Save(_settings); }
+        catch (Exception ex) { CrashLog.Write(ex, "LyricsWindow:SaveBounds"); }
     }
 
     private void OnSourceInitialized()

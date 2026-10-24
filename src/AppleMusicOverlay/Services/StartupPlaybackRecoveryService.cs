@@ -93,7 +93,9 @@ public sealed class StartupPlaybackRecoveryService
     private static async Task OpenQueueByKeyboardAsync(IntPtr hwnd, CancellationToken token)
     {
         EnsureTargetForeground(hwnd);
-        KeyDown(VK_MENU); await Task.Delay(100, token); KeyUp(VK_MENU);
+        KeyDown(VK_MENU);
+        try { await Task.Delay(100, token); }
+        finally { KeyUp(VK_MENU); }
         await Task.Delay(180, token);
         EnsureTargetForeground(hwnd); PressKey(VK_L);
         await Task.Delay(180, token);
@@ -207,17 +209,26 @@ public sealed class StartupPlaybackRecoveryService
         POINT target = new() { X = x, Y = y };
         if (!ClientToScreen(hwnd, ref target)) throw new InvalidOperationException("无法计算 Apple Music 点击位置。");
         GetCursorPos(out POINT original);
+        bool mouseButtonDown = false;
         try
         {
             SetCursorPos(target.X, target.Y);
             await Task.Delay(80, token);
             EnsureTargetForeground(hwnd);
             mouse_event(MOUSEEVENTF_LEFTDOWN, 0, 0, 0, UIntPtr.Zero);
+            mouseButtonDown = true;
             await Task.Delay(60, token);
             mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+            mouseButtonDown = false;
             await Task.Delay(100, token);
         }
-        finally { SetCursorPos(original.X, original.Y); }
+        finally
+        {
+            // Cancellation between mouse-down and mouse-up must not leave the physical
+            // left button stuck; always release it before restoring the pointer.
+            if (mouseButtonDown) mouse_event(MOUSEEVENTF_LEFTUP, 0, 0, 0, UIntPtr.Zero);
+            SetCursorPos(original.X, original.Y);
+        }
     }
 
 }
