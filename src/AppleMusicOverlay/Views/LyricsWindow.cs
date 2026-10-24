@@ -28,7 +28,7 @@ public sealed class LyricsWindow : Window
     private readonly DispatcherTimer _timer = new(DispatcherPriority.Render) { Interval = TimeSpan.FromMilliseconds(120) };
     // Topmost is only a one-shot z-order flag: another topmost window that appears later (or the
     // player itself) ends up above the overlay. Re-asserting it while visible keeps it on top.
-    private readonly DispatcherTimer _topmostTimer = new() { Interval = TimeSpan.FromMilliseconds(800) };
+    private readonly DispatcherTimer _topmostTimer = new() { Interval = TimeSpan.FromMilliseconds(250) };
     private IReadOnlyList<LyricLine> _lines = Array.Empty<LyricLine>();
     private string _trackKey = string.Empty;
     private string _titleKey = string.Empty;
@@ -44,14 +44,21 @@ public sealed class LyricsWindow : Window
     private bool _menuOpen;
     private bool _updating;
     private bool _forceRefresh;
+    private string _prefetchAttemptedTrackKey = string.Empty;
     // The artist changed after lyrics were already shown: re-check in the background.
     private bool _correctionPending;
     // Watermark used to keep the displayed line from stepping backwards for one tick.
     private int _lastLineIndex = -1;
     private TimeSpan _lastLinePosition;
     // "无法连接歌词服务器" retries itself; the manual button only makes it immediate.
+    // Initial lookup plus three fast retries. Each network attempt is capped at 3.25 s,
+    // leaving room for UI timer ticks while completing the entire retry cycle inside 15 s.
+    private const int MaxAutomaticRetries = 3;
+    private static readonly TimeSpan LookupAttemptTimeout = TimeSpan.FromMilliseconds(3250);
+    private static readonly TimeSpan RetryWindow = TimeSpan.FromSeconds(15);
     private int _retryAttempt;
     private DateTime _nextRetryUtc = DateTime.MaxValue;
+    private DateTime _retryDeadlineUtc = DateTime.MaxValue;
 
     public LyricsWindow(LyricsService service, OverlaySettings settings, Action? openSettings = null, Action? exitApplication = null)
     {
@@ -80,7 +87,7 @@ public sealed class LyricsWindow : Window
         SizeChanged += (_, _) => SaveBounds();
         LocationChanged += (_, _) => SaveBounds();
         _timer.Tick += async (_, _) => await UpdateAsync();
-        _topmostTimer.Tick += (_, _) => EnsureTopmost();
+        _topmostTimer.Tick += (_, _) => EnsureTopmost(forceRaise: true);
         // The overlay's own context menu is a popup window; raising the overlay while it is open
         // would draw over it, so the topmost keeper pauses for the menu's lifetime.
         ContextMenuOpening += (_, _) => _menuOpen = true;
@@ -174,15 +181,31 @@ public sealed class LyricsWindow : Window
                 }
             }
 
+            // When a song is nearly over and its lyrics are already available, opportunistically
+            // warm the cache for the next track in the same album's catalog order. This cannot see
+            // Apple Music's actual Up Next queue; random playlists simply fall back to normal lookup.
+            MaybePrefetchNextAlbumTrack(playback, title, artist);
+
             if (_lines.Count == 0)
             {
                 bool waitingForArtist = string.IsNullOrWhiteSpace(artist)
                     && _lookupStatus is null
                     && DateTime.UtcNow - _trackSeenUtc < TimeSpan.FromMilliseconds(1500);
-                // A track is looked up once; only a connection failure retries by itself (a miss
-                // stays until the user hits 「重新查找歌词」). LRCLIB is intermittently blocked on
-                // some networks, so a one-shot attempt used to leave "无法连接歌词服务器" forever.
-                bool retryDue = _lookupStatus == LyricsLookupStatus.Unavailable && DateTime.UtcNow >= _nextRetryUtc;
+                // A missing lyric stays settled for this track. Network failures get up to three
+                // automatic retries after the initial attempt, with the whole cycle bounded to 15 s.
+                // The overlay keeps the neutral placeholder and never exposes transient connection errors.
+                DateTime now = DateTime.UtcNow;
+                bool retryWindowExpired = _lookupStatus == LyricsLookupStatus.Unavailable
+                    && now >= _retryDeadlineUtc;
+                if (retryWindowExpired)
+                {
+                    _lookupStatus = LyricsLookupStatus.NotFound;
+                    _nextRetryUtc = DateTime.MaxValue;
+                }
+                bool retryDue = _lookupStatus == LyricsLookupStatus.Unavailable
+                    && _retryAttempt <= MaxAutomaticRetries
+                    && now >= _nextRetryUtc
+                    && now < _retryDeadlineUtc;
                 if (!waitingForArtist && !_lookupRunning && (_lookupStatus is null || retryDue))
                     BeginLookup(playback, _trackKey);
                 // A lookup that hits the on-disk cache finishes in a few milliseconds, so the
@@ -205,6 +228,22 @@ public sealed class LyricsWindow : Window
         finally { _updating = false; }
     }
 
+    private void MaybePrefetchNextAlbumTrack(PlaybackSnapshot playback, string title, string artist)
+    {
+        if (_lines.Count == 0 || !playback.IsPlaying
+            || string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(artist)
+            || string.IsNullOrWhiteSpace(playback.Album)
+            || playback.Duration < TimeSpan.FromSeconds(60)) return;
+
+        double leadSeconds = Math.Clamp(playback.Duration.TotalSeconds * 0.25, 20, 60);
+        if (playback.Duration - playback.Position > TimeSpan.FromSeconds(leadSeconds)) return;
+
+        string key = title + "\n" + artist + "\n" + playback.Album;
+        if (string.Equals(key, _prefetchAttemptedTrackKey, StringComparison.Ordinal)) return;
+        _prefetchAttemptedTrackKey = key;
+        _ = _service.PrefetchNextAlbumTrackLyricsAsync(playback);
+    }
+
     private void ResetLookupState()
     {
         _lines = Array.Empty<LyricLine>();
@@ -213,21 +252,15 @@ public sealed class LyricsWindow : Window
         _correctionPending = false;
         _retryAttempt = 0;
         _nextRetryUtc = DateTime.MaxValue;
+        _retryDeadlineUtc = DateTime.MaxValue;
         _lastLineIndex = -1;
         _lastLinePosition = TimeSpan.Zero;
         // Invalidate any lookup that is still in flight for the previous track.
         _generation++;
     }
 
-    /// <summary>Connection failures retry on their own: 5 s, 10 s, 20 s, 30 s, then once a minute.</summary>
-    private static TimeSpan UnavailableRetryDelay(int attempt) => attempt switch
-    {
-        <= 1 => TimeSpan.FromSeconds(5),
-        2 => TimeSpan.FromSeconds(10),
-        3 => TimeSpan.FromSeconds(20),
-        4 => TimeSpan.FromSeconds(30),
-        _ => TimeSpan.FromSeconds(60)
-    };
+    /// <summary>Short retry spacing; the total attempt budget is bounded by RetryWindow.</summary>
+    private static TimeSpan UnavailableRetryDelay() => TimeSpan.FromMilliseconds(200);
 
     /// <summary>
     /// The extrapolated SMTC position can dip by a few hundred milliseconds when a fresh sample
@@ -274,6 +307,8 @@ public sealed class LyricsWindow : Window
 
     private void BeginLookup(PlaybackSnapshot playback, string key)
     {
+        if (_retryDeadlineUtc == DateTime.MaxValue)
+            _retryDeadlineUtc = DateTime.UtcNow + RetryWindow;
         _lookupRunning = true;
         _correctionPending = false;
         int generation = _generation;
@@ -285,9 +320,17 @@ public sealed class LyricsWindow : Window
     private async Task LookupAsync(PlaybackSnapshot playback, string key, int generation, bool forceRefresh)
     {
         LyricsLookupResult result;
+        using var attemptTimeout = new CancellationTokenSource(LookupAttemptTimeout);
         try
         {
-            result = await _service.GetLyricsAsync(playback.Title, playback.Artist, playback.Album, playback.Duration, forceRefresh);
+            result = await _service.GetLyricsAsync(
+                playback.Title, playback.Artist, playback.Album, playback.Duration,
+                forceRefresh, attemptTimeout.Token);
+        }
+        catch (OperationCanceledException) when (attemptTimeout.IsCancellationRequested)
+        {
+            // A single attempt must not consume the entire 15-second retry window.
+            result = LyricsLookupResult.Unavailable;
         }
         catch (Exception ex)
         {
@@ -321,7 +364,16 @@ public sealed class LyricsWindow : Window
         if (result.Status == LyricsLookupStatus.Unavailable)
         {
             _retryAttempt++;
-            _nextRetryUtc = DateTime.UtcNow + UnavailableRetryDelay(_retryAttempt);
+            if (_retryAttempt > MaxAutomaticRetries)
+            {
+                // Initial lookup plus three retries have failed. Stop polling this track.
+                _lookupStatus = LyricsLookupStatus.NotFound;
+                _nextRetryUtc = DateTime.MaxValue;
+            }
+            else
+            {
+                _nextRetryUtc = DateTime.UtcNow + UnavailableRetryDelay();
+            }
         }
     }
 
@@ -335,10 +387,8 @@ public sealed class LyricsWindow : Window
         if (_lookupRunning && _lookupStatus is null) return "正在查找歌词……";
         return _lookupStatus switch
         {
-            LyricsLookupStatus.Unavailable => _retryAttempt > 0
-                ? $"连接失败，正在自动重试（{_retryAttempt}）……"
-                : "连接歌词服务器失败……",
-            LyricsLookupStatus.NotFound => "未识别到歌词。请到设置中点击「重新查找歌词」。",
+            LyricsLookupStatus.Unavailable => "正在查找歌词……",
+            LyricsLookupStatus.NotFound => "本地歌曲 无歌词",
             LyricsLookupStatus.Found => "正在读取同步歌词……",
             _ => _lookupRunning ? "正在查找歌词……" : "正在读取同步歌词……"
         };
@@ -370,7 +420,9 @@ public sealed class LyricsWindow : Window
 
         // A track whose whole lyric is one line ("纯音乐，请欣赏" and similar notices) reads better
         // as a single block: vertically centred and hugging the right edge.
-        if (_lines.Count == 1 && !string.IsNullOrWhiteSpace(current) && string.IsNullOrWhiteSpace(next))
+        // Status placeholders use the same single-line layout as instrumental tracks, so
+        // "正在查找歌词" does not jump to a different alignment while the lookup is in flight.
+        if ((_lines.Count == 1 || _lines.Count == 0) && !string.IsNullOrWhiteSpace(current) && string.IsNullOrWhiteSpace(next))
         {
             root.Child = CreateSingleLineLyrics(current, lyricsBrush);
             Content = root;
@@ -922,11 +974,11 @@ public sealed class LyricsWindow : Window
     /// The shell (Start menu, Alt-Tab, taskbar flyouts) is deliberately above topmost windows
     /// and is left alone, and the overlay's own context menu keeps its place while open.
     /// </summary>
-    private void EnsureTopmost()
+    private void EnsureTopmost(bool forceRaise = false)
     {
         if (!IsVisible || _menuOpen) return;
         IntPtr handle = _hwnd != IntPtr.Zero ? _hwnd : new WindowInteropHelper(this).Handle;
-        if (handle == IntPtr.Zero || !NeedsTopmostRaise(handle)) return;
+        if (handle == IntPtr.Zero || (!forceRaise && !NeedsTopmostRaise(handle))) return;
         SetWindowPos(handle, HwndTopmost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
     }
 

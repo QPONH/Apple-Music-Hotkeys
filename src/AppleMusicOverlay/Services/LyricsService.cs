@@ -55,10 +55,13 @@ public sealed class LyricsService
     private static readonly JsonSerializerOptions CacheJsonOptions = new() { WriteIndented = false };
 
     private readonly SmtcMediaSessionService _mediaService;
+    private readonly object _cacheGate = new();
     private readonly Dictionary<string, LyricsResult> _lyricsCache = new(StringComparer.Ordinal);
     private readonly Queue<string> _cacheOrder = new();
+    private readonly HashSet<string> _prefetchAttemptedTracks = new(StringComparer.Ordinal);
     private bool _cacheFileLoaded;
     private int _cacheSaveQueued;
+    private int _cacheDirty;
 
     public LyricsService(SmtcMediaSessionService mediaService)
     {
@@ -69,6 +72,116 @@ public sealed class LyricsService
     }
 
     public Task<PlaybackSnapshot?> GetCurrentPlaybackAsync(CancellationToken token = default) => _mediaService.GetCurrentPlaybackAsync(token);
+
+    /// <summary>
+    /// Best-effort prefetch for the next track in the same album's catalog order. SMTC exposes the
+    /// current item but not the Apple Music Up Next queue, so this is intentionally only a cache warm-up:
+    /// it never changes the current overlay, and a later track is still verified by its own cache key.
+    /// </summary>
+    public async Task PrefetchNextAlbumTrackLyricsAsync(PlaybackSnapshot current, CancellationToken token = default)
+    {
+        string title = CleanMetadata(current.Title);
+        string artist = CleanMetadata(current.Artist);
+        string album = CleanMetadata(current.Album);
+        if (string.IsNullOrWhiteSpace(title) || string.IsNullOrWhiteSpace(artist) || string.IsNullOrWhiteSpace(album)) return;
+
+        string currentKey = BuildCacheKey(title, artist) + "\n" + album.Trim().ToLowerInvariant();
+        lock (_cacheGate)
+        {
+            if (!_prefetchAttemptedTracks.Add(currentKey)) return;
+            if (_prefetchAttemptedTracks.Count > 100)
+            {
+                _prefetchAttemptedTracks.Clear();
+                _prefetchAttemptedTracks.Add(currentKey);
+            }
+        }
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeout.CancelAfter(TimeSpan.FromSeconds(12));
+        try
+        {
+            ItunesTrack? next = await FindNextAlbumTrackAsync(title, artist, album, timeout.Token);
+            if (next is null || string.IsNullOrWhiteSpace(next.TrackName) || string.IsNullOrWhiteSpace(next.ArtistName)) return;
+
+            string nextKey = BuildCacheKey(next.TrackName, next.ArtistName);
+            lock (_cacheGate)
+            {
+                if (_lyricsCache.ContainsKey(nextKey)) return;
+            }
+
+            TimeSpan duration = next.TrackTimeMillis is > 0
+                ? TimeSpan.FromMilliseconds(next.TrackTimeMillis.Value)
+                : TimeSpan.Zero;
+            LyricsLookupResult result = await GetLyricsAsync(next.TrackName, next.ArtistName,
+                next.CollectionName ?? album, duration, forceRefresh: false, token: timeout.Token);
+            if (result.Lyrics is not null)
+                CrashLog.WriteNote("LyricsPrefetch", $"{title} -> {next.TrackName} | cached {result.Lyrics.Lines.Count} lines");
+        }
+        catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+        {
+            // Prefetch is opportunistic; leave regular lookup in charge when the next song starts.
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, "Lyrics:PrefetchNextAlbumTrack");
+        }
+    }
+
+    private static async Task<ItunesTrack?> FindNextAlbumTrackAsync(string title, string artist, string album, CancellationToken token)
+    {
+        string term = Uri.EscapeDataString($"{artist} {album} {title}");
+        string searchUrl = $"https://itunes.apple.com/search?term={term}&entity=song&limit=50";
+        using HttpResponseMessage searchResponse = await SendAsync(() => BrowserRequest(searchUrl), token);
+        if (!searchResponse.IsSuccessStatusCode) return null;
+        ItunesSearchResponse? search = await searchResponse.Content.ReadFromJsonAsync<ItunesSearchResponse>(token);
+        if (search?.Results is not { Count: > 0 }) return null;
+
+        string wantedTitle = NormalizeForCompare(title);
+        string wantedArtist = NormalizeForCompare(artist);
+        string wantedAlbum = NormalizeForCompare(album);
+        ItunesTrack? matchedCurrent = search.Results
+            .Where(track => track.TrackId > 0 && track.CollectionId > 0 && !string.IsNullOrWhiteSpace(track.TrackName)
+                && !string.IsNullOrWhiteSpace(track.ArtistName) && !string.IsNullOrWhiteSpace(track.CollectionName))
+            .Where(track => NormalizeForCompare(track.TrackName) == wantedTitle
+                && CatalogTextMatches(NormalizeForCompare(track.ArtistName), wantedArtist)
+                && CatalogTextMatches(NormalizeForCompare(track.CollectionName), wantedAlbum))
+            .OrderBy(track => NormalizeForCompare(track.CollectionName) == wantedAlbum ? 0 : 1)
+            .FirstOrDefault();
+        if (matchedCurrent is null) return null;
+
+        string lookupUrl = $"https://itunes.apple.com/lookup?id={matchedCurrent.CollectionId}&entity=song";
+        using HttpResponseMessage albumResponse = await SendAsync(() => BrowserRequest(lookupUrl), token);
+        if (!albumResponse.IsSuccessStatusCode) return null;
+        ItunesSearchResponse? albumData = await albumResponse.Content.ReadFromJsonAsync<ItunesSearchResponse>(token);
+        if (albumData?.Results is not { Count: > 1 }) return null;
+
+        List<ItunesTrack> tracks = albumData.Results
+            .Where(track => track.TrackId > 0
+                && (string.Equals(track.Kind, "song", StringComparison.OrdinalIgnoreCase)
+                    || string.Equals(track.WrapperType, "track", StringComparison.OrdinalIgnoreCase))
+                && !string.IsNullOrWhiteSpace(track.TrackName)
+                && !string.IsNullOrWhiteSpace(track.ArtistName))
+            .OrderBy(track => track.DiscNumber)
+            .ThenBy(track => track.TrackNumber)
+            .ToList();
+
+        int currentIndex = tracks.FindIndex(track => track.TrackId == matchedCurrent.TrackId);
+        if (currentIndex < 0)
+        {
+            currentIndex = tracks.FindIndex(track => NormalizeForCompare(track.TrackName) == wantedTitle
+                && CatalogTextMatches(NormalizeForCompare(track.ArtistName), wantedArtist));
+        }
+        if (currentIndex < 0 || currentIndex + 1 >= tracks.Count) return null;
+
+        ItunesTrack next = tracks[currentIndex + 1];
+        if (string.IsNullOrWhiteSpace(next.TrackName) || string.IsNullOrWhiteSpace(next.ArtistName)) return null;
+        return next;
+    }
+
+    private static bool CatalogTextMatches(string candidate, string wanted) =>
+        candidate.Length > 0 && wanted.Length > 0 && (candidate == wanted
+            || (Math.Min(candidate.Length, wanted.Length) >= 4
+                && (candidate.Contains(wanted, StringComparison.Ordinal) || wanted.Contains(candidate, StringComparison.Ordinal))));
 
     public async Task<LyricsLookupResult> GetLyricsAsync(string title, string artist, string? album, TimeSpan duration, bool forceRefresh = false, CancellationToken token = default)
     {
@@ -84,11 +197,15 @@ public sealed class LyricsService
         {
             // "重新查找歌词" must not be answered from the cache, otherwise a wrong match could
             // never be corrected by hand.
-            _lyricsCache.Remove(cacheKey);
+            lock (_cacheGate) _lyricsCache.Remove(cacheKey);
         }
-        else if (_lyricsCache.TryGetValue(cacheKey, out LyricsResult? cached))
+        else
         {
-            return LyricsLookupResult.Found(cached);
+            lock (_cacheGate)
+            {
+                if (_lyricsCache.TryGetValue(cacheKey, out LyricsResult? cached))
+                    return LyricsLookupResult.Found(cached);
+            }
         }
 
         LyricsLookupResult lookup = await LookupAsync(title, artist, album, duration, token);
@@ -310,15 +427,14 @@ public sealed class LyricsService
     #region HTTP
 
     /// <summary>
-    /// GET/POST with one quick retry. The reported machine regularly fails the first TLS handshake
-    /// ("The SSL connection could not be established", IPv6 blackhole, stale pooled connection)
-    /// while the immediate retry on a fresh connection succeeds. That single failure used to be
-    /// stored as "未识别到歌词" for the rest of the track.
+    /// GET/POST with bounded retries. Fresh requests and short backoff recover from intermittent TLS,
+    /// stale pooled connections and transient provider errors without leaving the track unresolved.
     /// </summary>
     private static async Task<HttpResponseMessage> SendAsync(Func<HttpRequestMessage> requestFactory, CancellationToken token)
     {
         Exception? last = null;
-        for (int attempt = 1; attempt <= 2; attempt++)
+        const int maxAttempts = 3;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++)
         {
             try
             {
@@ -326,19 +442,19 @@ public sealed class LyricsService
                 request.Version = HttpVersion.Version11;
                 request.VersionPolicy = HttpVersionPolicy.RequestVersionOrLower;
                 HttpResponseMessage response = await Client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, token);
-                if (attempt < 2 && IsRetriableStatus(response.StatusCode))
+                if (attempt < maxAttempts && IsRetriableStatus(response.StatusCode))
                 {
                     response.Dispose();
-                    await Task.Delay(TimeSpan.FromMilliseconds(300 * attempt), token);
+                    await Task.Delay(TimeSpan.FromMilliseconds(350 * attempt), token);
                     continue;
                 }
                 return response;
             }
-            catch (Exception ex) when (attempt < 2 && IsConnectionFailure(ex) && !token.IsCancellationRequested)
+            catch (Exception ex) when (attempt < maxAttempts && IsConnectionFailure(ex) && !token.IsCancellationRequested)
             {
                 last = ex;
                 if (IsTlsFailure(ex)) ResetClient();
-                await Task.Delay(TimeSpan.FromMilliseconds(250 * attempt), token);
+                await Task.Delay(TimeSpan.FromMilliseconds(300 * attempt), token);
             }
         }
 
@@ -387,12 +503,12 @@ public sealed class LyricsService
             AutomaticDecompression = DecompressionMethods.All,
             PooledConnectionLifetime = TimeSpan.FromMinutes(1),
             PooledConnectionIdleTimeout = TimeSpan.FromSeconds(15),
-            ConnectTimeout = TimeSpan.FromSeconds(5),
+            ConnectTimeout = TimeSpan.FromSeconds(8),
             MaxConnectionsPerServer = 8,
             ConnectCallback = ConnectAsync
         };
         handler.SslOptions.EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;
-        var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(8) };
+        var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(12) };
         // LRCLIB asks clients to identify themselves; generic agents are rate limited harder.
         client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.35 (https://github.com/QPONH/Apple-Music-Hotkeys)");
         client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
@@ -420,7 +536,7 @@ public sealed class LyricsService
             try
             {
                 using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-                timeout.CancelAfter(TimeSpan.FromSeconds(5));
+                timeout.CancelAfter(TimeSpan.FromSeconds(8));
                 await socket.ConnectAsync(address, endpoint.Port, timeout.Token);
                 return new NetworkStream(socket, ownsSocket: true);
             }
@@ -991,12 +1107,20 @@ public sealed class LyricsService
 
     private void Remember(string key, LyricsResult lyrics)
     {
-        if (!_lyricsCache.ContainsKey(key))
+        lock (_cacheGate)
         {
-            _lyricsCache[key] = lyrics;
-            _cacheOrder.Enqueue(key);
-            while (_cacheOrder.Count > MaxCacheEntries)
-                _lyricsCache.Remove(_cacheOrder.Dequeue());
+            if (!_lyricsCache.ContainsKey(key))
+            {
+                _lyricsCache[key] = lyrics;
+                _cacheOrder.Enqueue(key);
+                while (_cacheOrder.Count > MaxCacheEntries)
+                    _lyricsCache.Remove(_cacheOrder.Dequeue());
+            }
+            else
+            {
+                // Update the matching result without introducing a duplicate eviction entry.
+                _lyricsCache[key] = lyrics;
+            }
         }
         SaveCacheToDisk();
     }
@@ -1005,69 +1129,82 @@ public sealed class LyricsService
 
     private void LoadCacheFromDisk()
     {
-        if (_cacheFileLoaded) return;
-        _cacheFileLoaded = true;
-
-        try
+        lock (_cacheGate)
         {
-            if (!File.Exists(CacheFilePath)) return;
-            List<CachedLyrics>? entries = JsonSerializer.Deserialize<List<CachedLyrics>>(File.ReadAllText(CacheFilePath), CacheJsonOptions);
-            if (entries is null) return;
+            if (_cacheFileLoaded) return;
+            _cacheFileLoaded = true;
 
-            // Oldest first so the eviction order below matches the original usage order.
-            foreach (CachedLyrics entry in entries.OrderBy(entry => entry.UsedAt))
+            try
             {
-                if (entry.Schema < 2) continue;
-                if (string.IsNullOrWhiteSpace(entry.Key) || entry.Lines is null || entry.Lines.Count == 0) continue;
-                if (_lyricsCache.ContainsKey(entry.Key)) continue;
-                var lines = entry.Lines
-                    .Where(line => !string.IsNullOrWhiteSpace(line.Text))
-                    .Select(line => new LyricLine(TimeSpan.FromSeconds(Math.Max(0, line.Start)), line.Text))
-                    .ToList();
-                // Old cache files may still hold credit-only payloads; they are not lyrics.
-                lines = WithoutCreditLines(lines);
-                if (lines.Count == 0) continue;
-                _lyricsCache[entry.Key] = new LyricsResult(entry.Title, entry.Artist, lines);
-                _cacheOrder.Enqueue(entry.Key);
-            }
+                if (!File.Exists(CacheFilePath)) return;
+                List<CachedLyrics>? entries = JsonSerializer.Deserialize<List<CachedLyrics>>(File.ReadAllText(CacheFilePath), CacheJsonOptions);
+                if (entries is null) return;
 
-            while (_cacheOrder.Count > MaxCacheEntries)
-                _lyricsCache.Remove(_cacheOrder.Dequeue());
-        }
-        catch (Exception ex)
-        {
-            CrashLog.Write(ex, "Lyrics:CacheLoad");
+                // Oldest first so the eviction order below matches the original usage order.
+                foreach (CachedLyrics entry in entries.OrderBy(entry => entry.UsedAt))
+                {
+                    if (entry.Schema < 2) continue;
+                    if (string.IsNullOrWhiteSpace(entry.Key) || entry.Lines is null || entry.Lines.Count == 0) continue;
+                    if (_lyricsCache.ContainsKey(entry.Key)) continue;
+                    var lines = entry.Lines
+                        .Where(line => !string.IsNullOrWhiteSpace(line.Text))
+                        .Select(line => new LyricLine(TimeSpan.FromSeconds(Math.Max(0, line.Start)), line.Text))
+                        .ToList();
+                    // Old cache files may still hold credit-only payloads; they are not lyrics.
+                    lines = WithoutCreditLines(lines);
+                    if (lines.Count == 0) continue;
+                    _lyricsCache[entry.Key] = new LyricsResult(entry.Title, entry.Artist, lines);
+                    _cacheOrder.Enqueue(entry.Key);
+                }
+
+                while (_cacheOrder.Count > MaxCacheEntries)
+                    _lyricsCache.Remove(_cacheOrder.Dequeue());
+            }
+            catch (Exception ex)
+            {
+                CrashLog.Write(ex, "Lyrics:CacheLoad");
+            }
         }
     }
 
     /// <summary>
-    /// Writes the cache in the background (a few hundred KB), coalescing bursts so a fast track
-    /// skip does not write the file several times.
+    /// Coalesces cache writes, but snapshots only after the debounce interval. This avoids losing
+    /// lyrics learned during a quick sequence of track changes and keeps dictionary access safe.
     /// </summary>
     private void SaveCacheToDisk()
     {
-        if (Interlocked.Exchange(ref _cacheSaveQueued, 1) == 1) return;
-
-        List<CachedLyrics> snapshot = _lyricsCache
-            .Select(pair => new CachedLyrics
-            {
-                Key = pair.Key,
-                Title = pair.Value.Title,
-                Artist = pair.Value.Artist,
-                UsedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
-                Lines = pair.Value.Lines.Select(line => new CachedLine { Start = line.Start.TotalSeconds, Text = line.Text }).ToList()
-            })
-            .ToList();
+        Interlocked.Exchange(ref _cacheDirty, 1);
+        if (Interlocked.CompareExchange(ref _cacheSaveQueued, 1, 0) != 0) return;
 
         _ = Task.Run(async () =>
         {
             try
             {
-                await Task.Delay(1500).ConfigureAwait(false);
-                Directory.CreateDirectory(AppPaths.SettingsDirectory);
-                string temporary = CacheFilePath + ".tmp";
-                File.WriteAllText(temporary, JsonSerializer.Serialize(snapshot, CacheJsonOptions));
-                File.Move(temporary, CacheFilePath, overwrite: true);
+                do
+                {
+                    Interlocked.Exchange(ref _cacheDirty, 0);
+                    await Task.Delay(500).ConfigureAwait(false);
+                    List<CachedLyrics> snapshot;
+                    lock (_cacheGate)
+                    {
+                        snapshot = _lyricsCache
+                            .Select(pair => new CachedLyrics
+                            {
+                                Key = pair.Key,
+                                Title = pair.Value.Title,
+                                Artist = pair.Value.Artist,
+                                UsedAt = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                                Lines = pair.Value.Lines.Select(line => new CachedLine { Start = line.Start.TotalSeconds, Text = line.Text }).ToList()
+                            })
+                            .ToList();
+                    }
+
+                    Directory.CreateDirectory(AppPaths.SettingsDirectory);
+                    string temporary = CacheFilePath + ".tmp";
+                    File.WriteAllText(temporary, JsonSerializer.Serialize(snapshot, CacheJsonOptions));
+                    File.Move(temporary, CacheFilePath, overwrite: true);
+                }
+                while (Interlocked.Exchange(ref _cacheDirty, 0) == 1);
             }
             catch (Exception ex)
             {
@@ -1076,6 +1213,8 @@ public sealed class LyricsService
             finally
             {
                 Interlocked.Exchange(ref _cacheSaveQueued, 0);
+                // Catch a write requested between the last dirty check and releasing the queue.
+                if (Interlocked.Exchange(ref _cacheDirty, 0) == 1) SaveCacheToDisk();
             }
         });
     }
@@ -1110,6 +1249,26 @@ public sealed class LyricsService
         [JsonPropertyName("duration")] public double? Duration { get; set; }
         [JsonPropertyName("syncedLyrics")] public string? SyncedLyrics { get; set; }
         [JsonPropertyName("plainLyrics")] public string? PlainLyrics { get; set; }
+    }
+
+    private sealed class ItunesSearchResponse
+    {
+        [JsonPropertyName("resultCount")] public int ResultCount { get; set; }
+        [JsonPropertyName("results")] public List<ItunesTrack>? Results { get; set; }
+    }
+
+    private sealed class ItunesTrack
+    {
+        [JsonPropertyName("wrapperType")] public string? WrapperType { get; set; }
+        [JsonPropertyName("kind")] public string? Kind { get; set; }
+        [JsonPropertyName("trackId")] public long TrackId { get; set; }
+        [JsonPropertyName("collectionId")] public long CollectionId { get; set; }
+        [JsonPropertyName("trackName")] public string? TrackName { get; set; }
+        [JsonPropertyName("artistName")] public string? ArtistName { get; set; }
+        [JsonPropertyName("collectionName")] public string? CollectionName { get; set; }
+        [JsonPropertyName("trackNumber")] public int TrackNumber { get; set; }
+        [JsonPropertyName("discNumber")] public int DiscNumber { get; set; }
+        [JsonPropertyName("trackTimeMillis")] public double? TrackTimeMillis { get; set; }
     }
 
     private sealed class LyricsOvhResponse

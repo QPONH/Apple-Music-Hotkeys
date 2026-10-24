@@ -861,7 +861,7 @@
                                 <Border Style="{StaticResource CardStyle}" Margin="0,0,0,14">
                                     <StackPanel>
                                         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                            <StackPanel><TextBlock Text="悬浮歌词" Style="{StaticResource SectionTitleStyle}"/><TextBlock Text="非单词语言（中文、日文、韩文）把窗口四等分：当前句在左上格自上而下排，下一句在右下格自底向上排。一行里超过一半是英文等单词语言时，改用右对齐的单词竖排。查找失败不会自动重试，歌词会缓存到下次直接显示。" Margin="0,5,20,0" Style="{StaticResource BodyTextStyle}" TextWrapping="Wrap"/></StackPanel>
+                                            <StackPanel><TextBlock Text="悬浮歌词" Style="{StaticResource SectionTitleStyle}"/><TextBlock Text="非单词语言（中文、日文、韩文）把窗口四等分：当前句在左上格自上而下排，下一句在右下格自底向上排。一行里超过一半是英文等单词语言时，改用右对齐的单词竖排。连接异常时初次查找后最多自动重试三次，整个重试周期控制在15秒内；仍未成功则显示“本地歌曲 无歌词”，成功歌词会缓存到下次直接显示；本曲接近结束时会尝试预取同专辑曲序的下一首。" Margin="0,5,20,0" Style="{StaticResource BodyTextStyle}" TextWrapping="Wrap"/></StackPanel>
                                             <CheckBox x:Name="LyricsEnabledCheckBox" Grid.Column="1" Content="启用" VerticalAlignment="Center" Checked="LyricsEnabled_Changed" Unchecked="LyricsEnabled_Changed"/>
                                         </Grid>
                                         <WrapPanel Margin="0,12,0,0" VerticalAlignment="Center" ItemHeight="38">
@@ -910,8 +910,8 @@
                                             <CheckBox x:Name="LyricsBackgroundCheckBox" Content="半透明背景" Margin="0,0,0,6" VerticalAlignment="Center" Checked="LyricsSettings_Changed" Unchecked="LyricsSettings_Changed"/>
                                         </WrapPanel>
                                         <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
-                                            <Button x:Name="LyricsRetryButton" Content="重新查找歌词" Width="140" Height="36" Style="{StaticResource SecondaryButtonStyle}" Click="LyricsRetry_Click" ToolTip="无法连接歌词服务器，或歌曲有歌词却显示未识别时，手动再查一次。不会自动重试。"/>
-                                            <TextBlock Text="连接失败或未识别到歌词时点这里。每首歌只会自动查一次。" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" Style="{StaticResource CaptionTextStyle}"/>
+                                            <Button x:Name="LyricsRetryButton" Content="重新查找歌词" Width="140" Height="36" Style="{StaticResource SecondaryButtonStyle}" Click="LyricsRetry_Click" ToolTip="歌曲有歌词却显示未识别时，可手动重新查找；连接异常会自动重试最多三次，总时限约15秒。"/>
+                                            <TextBlock Text="歌曲有歌词却未识别时点这里重新查找；连接异常最多自动重试三次，总时限约15秒。" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" Style="{StaticResource CaptionTextStyle}"/>
                                         </StackPanel>
                                     </StackPanel>
                                 </Border>
