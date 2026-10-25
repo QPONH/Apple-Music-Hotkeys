@@ -1,8 +1,4 @@
-<<<<<<< HEAD
 using System.ComponentModel;
-=======
-﻿using System.ComponentModel;
->>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Windows;
@@ -36,10 +32,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
     private bool _isExiting;
     private bool _isLoadingSettings;
     private bool _startupInitialized;
-<<<<<<< HEAD
     private string _startupRegistrationWarning = string.Empty;
-=======
->>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
     private string _hotkeyRegistrationWarning = string.Empty;
     private string _statusText = "快捷键已加载。";
 
@@ -684,7 +677,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
                 buildTime = System.IO.File.GetLastWriteTime(path).ToString("yyyy-MM-dd HH:mm");
         }
         catch { }
-        VersionText.Text = $"v14.36 · 构建 {buildTime} · {Environment.OSVersion.Version}";
+        VersionText.Text = $"v14.41 · 构建 {buildTime} · {Environment.OSVersion.Version}";
     }
 
     private bool _lowIntegrityWarningShown;
@@ -816,6 +809,55 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         if (_lyricsWindow is not { IsVisible: true }) ShowLyricsWindow();
         _lyricsWindow?.RequestManualReload();
         StatusText = "正在重新查找当前歌曲的歌词……";
+    }
+
+    private void ClearLyricsCache_Click(object sender, RoutedEventArgs e)
+    {
+        _lyricsService.ClearCache();
+        if (_settings.LyricsEnabled)
+        {
+            if (_lyricsWindow is not { IsVisible: true }) ShowLyricsWindow();
+            _lyricsWindow?.RequestManualReload();
+            StatusText = "歌词缓存已清除，正在重新查找当前歌曲的歌词。";
+        }
+        else
+        {
+            StatusText = "歌词缓存已清除。勾选「启用」并应用后即可重新查找。";
+        }
+    }
+
+    /// <summary>
+    /// Live commit for numeric lyric/recovery inputs: typing must light up 「应用」 immediately, while
+    /// the text itself is only normalised on LostFocus/Apply so a half-typed value is never rewritten.
+    /// </summary>
+    private void LyricsNumberBox_TextChanged(object sender, TextChangedEventArgs e)
+    {
+        if (_isLoadingSettings || _discardingChanges || _draftSettings is null || sender is not TextBox box) return;
+        switch (box.Name)
+        {
+            case nameof(LyricsFontSizeBox):
+                if (TryParseFiniteNumber(box.Text, out double fontSize)) _draftSettings.LyricsFontSize = Math.Clamp(fontSize, 10, 120);
+                break;
+            case nameof(LyricsTranslationFontSizeBox):
+                if (TryParseFiniteNumber(box.Text, out double translationSize)) _draftSettings.LyricsTranslationFontSize = Math.Clamp(translationSize, 8, 96);
+                break;
+            case nameof(RecoveryWaitSecondsBox):
+                if (int.TryParse(box.Text, out int seconds)) _draftSettings.RecoveryWaitSeconds = Math.Clamp(seconds, 0, 600);
+                break;
+            case nameof(RecoveryQueueXBox):
+                if (int.TryParse(box.Text, out int queueX)) _draftSettings.RecoveryQueueXPercent = Math.Clamp(queueX, 0, 100);
+                break;
+            case nameof(RecoveryQueueYBox):
+                if (int.TryParse(box.Text, out int queueY)) _draftSettings.RecoveryQueueYPercent = Math.Clamp(queueY, 0, 100);
+                break;
+            case nameof(RecoverySongXBox):
+                if (int.TryParse(box.Text, out int songX)) _draftSettings.RecoverySongXPercent = Math.Clamp(songX, 0, 100);
+                break;
+            case nameof(RecoverySongYBox):
+                if (int.TryParse(box.Text, out int songY)) _draftSettings.RecoverySongYPercent = Math.Clamp(songY, 0, 100);
+                break;
+        }
+        MarkDraftChanged();
     }
 
     private void LyricsOffsetBox_TextChanged(object sender, TextChangedEventArgs e)
@@ -1174,15 +1216,10 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
             }
             ApplyButton.IsEnabled = false;
             string applyStatus = startupOk
-<<<<<<< HEAD
                 ? string.IsNullOrWhiteSpace(startupError)
                     ? "设置已应用并保存。"
                     : $"设置已应用并保存；{startupError}"
                 : $"设置已应用并保存；开机启动未能启用（{startupError}），其余设置已生效。";
-=======
-                ? "设置已应用并保存。"
-                : $"设置已应用并保存；开机启动未能写入注册表（{startupError}），其余设置已生效。";
->>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
             StatusText = string.IsNullOrWhiteSpace(_hotkeyRegistrationWarning)
                 ? applyStatus
                 : applyStatus + Environment.NewLine + _hotkeyRegistrationWarning;

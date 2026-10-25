@@ -48,15 +48,9 @@ public static class StartupService
     }
 
     /// <summary>
-<<<<<<< HEAD
     /// Synchronizes the per-user Run entry with the current executable. If the registry is
     /// unavailable, use the user's Startup folder instead. A successful fallback is reported
     /// as success, with a warning string for the UI to display.
-=======
-    /// Best-effort registry update. The Run key can be locked down by policy or security
-    /// software, and that must never abort an unrelated settings change. Existing commands
-    /// are compared by path so moving the app does not leave a stale startup target.
->>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
     /// </summary>
     public static bool TrySetEnabled(bool enabled, out string? error)
     {
@@ -66,7 +60,6 @@ public static class StartupService
         LaunchSpec launch;
         try
         {
-<<<<<<< HEAD
             launch = GetLaunchSpec();
         }
         catch (Exception ex)
@@ -100,34 +93,6 @@ public static class StartupService
             catch (Exception ex) { CrashLog.Write(ex, "StartupService:RemoveFallbackShortcut"); }
             try { RemoveApproval(ApprovedFolderKeyPath, ShortcutName); }
             catch (Exception ex) { CrashLog.Write(ex, "StartupService:RemoveFolderApproval"); }
-=======
-            // Open writable even when the setting appears disabled: IsEnabled intentionally
-            // treats access errors as false, which must not turn a failed disable into success.
-            using RegistryKey? existing = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
-            if (!enabled)
-            {
-                if (existing is null) return true;
-                existing.DeleteValue(ValueName, throwOnMissingValue: false);
-                return true;
-            }
-
-            string executablePath = Environment.ProcessPath
-                ?? throw new InvalidOperationException("无法确定程序路径。");
-            string expectedValue = $"\"{executablePath}\"";
-            if (existing?.GetValue(ValueName) is string current
-                && string.Equals(current, expectedValue, StringComparison.OrdinalIgnoreCase))
-                return true;
-
-            if (existing is not null)
-            {
-                existing.SetValue(ValueName, expectedValue);
-                return true;
-            }
-
-            using RegistryKey created = Registry.CurrentUser.CreateSubKey(RunKeyPath)
-                ?? throw new InvalidOperationException("无法创建开机启动注册表项。");
-            created.SetValue(ValueName, expectedValue);
->>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
             return true;
         }
         catch (Exception ex)

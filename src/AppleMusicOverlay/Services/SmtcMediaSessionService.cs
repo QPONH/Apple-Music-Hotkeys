@@ -31,22 +31,92 @@ public sealed class SmtcMediaSessionService
         return sessions.FirstOrDefault(IsAppleMusic);
     }
 
-    public async Task PreviousAsync(CancellationToken cancellationToken = default)
+    public Task PreviousAsync(CancellationToken cancellationToken = default) => SkipAsync(next: false, cancellationToken);
+
+    public Task NextAsync(CancellationToken cancellationToken = default) => SkipAsync(next: true, cancellationToken);
+
+    /// <summary>
+    /// Sends a skip command and verifies that the playing track actually changed. The first skip
+    /// after Apple Music starts a new item can be accepted by SMTC but executed by the player as a
+    /// restart of the current song (its queue is not ready yet), which is why the first hot key
+    /// press used to do nothing and the second one worked. At most two commands are sent.
+    /// </summary>
+    private async Task SkipAsync(bool next, CancellationToken cancellationToken)
     {
-        var session = await GetAppleMusicSessionAsync(cancellationToken);
-        if (session != null) await session.TrySkipPreviousAsync().AsTask(cancellationToken);
+        string? before = await ReadTrackKeyAsync(cancellationToken);
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            try
+            {
+                var session = await GetAppleMusicSessionAsync(cancellationToken);
+                if (session is null)
+                {
+                    _manager = null;
+                    await Task.Delay(TimeSpan.FromMilliseconds(140), cancellationToken);
+                    continue;
+                }
+
+                bool accepted = next
+                    ? await session.TrySkipNextAsync().AsTask(cancellationToken)
+                    : await session.TrySkipPreviousAsync().AsTask(cancellationToken);
+                if (accepted && await WaitForTrackChangeAsync(before, cancellationToken)) return;
+            }
+            catch (Exception ex) when (IsSessionGone(ex))
+            {
+                // The session or its manager went stale mid-call; rebuild before retrying.
+            }
+
+            _manager = null;
+            await Task.Delay(TimeSpan.FromMilliseconds(160), cancellationToken);
+        }
     }
 
-    public async Task NextAsync(CancellationToken cancellationToken = default)
+    private async Task<string?> ReadTrackKeyAsync(CancellationToken cancellationToken)
     {
-        var session = await GetAppleMusicSessionAsync(cancellationToken);
-        if (session != null) await session.TrySkipNextAsync().AsTask(cancellationToken);
+        try
+        {
+            var session = await GetAppleMusicSessionAsync(cancellationToken);
+            if (session is null) return null;
+            var properties = await session.TryGetMediaPropertiesAsync().AsTask(cancellationToken);
+            if (properties is null) return null;
+            return properties.Title + "\n" + ResolveArtist(properties);
+        }
+        catch (Exception ex) when (IsSessionGone(ex))
+        {
+            _manager = null;
+            return null;
+        }
+    }
+
+    private async Task<bool> WaitForTrackChangeAsync(string? before, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrEmpty(before)) return true;
+        for (int poll = 0; poll < 5; poll++)
+        {
+            await Task.Delay(TimeSpan.FromMilliseconds(80), cancellationToken);
+            string? current = await ReadTrackKeyAsync(cancellationToken);
+            if (!string.IsNullOrEmpty(current) && !string.Equals(current, before, StringComparison.Ordinal)) return true;
+        }
+        return false;
     }
 
     public async Task TogglePlayPauseAsync(CancellationToken cancellationToken = default)
     {
-        var session = await GetAppleMusicSessionAsync(cancellationToken);
-        if (session != null) await session.TryTogglePlayPauseAsync().AsTask(cancellationToken);
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            try
+            {
+                var session = await GetAppleMusicSessionAsync(cancellationToken);
+                if (session is not null && await session.TryTogglePlayPauseAsync().AsTask(cancellationToken)) return;
+            }
+            catch (Exception ex) when (IsSessionGone(ex))
+            {
+                // Retry once with a fresh manager.
+            }
+
+            _manager = null;
+            await Task.Delay(TimeSpan.FromMilliseconds(140), cancellationToken);
+        }
     }
 
     public async Task<(string Title, string Artist)?> GetCurrentTrackAsync(CancellationToken cancellationToken = default)

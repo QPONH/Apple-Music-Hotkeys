@@ -1,4 +1,4 @@
-﻿using System.Windows;
+using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
@@ -47,21 +47,18 @@ public sealed class LyricsWindow : Window
     private bool _updating;
     private bool _forceRefresh;
     private CancellationTokenSource? _lookupCancellation;
-<<<<<<< HEAD
-=======
-    private string _prefetchAttemptedTrackKey = string.Empty;
->>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
     // The artist changed after lyrics were already shown: re-check in the background.
     private bool _correctionPending;
     // Watermark used to keep the displayed line from stepping backwards for one tick.
     private int _lastLineIndex = -1;
     private TimeSpan _lastLinePosition;
     // "无法连接歌词服务器" retries itself; the manual button only makes it immediate.
-    // Initial lookup plus three fast retries. Each network attempt is capped at 3.25 s,
-    // leaving room for UI timer ticks while completing the entire retry cycle inside 15 s.
+    // Initial lookup plus three fast retries. Each attempt is capped at 4.5 s: it has to fit the
+    // provider searches, the NetEase translation wait and the iTunes catalog probe for a
+    // localized title. The whole cycle still completes inside 20 s.
     private const int MaxAutomaticRetries = 3;
-    private static readonly TimeSpan LookupAttemptTimeout = TimeSpan.FromMilliseconds(3250);
-    private static readonly TimeSpan RetryWindow = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan LookupAttemptTimeout = TimeSpan.FromMilliseconds(4500);
+    private static readonly TimeSpan RetryWindow = TimeSpan.FromSeconds(20);
     private int _retryAttempt;
     private DateTime _nextRetryUtc = DateTime.MaxValue;
     private DateTime _retryDeadlineUtc = DateTime.MaxValue;
@@ -91,12 +88,9 @@ public sealed class LyricsWindow : Window
             _boundsSaveTimer.Stop();
             SaveBoundsCore();
         };
-<<<<<<< HEAD
         // Flush the pending bounds while the window is still loaded: after Closed the layout is
         // gone and the position of the last drag would be lost.
         Closing += (_, _) => SaveBoundsCore();
-=======
->>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
         Closed += (_, _) =>
         {
             _timer.Stop();
@@ -104,10 +98,6 @@ public sealed class LyricsWindow : Window
             _boundsSaveTimer.Stop();
             _lifetimeCancellation.Cancel();
             CancelCurrentLookup();
-<<<<<<< HEAD
-=======
-            SaveBoundsCore();
->>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
         };
         IsVisibleChanged += (_, _) => EnsureTopmost();
         Activated += (_, _) => EnsureTopmost();
@@ -230,14 +220,7 @@ public sealed class LyricsWindow : Window
                     _lookupStatus = LyricsLookupStatus.NotFound;
                     _nextRetryUtc = DateTime.MaxValue;
                 }
-<<<<<<< HEAD
                 bool retryDue = _lookupStatus == LyricsLookupStatus.Unavailable && now >= _nextRetryUtc;
-=======
-                bool retryDue = _lookupStatus == LyricsLookupStatus.Unavailable
-                    && _retryAttempt <= MaxAutomaticRetries
-                    && now >= _nextRetryUtc
-                    && now < _retryDeadlineUtc;
->>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
                 if (!waitingForArtist && !_lookupRunning && (_lookupStatus is null || retryDue))
                     BeginLookup(playback, _trackKey);
                 // A lookup that hits the on-disk cache finishes in a few milliseconds, so the
@@ -275,13 +258,7 @@ public sealed class LyricsWindow : Window
         double leadSeconds = Math.Clamp(playback.Duration.TotalSeconds * 0.25, 20, 60);
         if (playback.Duration - playback.Position > TimeSpan.FromSeconds(leadSeconds)) return;
 
-<<<<<<< HEAD
         // The service remembers which tracks it already prefetched, so no local guard is needed.
-=======
-        string key = title + "\n" + artist + "\n" + playback.Album;
-        if (string.Equals(key, _prefetchAttemptedTrackKey, StringComparison.Ordinal)) return;
-        _prefetchAttemptedTrackKey = key;
->>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
         _ = _service.PrefetchNextAlbumTrackLyricsAsync(playback, _lifetimeCancellation.Token);
     }
 
@@ -312,11 +289,7 @@ public sealed class LyricsWindow : Window
     }
 
     /// <summary>Short retry spacing; the total attempt budget is bounded by RetryWindow.</summary>
-<<<<<<< HEAD
     private static readonly TimeSpan UnavailableRetryDelay = TimeSpan.FromMilliseconds(200);
-=======
-    private static TimeSpan UnavailableRetryDelay() => TimeSpan.FromMilliseconds(200);
->>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
 
     /// <summary>
     /// The extrapolated SMTC position can dip by a few hundred milliseconds when a fresh sample
@@ -388,7 +361,7 @@ public sealed class LyricsWindow : Window
             {
                 result = await _service.GetLyricsAsync(
                     playback.Title, playback.Artist, playback.Album, playback.Duration,
-                    forceRefresh, attemptTimeout.Token);
+                    forceRefresh, _settings.LyricsTranslationEnabled, attemptTimeout.Token);
             }
             catch (OperationCanceledException) when (lookupToken.IsCancellationRequested)
             {
@@ -437,11 +410,7 @@ public sealed class LyricsWindow : Window
                 }
                 else
                 {
-<<<<<<< HEAD
                     _nextRetryUtc = DateTime.UtcNow + UnavailableRetryDelay;
-=======
-                    _nextRetryUtc = DateTime.UtcNow + UnavailableRetryDelay();
->>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
                 }
             }
         }
@@ -466,11 +435,7 @@ public sealed class LyricsWindow : Window
         return _lookupStatus switch
         {
             LyricsLookupStatus.Unavailable => "正在查找歌词……",
-<<<<<<< HEAD
             LyricsLookupStatus.NotFound => "未找到歌词",
-=======
-            LyricsLookupStatus.NotFound => "本地歌曲 无歌词",
->>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
             LyricsLookupStatus.Found => "正在读取同步歌词……",
             _ => _lookupRunning ? "正在查找歌词……" : "正在读取同步歌词……"
         };
@@ -522,13 +487,14 @@ public sealed class LyricsWindow : Window
 
         // A track whose whole lyric is one line ("纯音乐，请欣赏" and similar notices) reads better
         // as a single block: vertically centred and hugging the right edge.
-        // Status placeholders use the same single-line layout as instrumental tracks, so
-        // "正在查找歌词" does not jump to a different alignment while the lookup is in flight.
+        // Status placeholders use the same single-line layout as instrumental tracks (including the
+        // vertical column in vertical mode, even when the text contains Latin words such as
+        // "Apple Music"), so the overlay does not jump to a different alignment while idle.
         if ((_lines.Count == 1 || _lines.Count == 0) && !string.IsNullOrWhiteSpace(current)
             && string.IsNullOrWhiteSpace(next)
             && (!_settings.LyricsTranslationEnabled || string.IsNullOrWhiteSpace(currentTranslation)))
         {
-            root.Child = CreateSingleLineLyrics(current, currentBrush);
+            root.Child = CreateSingleLineLyrics(current, currentBrush, preferVertical: _lines.Count == 0);
             Content = root;
             return;
         }
@@ -567,30 +533,10 @@ public sealed class LyricsWindow : Window
                 root.Child = CreateHorizontalTranslationLayout(current, next, currentTranslation, nextTranslation, currentBrush, nextBrush, lyricsBrush, alignment, nextIsTranslation);
             else
             {
-<<<<<<< HEAD
                 // Reached only with translations disabled (word-based lines): plain two-row stack.
                 var rows = new StackPanel { HorizontalAlignment = alignment };
                 rows.Children.Add(CreateText(current, 1.0, currentBrush));
                 if (!string.IsNullOrWhiteSpace(next)) rows.Children.Add(CreateText(next, 0.55, nextBrush));
-=======
-                var rows = new StackPanel { HorizontalAlignment = alignment };
-                rows.Children.Add(CreateText(current, 1.0, currentBrush));
-                if (_settings.LyricsTranslationEnabled && !string.IsNullOrWhiteSpace(currentTranslation))
-                    rows.Children.Add(CreateTranslationText(currentTranslation, 0.72, lyricsBrush));
-                if (!string.IsNullOrWhiteSpace(next))
-                {
-                    if (nextIsTranslation)
-                    {
-                        rows.Children.Add(CreateTranslationText(next, 0.82, nextBrush, 1.0));
-                    }
-                    else
-                    {
-                        rows.Children.Add(CreateText(next, 0.55, nextBrush));
-                        if (_settings.LyricsTranslationEnabled && !string.IsNullOrWhiteSpace(nextTranslation))
-                            rows.Children.Add(CreateTranslationText(nextTranslation, 0.45, lyricsBrush));
-                    }
-                }
->>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
                 root.Child = rows;
             }
         }
@@ -641,9 +587,13 @@ public sealed class LyricsWindow : Window
         return canvas;
     }
 
-    private FrameworkElement CreateSingleLineLyrics(string text, Brush brush)
+    /// <summary>
+    /// One-line lyrics (instrumental notices) and status messages: a vertical column for CJK, a
+    /// horizontal line for word-based text, both pinned to the right edge and centred vertically.
+    /// </summary>
+    private FrameworkElement CreateSingleLineLyrics(string text, Brush brush, bool preferVertical = false)
     {
-        if (_settings.LyricsOrientation == "Vertical" && !IsMostlyWordBased(text))
+        if (_settings.LyricsOrientation == "Vertical" && (preferVertical || !IsMostlyWordBased(text)))
         {
             StackPanel column = CreateVerticalLine(text, 1.0, brush, ContentHeight());
             column.HorizontalAlignment = HorizontalAlignment.Right;
@@ -699,54 +649,80 @@ public sealed class LyricsWindow : Window
             ? CreateVerticalLine(current, 1.0, currentBrush, cellHeight)
             : CreateCornerText(current, 1.0, currentBrush, TextAlignment.Left, cellWidth);
         Size currentSize = MeasureBlock(currentBlock);
-        Canvas.SetLeft(currentBlock, currentSize.Width <= cellWidth ? Math.Max(0, (cellWidth - currentSize.Width) / 2) : 0);
+
+        FrameworkElement? nextBlock = null;
+        Size nextSize = default;
+        if (!string.IsNullOrWhiteSpace(next))
+        {
+            nextBlock = vertical
+                ? CreateVerticalLine(next, nextIsTranslation ? 0.82 : 0.55, nextBrush, cellHeight, nextIsTranslation ? GetTranslationFontSize(1.0) : null)
+                : CreateCornerText(next, nextIsTranslation ? 0.82 : 0.55, nextBrush, TextAlignment.Right, cellWidth, nextIsTranslation ? GetTranslationFontSize(1.0) : null);
+            nextSize = MeasureBlock(nextBlock);
+        }
+
+        // Keep the two columns close together and push the pair against the right edge: the
+        // overlay is a narrow column docked to the screen edge, so centring each sentence inside
+        // its own half-window cell wasted most of the width.
+        double gap = Math.Max(6, _settings.LyricsFontSize * 0.35);
+        double totalWidth = currentSize.Width + (nextBlock is null ? 0 : gap + nextSize.Width);
+        bool compact = nextBlock is not null && totalWidth <= contentWidth;
+        double leftColumnX = compact
+            ? Math.Max(0, contentWidth - totalWidth)
+            : nextBlock is null
+                ? Math.Max(0, contentWidth - currentSize.Width)
+                : currentSize.Width <= cellWidth ? Math.Max(0, cellWidth - currentSize.Width) : 0;
+        double leftColumnWidth = compact ? currentSize.Width : nextBlock is null ? contentWidth : cellWidth;
+
+        Canvas.SetLeft(currentBlock, leftColumnX);
         Canvas.SetTop(currentBlock, Math.Max(0, (cellHeight - currentSize.Height) / 2));
         canvas.Children.Add(currentBlock);
 
-        if (!string.IsNullOrWhiteSpace(next))
+        double rightColumnX = 0;
+        double rightColumnWidth = cellWidth;
+        if (nextBlock is not null)
         {
-            FrameworkElement nextBlock = vertical
-                ? CreateVerticalLine(next, nextIsTranslation ? 0.82 : 0.55, nextBrush, cellHeight, nextIsTranslation ? GetTranslationFontSize(1.0) : null)
-                : CreateCornerText(next, nextIsTranslation ? 0.82 : 0.55, nextBrush, TextAlignment.Right, cellWidth, nextIsTranslation ? GetTranslationFontSize(1.0) : null);
-            Size nextSize = MeasureBlock(nextBlock);
-            double left = nextSize.Width <= cellWidth
-                ? cellWidth + (cellWidth - nextSize.Width) / 2
+            rightColumnX = compact
+                ? leftColumnX + currentSize.Width + gap
                 : Math.Max(0, contentWidth - nextSize.Width);
-            Canvas.SetLeft(nextBlock, left);
+            rightColumnWidth = compact ? nextSize.Width : cellWidth;
+            Canvas.SetLeft(nextBlock, rightColumnX);
             Canvas.SetTop(nextBlock, cellHeight + Math.Max(0, (cellHeight - nextSize.Height) / 2));
             canvas.Children.Add(nextBlock);
         }
 
-        // In diagonal layout, translations occupy the opposite corners: current translation top-right,
-        // next-line translation bottom-left. This keeps source lyrics and translations visually paired.
+        // Translations sit beside their own sentence: the current line's translation on the next
+        // line's row (top-right), the next line's translation under the current line (bottom-left).
+        // They are therefore never drawn on top of a lyric line.
         if (_settings.LyricsTranslationEnabled && !string.IsNullOrWhiteSpace(currentTranslation))
         {
             FrameworkElement translation = vertical
                 ? CreateVerticalLine(currentTranslation, 0.72, translationBrush, cellHeight, GetTranslationFontSize(0.9))
-                : CreateCornerText(currentTranslation, 0.72, translationBrush, TextAlignment.Right, cellWidth, GetTranslationFontSize(0.9));
+                : CreateCornerText(currentTranslation, 0.72, translationBrush, TextAlignment.Right, Math.Max(1, rightColumnWidth), GetTranslationFontSize(0.9));
             Size size = MeasureBlock(translation);
-<<<<<<< HEAD
-            // Right-align against the overlay edge. When the translation is wider than the right
-            // cell this keeps it inside the window instead of clipping it at the window edge.
-            Canvas.SetLeft(translation, Math.Max(0, contentWidth - size.Width));
-=======
-            Canvas.SetLeft(translation, Math.Max(cellWidth, contentWidth - size.Width));
->>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
-            Canvas.SetTop(translation, Math.Max(0, (cellHeight - size.Height) / 2));
+            double x = nextBlock is null
+                ? Math.Max(0, (contentWidth - size.Width) / 2)
+                : rightColumnX + Math.Max(0, (rightColumnWidth - size.Width) / 2);
+            Canvas.SetLeft(translation, Math.Clamp(x, 0, Math.Max(0, contentWidth - size.Width)));
+            Canvas.SetTop(translation, PlaceInRow(0, cellHeight, size.Height));
             canvas.Children.Add(translation);
         }
         if (_settings.LyricsTranslationEnabled && !string.IsNullOrWhiteSpace(nextTranslation))
         {
             FrameworkElement translation = vertical
                 ? CreateVerticalLine(nextTranslation, 0.45, translationBrush, cellHeight, GetTranslationFontSize(0.75))
-                : CreateCornerText(nextTranslation, 0.45, translationBrush, TextAlignment.Left, cellWidth, GetTranslationFontSize(0.75));
+                : CreateCornerText(nextTranslation, 0.45, translationBrush, TextAlignment.Left, Math.Max(1, leftColumnWidth), GetTranslationFontSize(0.75));
             Size size = MeasureBlock(translation);
-            Canvas.SetLeft(translation, Math.Max(0, (cellWidth - size.Width) / 2));
-            Canvas.SetTop(translation, cellHeight + Math.Max(0, (cellHeight - size.Height) / 2));
+            double x = leftColumnX + Math.Max(0, (leftColumnWidth - size.Width) / 2);
+            Canvas.SetLeft(translation, Math.Clamp(x, 0, Math.Max(0, contentWidth - size.Width)));
+            Canvas.SetTop(translation, PlaceInRow(cellHeight, cellHeight, size.Height));
             canvas.Children.Add(translation);
         }
         return canvas;
     }
+
+    /// <summary>Centres a block inside one row band and keeps it inside that band when it is taller.</summary>
+    private static double PlaceInRow(double rowTop, double rowHeight, double blockHeight) =>
+        rowTop + Math.Clamp((rowHeight - blockHeight) / 2, 0, Math.Max(0, rowHeight - blockHeight));
 
     private FrameworkElement CreateRightStackedLyrics(string current, string next, string currentTranslation, string nextTranslation, Brush currentBrush, Brush nextBrush, Brush translationBrush, bool wordBased, HorizontalAlignment anchor, bool forceRightAlignment, bool nextIsTranslation)
     {
@@ -1272,15 +1248,11 @@ public sealed class LyricsWindow : Window
     {
         if (!IsVisible || _menuOpen) return;
         IntPtr handle = _hwnd != IntPtr.Zero ? _hwnd : new WindowInteropHelper(this).Handle;
-<<<<<<< HEAD
         if (handle == IntPtr.Zero) return;
         if (!forceRaise && !NeedsTopmostRaise(handle)) return;
         // Even the periodic forced raise must not cover Start menu / Alt-Tab: the shell is
         // deliberately above topmost windows.
         if (forceRaise && IsShellForeground()) return;
-=======
-        if (handle == IntPtr.Zero || (!forceRaise && !NeedsTopmostRaise(handle))) return;
->>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
         SetWindowPos(handle, HwndTopmost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
     }
 
