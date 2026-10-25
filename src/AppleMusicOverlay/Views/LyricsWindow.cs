@@ -47,7 +47,10 @@ public sealed class LyricsWindow : Window
     private bool _updating;
     private bool _forceRefresh;
     private CancellationTokenSource? _lookupCancellation;
+<<<<<<< HEAD
+=======
     private string _prefetchAttemptedTrackKey = string.Empty;
+>>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
     // The artist changed after lyrics were already shown: re-check in the background.
     private bool _correctionPending;
     // Watermark used to keep the displayed line from stepping backwards for one tick.
@@ -88,6 +91,12 @@ public sealed class LyricsWindow : Window
             _boundsSaveTimer.Stop();
             SaveBoundsCore();
         };
+<<<<<<< HEAD
+        // Flush the pending bounds while the window is still loaded: after Closed the layout is
+        // gone and the position of the last drag would be lost.
+        Closing += (_, _) => SaveBoundsCore();
+=======
+>>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
         Closed += (_, _) =>
         {
             _timer.Stop();
@@ -95,7 +104,10 @@ public sealed class LyricsWindow : Window
             _boundsSaveTimer.Stop();
             _lifetimeCancellation.Cancel();
             CancelCurrentLookup();
+<<<<<<< HEAD
+=======
             SaveBoundsCore();
+>>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
         };
         IsVisibleChanged += (_, _) => EnsureTopmost();
         Activated += (_, _) => EnsureTopmost();
@@ -218,10 +230,14 @@ public sealed class LyricsWindow : Window
                     _lookupStatus = LyricsLookupStatus.NotFound;
                     _nextRetryUtc = DateTime.MaxValue;
                 }
+<<<<<<< HEAD
+                bool retryDue = _lookupStatus == LyricsLookupStatus.Unavailable && now >= _nextRetryUtc;
+=======
                 bool retryDue = _lookupStatus == LyricsLookupStatus.Unavailable
                     && _retryAttempt <= MaxAutomaticRetries
                     && now >= _nextRetryUtc
                     && now < _retryDeadlineUtc;
+>>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
                 if (!waitingForArtist && !_lookupRunning && (_lookupStatus is null || retryDue))
                     BeginLookup(playback, _trackKey);
                 // A lookup that hits the on-disk cache finishes in a few milliseconds, so the
@@ -259,9 +275,13 @@ public sealed class LyricsWindow : Window
         double leadSeconds = Math.Clamp(playback.Duration.TotalSeconds * 0.25, 20, 60);
         if (playback.Duration - playback.Position > TimeSpan.FromSeconds(leadSeconds)) return;
 
+<<<<<<< HEAD
+        // The service remembers which tracks it already prefetched, so no local guard is needed.
+=======
         string key = title + "\n" + artist + "\n" + playback.Album;
         if (string.Equals(key, _prefetchAttemptedTrackKey, StringComparison.Ordinal)) return;
         _prefetchAttemptedTrackKey = key;
+>>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
         _ = _service.PrefetchNextAlbumTrackLyricsAsync(playback, _lifetimeCancellation.Token);
     }
 
@@ -292,7 +312,11 @@ public sealed class LyricsWindow : Window
     }
 
     /// <summary>Short retry spacing; the total attempt budget is bounded by RetryWindow.</summary>
+<<<<<<< HEAD
+    private static readonly TimeSpan UnavailableRetryDelay = TimeSpan.FromMilliseconds(200);
+=======
     private static TimeSpan UnavailableRetryDelay() => TimeSpan.FromMilliseconds(200);
+>>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
 
     /// <summary>
     /// The extrapolated SMTC position can dip by a few hundred milliseconds when a fresh sample
@@ -413,7 +437,11 @@ public sealed class LyricsWindow : Window
                 }
                 else
                 {
+<<<<<<< HEAD
+                    _nextRetryUtc = DateTime.UtcNow + UnavailableRetryDelay;
+=======
                     _nextRetryUtc = DateTime.UtcNow + UnavailableRetryDelay();
+>>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
                 }
             }
         }
@@ -438,7 +466,11 @@ public sealed class LyricsWindow : Window
         return _lookupStatus switch
         {
             LyricsLookupStatus.Unavailable => "正在查找歌词……",
+<<<<<<< HEAD
+            LyricsLookupStatus.NotFound => "未找到歌词",
+=======
             LyricsLookupStatus.NotFound => "本地歌曲 无歌词",
+>>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
             LyricsLookupStatus.Found => "正在读取同步歌词……",
             _ => _lookupRunning ? "正在查找歌词……" : "正在读取同步歌词……"
         };
@@ -535,6 +567,12 @@ public sealed class LyricsWindow : Window
                 root.Child = CreateHorizontalTranslationLayout(current, next, currentTranslation, nextTranslation, currentBrush, nextBrush, lyricsBrush, alignment, nextIsTranslation);
             else
             {
+<<<<<<< HEAD
+                // Reached only with translations disabled (word-based lines): plain two-row stack.
+                var rows = new StackPanel { HorizontalAlignment = alignment };
+                rows.Children.Add(CreateText(current, 1.0, currentBrush));
+                if (!string.IsNullOrWhiteSpace(next)) rows.Children.Add(CreateText(next, 0.55, nextBrush));
+=======
                 var rows = new StackPanel { HorizontalAlignment = alignment };
                 rows.Children.Add(CreateText(current, 1.0, currentBrush));
                 if (_settings.LyricsTranslationEnabled && !string.IsNullOrWhiteSpace(currentTranslation))
@@ -552,6 +590,7 @@ public sealed class LyricsWindow : Window
                             rows.Children.Add(CreateTranslationText(nextTranslation, 0.45, lyricsBrush));
                     }
                 }
+>>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
                 root.Child = rows;
             }
         }
@@ -686,7 +725,13 @@ public sealed class LyricsWindow : Window
                 ? CreateVerticalLine(currentTranslation, 0.72, translationBrush, cellHeight, GetTranslationFontSize(0.9))
                 : CreateCornerText(currentTranslation, 0.72, translationBrush, TextAlignment.Right, cellWidth, GetTranslationFontSize(0.9));
             Size size = MeasureBlock(translation);
+<<<<<<< HEAD
+            // Right-align against the overlay edge. When the translation is wider than the right
+            // cell this keeps it inside the window instead of clipping it at the window edge.
+            Canvas.SetLeft(translation, Math.Max(0, contentWidth - size.Width));
+=======
             Canvas.SetLeft(translation, Math.Max(cellWidth, contentWidth - size.Width));
+>>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
             Canvas.SetTop(translation, Math.Max(0, (cellHeight - size.Height) / 2));
             canvas.Children.Add(translation);
         }
@@ -1227,7 +1272,15 @@ public sealed class LyricsWindow : Window
     {
         if (!IsVisible || _menuOpen) return;
         IntPtr handle = _hwnd != IntPtr.Zero ? _hwnd : new WindowInteropHelper(this).Handle;
+<<<<<<< HEAD
+        if (handle == IntPtr.Zero) return;
+        if (!forceRaise && !NeedsTopmostRaise(handle)) return;
+        // Even the periodic forced raise must not cover Start menu / Alt-Tab: the shell is
+        // deliberately above topmost windows.
+        if (forceRaise && IsShellForeground()) return;
+=======
         if (handle == IntPtr.Zero || (!forceRaise && !NeedsTopmostRaise(handle))) return;
+>>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
         SetWindowPos(handle, HwndTopmost, 0, 0, 0, 0, SwpNoMove | SwpNoSize | SwpNoActivate);
     }
 

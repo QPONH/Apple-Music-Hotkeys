@@ -142,7 +142,11 @@ public sealed class LyricsService
         ItunesTrack? matchedCurrent = search.Results
             .Where(track => track.TrackId > 0 && track.CollectionId > 0 && !string.IsNullOrWhiteSpace(track.TrackName)
                 && !string.IsNullOrWhiteSpace(track.ArtistName) && !string.IsNullOrWhiteSpace(track.CollectionName))
+<<<<<<< HEAD
+            .Where(track => CatalogTextMatches(NormalizeForCompare(track.TrackName), wantedTitle)
+=======
             .Where(track => NormalizeForCompare(track.TrackName) == wantedTitle
+>>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
                 && CatalogTextMatches(NormalizeForCompare(track.ArtistName), wantedArtist)
                 && CatalogTextMatches(NormalizeForCompare(track.CollectionName), wantedAlbum))
             .OrderBy(track => NormalizeForCompare(track.CollectionName) == wantedAlbum ? 0 : 1)
@@ -466,7 +470,7 @@ public sealed class LyricsService
         var bounded = variants.Take(4).ToList();
         // Last resort when the reported artist is unusable (billing strings, remix credits…):
         // providers are then searched by title only and the hit is scored by title + duration.
-        bounded.Add(string.Empty);
+        if (bounded[^1] != string.Empty) bounded.Add(string.Empty);
         return bounded;
     }
 
@@ -573,7 +577,7 @@ public sealed class LyricsService
         handler.SslOptions.EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;
         var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(12) };
         // LRCLIB asks clients to identify themselves; generic agents are rate limited harder.
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.35 (https://github.com/QPONH/Apple-Music-Hotkeys)");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.36 (https://github.com/QPONH/Apple-Music-Hotkeys)");
         client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
         return client;
     }

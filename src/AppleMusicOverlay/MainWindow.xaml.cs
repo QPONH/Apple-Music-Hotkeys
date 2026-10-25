@@ -1,4 +1,8 @@
+<<<<<<< HEAD
+using System.ComponentModel;
+=======
 ﻿using System.ComponentModel;
+>>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Windows;
@@ -32,6 +36,10 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
     private bool _isExiting;
     private bool _isLoadingSettings;
     private bool _startupInitialized;
+<<<<<<< HEAD
+    private string _startupRegistrationWarning = string.Empty;
+=======
+>>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
     private string _hotkeyRegistrationWarning = string.Empty;
     private string _statusText = "快捷键已加载。";
 
@@ -340,6 +348,19 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         if (_startupInitialized) return;
         _startupInitialized = true;
 
+        // Keep the actual Windows startup registration in sync with the persisted setting. The
+        // comparison skips the registry work (and keeps a manual Windows "disabled" state only as
+        // long as it matches) unless the registration is missing, stale or out of sync.
+        if (_settings.StartWithWindows != StartupService.IsEnabled)
+        {
+            bool startupRegistrationOk = StartupService.TrySetEnabled(_settings.StartWithWindows, out string? startupError);
+            _startupRegistrationWarning = startupRegistrationOk
+                ? startupError ?? string.Empty
+                : $"开机启动同步失败：{startupError}";
+            if (!startupRegistrationOk)
+                CrashLog.Write(new InvalidOperationException(_startupRegistrationWarning), "Startup:SynchronizeOnLaunch");
+        }
+
         RegisterHotkeys();
         // The shell can silently drop an icon registered before the taskbar is ready, so
         // register it again once the window exists.
@@ -355,6 +376,8 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
             _startupRecoveryCancellation = new CancellationTokenSource();
             _ = RunStartupPlaybackRecoveryAsync(_startupRecoveryCancellation.Token);
         }
+        if (!string.IsNullOrWhiteSpace(_startupRegistrationWarning))
+            StatusText = _startupRegistrationWarning;
     }
 
     /// <summary>Pushes the staged settings into the controls. The caller owns
@@ -661,7 +684,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
                 buildTime = System.IO.File.GetLastWriteTime(path).ToString("yyyy-MM-dd HH:mm");
         }
         catch { }
-        VersionText.Text = $"v14.35 · 构建 {buildTime} · {Environment.OSVersion.Version}";
+        VersionText.Text = $"v14.36 · 构建 {buildTime} · {Environment.OSVersion.Version}";
     }
 
     private bool _lowIntegrityWarningShown;
@@ -1091,14 +1114,14 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         {
             await _startupPlaybackRecoveryService.RunAsync(_settings.RecoveryQueueXPercent, _settings.RecoveryQueueYPercent, _settings.RecoverySongXPercent, _settings.RecoverySongYPercent, _settings.RecoveryQueueMethod, _settings.RecoverySongMethod, _settings.RecoveryWaitSeconds, cancellationToken);
             if (!cancellationToken.IsCancellationRequested && !Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
-                Dispatcher.BeginInvoke(() => StatusText = "已执行开机恢复播放操作；请确认歌曲和队列是否正确。 ");
+                _ = Dispatcher.BeginInvoke(() => StatusText = "已执行开机恢复播放操作；请确认歌曲和队列是否正确。 ");
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
             CrashLog.Write(ex, "StartupPlaybackRecovery");
             if (!Dispatcher.HasShutdownStarted && !Dispatcher.HasShutdownFinished)
-                Dispatcher.BeginInvoke(() => StatusText = $"开机恢复播放操作失败：{ex.Message}");
+                _ = Dispatcher.BeginInvoke(() => StatusText = $"开机恢复播放操作失败：{ex.Message}");
         }
     }
 
@@ -1128,7 +1151,11 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
             // must not be able to fail an otherwise valid apply (the Run key can be locked
             // down by policy or security software).
             _settingsService.Save(_settings);
-            bool startupOk = StartupService.TrySetEnabled(_settings.StartWithWindows, out string? startupError);
+            // Only touch the registry when the stored state disagrees with reality: applying an
+            // unrelated lyric change must not re-enable an entry the user disabled in Windows.
+            string? startupError = null;
+            bool startupOk = _settings.StartWithWindows == StartupService.IsEnabled
+                || StartupService.TrySetEnabled(_settings.StartWithWindows, out startupError);
             _draftSettings = CloneSettings(_settings);
             _appliedSnapshot = SerializeSettings(_draftSettings);
             _lyricsWindow?.Close();
@@ -1147,8 +1174,15 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
             }
             ApplyButton.IsEnabled = false;
             string applyStatus = startupOk
+<<<<<<< HEAD
+                ? string.IsNullOrWhiteSpace(startupError)
+                    ? "设置已应用并保存。"
+                    : $"设置已应用并保存；{startupError}"
+                : $"设置已应用并保存；开机启动未能启用（{startupError}），其余设置已生效。";
+=======
                 ? "设置已应用并保存。"
                 : $"设置已应用并保存；开机启动未能写入注册表（{startupError}），其余设置已生效。";
+>>>>>>> 732879874cff126ad2dca029241aba9caba94eb6
             StatusText = string.IsNullOrWhiteSpace(_hotkeyRegistrationWarning)
                 ? applyStatus
                 : applyStatus + Environment.NewLine + _hotkeyRegistrationWarning;
