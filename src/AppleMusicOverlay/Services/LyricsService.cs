@@ -493,34 +493,49 @@ public sealed class LyricsService
         Task<(LrcLibResponse? Data, bool Failed)> lrclibTask = TryLrclibCandidatesAsync(candidates, album, duration, lookupToken);
         Task<(LrcLibResponse? Data, bool Failed)> neteaseTask = TryNeteaseCandidatesAsync(candidates, duration, lookupToken);
         Task<(LrcLibResponse? Data, bool Failed)> kugouTask = TryKugouAsync(title, artist, duration, lookupToken);
-        Task[] providerTasks = { lrclibTask, neteaseTask, kugouTask };
-        var fallbacks = new[] { neteaseTask, kugouTask };
-        // The caller caps each attempt at 3.25 s, so the fallback grace period must be shorter
+        Task<(LrcLibResponse? Data, bool Failed)> kuwoTask = TryKuwoAsync(candidates, duration, lookupToken);
+        // QQ Music (search answers 500 without a signed request) and the gdstudio aggregator
+        // (host unreachable) were verified dead on 2026-10-26, so they are no longer queried:
+        // every request they cost was a wasted round trip on each track change.
+        Task[] providerTasks = { lrclibTask, neteaseTask, kugouTask, kuwoTask };
+        var fallbacks = new[] { neteaseTask, kugouTask, kuwoTask };
+        // Only NetEase (tlyric) returns a timestamped translation among the live providers.
+        var translationSources = new[] { neteaseTask };
+        // The caller caps each attempt at 4.5 s, so the fallback grace period must be shorter
         // than that limit or the Chinese providers could be canceled before they are considered.
         Task grace = Task.Delay(TimeSpan.FromMilliseconds(1200), lookupToken);
 
-        // Translations are only carried by the NetEase payload. When the caller wants them and the
-        // winning result has none, wait for the NetEase task that is already running instead of
-        // issuing a second search.
+        // When the caller wants a translation and the winning result has none, wait for the
+        // providers that carry one instead of issuing a second search.
         async Task<LyricsLookupResult> FinalizeAsync(LyricsLookupResult result)
         {
             if (!wantTranslation || result.Lyrics is null || HasTranslations(result.Lyrics)) return result;
             try
             {
-                if (!neteaseTask.IsCompleted)
+                if (translationSources.Any(task => !task.IsCompleted))
                 {
                     using var graceCancellation = CancellationTokenSource.CreateLinkedTokenSource(lookupToken);
-                    await Task.WhenAny(neteaseTask, Task.Delay(TranslationGrace, graceCancellation.Token));
+                    Task all = Task.WhenAll(translationSources);
+                    await Task.WhenAny(all, Task.Delay(TranslationGrace, graceCancellation.Token));
                     graceCancellation.Cancel();
                 }
-                if (!neteaseTask.IsCompleted) return result;
 
-                (LrcLibResponse? data, _) = await neteaseTask;
-                if (string.IsNullOrWhiteSpace(data?.TranslationLyrics)) return result;
-                List<LyricLine> translated = ParseLrc(data.TranslationLyrics);
-                if (translated.Count == 0) return result;
-                return LyricsLookupResult.Found(new LyricsResult(result.Lyrics.Title, result.Lyrics.Artist,
-                    AttachTranslations(result.Lyrics.Lines, translated)));
+                foreach (Task<(LrcLibResponse? Data, bool Failed)> task in translationSources)
+                {
+                    if (!task.IsCompleted || task.IsCanceled || task.IsFaulted) continue;
+                    (LrcLibResponse? data, _) = await task;
+                    if (string.IsNullOrWhiteSpace(data?.TranslationLyrics)) continue;
+                    List<LyricLine> translated = ParseLrc(data.TranslationLyrics);
+                    if (translated.Count == 0) continue;
+                    return LyricsLookupResult.Found(new LyricsResult(result.Lyrics.Title, result.Lyrics.Artist,
+                        AttachTranslations(result.Lyrics.Lines, translated)));
+                }
+
+                // Nothing carried a translation: record why, so this can be diagnosed from the log
+                // instead of guessing which source answered.
+                CrashLog.WriteNote("LyricsTranslationMiss",
+                    $"{title} | {artist} | {string.Join(", ", DescribeTranslationSources())}");
+                return result;
             }
             catch (OperationCanceledException)
             {
@@ -531,6 +546,20 @@ public sealed class LyricsService
                 CrashLog.Write(ex, "Lyrics:TranslationAttach");
                 return result;
             }
+        }
+
+        string[] DescribeTranslationSources()
+        {
+            var states = new List<string>();
+            foreach (Task<(LrcLibResponse? Data, bool Failed)> task in translationSources)
+            {
+                if (!task.IsCompleted) states.Add("pending");
+                else if (task.IsFaulted) states.Add("failed");
+                else if (task.IsCanceled) states.Add("canceled");
+                else if (task.Result.Data?.TranslationLyrics is { Length: > 0 }) states.Add("has-translation");
+                else states.Add("no-translation");
+            }
+            return states.ToArray();
         }
 
         try
@@ -646,17 +675,25 @@ public sealed class LyricsService
     /// </summary>
     private static bool IsPlaceholderLyric(IReadOnlyList<LyricLine> lines)
     {
-        if (lines.Count != 1) return false;
-        string text = lines[0].Text.Trim();
-        if (text.Length == 0 || text.Length > 16) return false;
-        return text.Contains("纯音乐", StringComparison.Ordinal)
-            || text.Contains("請欣賞", StringComparison.Ordinal)
-            || text.Contains("请欣赏", StringComparison.Ordinal)
-            || text.Contains("暂无歌词", StringComparison.Ordinal)
-            || text.Contains("无歌词", StringComparison.Ordinal)
-            || text.Contains("没有歌词", StringComparison.Ordinal)
-            || text.Contains("Instrumental", StringComparison.OrdinalIgnoreCase)
-            || text.Contains("No lyrics", StringComparison.OrdinalIgnoreCase);
+        // The filler line can arrive wrapped in metadata lines ("出品人 : …", "纯音乐，请欣赏",
+        // "推广 : …"), so every short line is inspected instead of only single-line payloads.
+        if (lines.Count == 0 || lines.Count > 4) return false;
+        foreach (LyricLine line in lines)
+        {
+            string text = line.Text.Trim();
+            if (text.Length == 0 || text.Length > 16) continue;
+            if (text.Contains("纯音乐", StringComparison.Ordinal)
+                || text.Contains("純音樂", StringComparison.Ordinal)
+                || text.Contains("請欣賞", StringComparison.Ordinal)
+                || text.Contains("请欣赏", StringComparison.Ordinal)
+                || text.Contains("暂无歌词", StringComparison.Ordinal)
+                || text.Contains("暫無歌詞", StringComparison.Ordinal)
+                || text.Contains("无歌词", StringComparison.Ordinal)
+                || text.Contains("沒有歌詞", StringComparison.Ordinal)
+                || text.Contains("Instrumental", StringComparison.OrdinalIgnoreCase)
+                || text.Contains("No lyrics", StringComparison.OrdinalIgnoreCase)) return true;
+        }
+        return false;
     }
 
     /// <summary>Matches sorted source/translation timelines in linear time instead of sorting the
@@ -684,7 +721,7 @@ public sealed class LyricsService
 
     /// <summary>Metadata lines that are never sung lyrics.</summary>
     private static readonly Regex CreditLinePattern = new(
-        @"^\s*(?:作词|作詞|作曲|编曲|編曲|制作人?|製作人?|监制|監製|混音|母带|母帶|录音|錄音|和声|和聲|吉他|贝斯|貝斯|鼓|键盘|鍵盤|词|詞|曲|演唱|出品|发行|發行|统筹|統籌|企划|企劃|OP|SP|Lyrics?|Composer|Arranger|Producer|Written\s+by|Music\s+by|Mixed\s+by|Mastered\s+by)\s*[:：]",
+        @"^\s*(?:作词|作詞|作曲|编曲|編曲|制作人?|製作人?|监制|監製|混音|母带|母帶|录音|錄音|和声|和聲|吉他|贝斯|貝斯|鼓|键盘|鍵盤|词|詞|曲|演唱|出品人?|发行|發行|统筹|統籌|企划|企劃|推广|宣傳|宣传|营销|營銷|策划|策劃|版权|版權|鸣谢|特別鳴謝|特别鸣谢|OP|SP|Lyrics?|Composer|Arranger|Producer|Written\s+by|Music\s+by|Mixed\s+by|Mastered\s+by)\s*[:：]",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
     private static List<LyricLine> WithoutCreditLines(List<LyricLine> lines)
@@ -884,7 +921,7 @@ public sealed class LyricsService
         handler.SslOptions.EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;
         var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(12) };
         // LRCLIB asks clients to identify themselves; generic agents are rate limited harder.
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.41 (https://github.com/QPONH/Apple-Music-Hotkeys)");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.46 (https://github.com/QPONH/Apple-Music-Hotkeys)");
         client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
         return client;
     }
@@ -1137,35 +1174,54 @@ public sealed class LyricsService
                 if (results?.Result?.Songs is { Count: > 0 }) break;
             }
 
-            NeteaseSong? song = PickNeteaseSong(results?.Result?.Songs, title, artist, duration);
-            if (song is null) continue;
-
-            string lyricsUrl = $"https://music.163.com/api/song/lyric?id={song.Id}&lv=-1&kv=-1&tv=-1";
-            using HttpResponseMessage lyrics = await SendAsync(() => NetEaseRequest(lyricsUrl), token);
-            if (!lyrics.IsSuccessStatusCode)
+            // Several catalogue entries can share title/artist/duration; only some carry a lyric
+            // (and a translation), so walk the ranked hits until one answers with content.
+            foreach (NeteaseSong song in RankNeteaseSongs(results?.Result?.Songs, title, artist, duration))
             {
-                failed |= IsRetriableStatus(lyrics.StatusCode) || lyrics.StatusCode == HttpStatusCode.Forbidden;
-                continue;
+                // The lyric endpoint is mirrored on several NetEase hosts. A single blocked host (the
+                // failure seen in the field is a TLS reset on music.163.com) must not cost the lyrics.
+                NeteaseLyricsResponse? data = null;
+                foreach (string lyricEndpoint in NeteaseLyricEndpoints)
+                {
+                    string lyricsUrl = $"{lyricEndpoint}{song.Id}&lv=-1&kv=-1&tv=-1";
+                    using HttpResponseMessage lyrics = await SendAsync(() => NetEaseRequest(lyricsUrl), token);
+                    if (!lyrics.IsSuccessStatusCode)
+                    {
+                        failed |= IsRetriableStatus(lyrics.StatusCode) || lyrics.StatusCode == HttpStatusCode.Forbidden;
+                        continue;
+                    }
+
+                    data = await lyrics.Content.ReadFromJsonAsync<NeteaseLyricsResponse>(token);
+                    if (!string.IsNullOrWhiteSpace(data?.Lrc?.Lyric)) break;
+                }
+
+                string? synced = data?.Lrc?.Lyric;
+                if (string.IsNullOrWhiteSpace(synced)) continue;
+                return (new LrcLibResponse
+                {
+                    TrackName = title,
+                    ArtistName = artist,
+                    SyncedLyrics = synced,
+                    TranslationLyrics = data?.Tlyric?.Lyric
+                }, false);
             }
-
-            NeteaseLyricsResponse? data = await lyrics.Content.ReadFromJsonAsync<NeteaseLyricsResponse>(token);
-            string? synced = data?.Lrc?.Lyric;
-            if (string.IsNullOrWhiteSpace(synced)) continue;
-            return (new LrcLibResponse
-            {
-                TrackName = title,
-                ArtistName = artist,
-                SyncedLyrics = synced,
-                TranslationLyrics = data?.Tlyric?.Lyric
-            }, false);
         }
         return (null, failed);
     }
 
     private static readonly string[] NeteaseSearchEndpoints =
     {
-        "https://music.163.com/api/search/get/web?type=1&limit=12&s=",
-        "https://music.163.com/api/cloudsearch/pc?type=1&limit=12&s="
+        "https://music.163.com/api/cloudsearch/pc?type=1&limit=12&s=",
+        "https://interface.music.163.com/api/cloudsearch/pc?type=1&limit=12&s=",
+        "https://interface3.music.163.com/api/cloudsearch/pc?type=1&limit=12&s=",
+        "https://music.163.com/api/search/get/web?type=1&limit=12&s="
+    };
+
+    private static readonly string[] NeteaseLyricEndpoints =
+    {
+        "https://music.163.com/api/song/lyric?id=",
+        "https://interface.music.163.com/api/song/lyric?id=",
+        "https://interface3.music.163.com/api/song/lyric?id="
     };
 
     private static List<string> BuildNeteaseSearchTexts(string title, string artist)
@@ -1207,16 +1263,20 @@ public sealed class LyricsService
         return request;
     }
 
-    private static NeteaseSong? PickNeteaseSong(List<NeteaseSong>? songs, string title, string artist, TimeSpan duration)
+    /// <summary>
+    /// Ranks the NetEase hits instead of returning only the best one: the catalogue often holds
+    /// several entries for the same track (duplicates, re-releases) and only some of them carry a
+    /// lyric, so the caller walks the list until it finds one with content and a translation.
+    /// </summary>
+    private static List<NeteaseSong> RankNeteaseSongs(List<NeteaseSong>? songs, string title, string artist, TimeSpan duration)
     {
-        if (songs is null || songs.Count == 0) return null;
+        var ranked = new List<(NeteaseSong Song, double Score)>();
+        if (songs is null || songs.Count == 0) return new List<NeteaseSong>();
 
         string wantedTitle = NormalizeForCompare(title);
         string wantedArtist = NormalizeForCompare(artist);
         double wantedSeconds = duration.TotalSeconds;
 
-        NeteaseSong? best = null;
-        double bestScore = double.MaxValue;
         foreach (NeteaseSong song in songs)
         {
             if (song.Id <= 0) continue;
@@ -1227,15 +1287,10 @@ public sealed class LyricsService
                 ? Math.Abs(song.LengthMs.Value / 1000d - wantedSeconds) : null;
             double? score = ScoreCandidate(wantedTitle, itemTitle, artistMatch, durationDiff);
             if (score is not double candidateScore) continue;
-
-            if (candidateScore < bestScore)
-            {
-                bestScore = candidateScore;
-                best = song;
-            }
+            ranked.Add((song, candidateScore));
         }
 
-        return best;
+        return ranked.OrderBy(item => item.Score).Take(4).Select(item => item.Song).ToList();
     }
 
     private static async Task<(LrcLibResponse? Data, bool Failed)> TryKugouAsync(string title, string artist, TimeSpan duration, CancellationToken token)
@@ -1292,6 +1347,393 @@ public sealed class LyricsService
             CrashLog.Write(ex, "Lyrics:Kugou");
             return (null, true);
         }
+    }
+
+    /// <summary>
+    /// Kuwo (酷我音乐): reachable from mainland China without a proxy, and it indexes both the
+    /// Chinese and the international catalogue. It carries synced lyrics only (no translation).
+    /// </summary>
+    private static async Task<(LrcLibResponse? Data, bool Failed)> TryKuwoAsync(
+        IReadOnlyList<(string Title, string Artist)> candidates, TimeSpan duration, CancellationToken token)
+    {
+        try
+        {
+            bool failed = false;
+            int tried = 0;
+            foreach ((string title, string artist) in candidates)
+            {
+                // One search per provider keeps five concurrent sources from flooding the network
+                // (and the UI) on every track change.
+                if (tried++ >= 1) break;
+                (LrcLibResponse? data, bool callFailed) = await TryKuwoCandidateAsync(title, artist, duration, token);
+                failed |= callFailed;
+                if (data is not null) return (data, false);
+            }
+            return (null, failed);
+        }
+        catch (Exception ex) when (IsTransient(ex) && !token.IsCancellationRequested)
+        {
+            CrashLog.Write(ex, "Lyrics:Kuwo");
+            return (null, true);
+        }
+    }
+
+    private static async Task<(LrcLibResponse? Data, bool Failed)> TryKuwoCandidateAsync(
+        string title, string artist, TimeSpan duration, CancellationToken token)
+    {
+        string keyword = string.IsNullOrWhiteSpace(artist) ? title : $"{title} {artist}";
+        string searchUrl = "https://search.kuwo.cn/r.s?all=" + Uri.EscapeDataString(keyword)
+            + "&ft=music&client=kt&pn=0&rn=10&rformat=json&encoding=utf8";
+        using HttpResponseMessage search = await SendAsync(() => BrowserRequest(searchUrl), token);
+        if (!search.IsSuccessStatusCode) return (null, IsRetriableStatus(search.StatusCode));
+
+        string body = await search.Content.ReadAsStringAsync(token);
+        // The Kuwo payload is a large JS-ish literal; scanning it must never run on the UI thread.
+        long? musicId = await Task.Run(() => PickKuwoSongId(body, title, artist, duration), token);
+        if (musicId is null) return (null, false);
+
+        string lyricUrl = $"https://m.kuwo.cn/newh5/singles/songinfoandlrc?musicId={musicId.Value}&httpsStatus=1";
+        using HttpResponseMessage lyric = await SendAsync(() => BrowserRequest(lyricUrl), token);
+        if (!lyric.IsSuccessStatusCode) return (null, IsRetriableStatus(lyric.StatusCode));
+
+        string? lrc = ReadKuwoLyric(await lyric.Content.ReadAsStringAsync(token));
+        if (string.IsNullOrWhiteSpace(lrc)) return (null, false);
+        return (new LrcLibResponse { TrackName = title, ArtistName = artist, SyncedLyrics = lrc }, false);
+    }
+
+    /// <summary>Reads the Kuwo search payload (a JS-ish literal) and returns the best music id.</summary>
+    private static long? PickKuwoSongId(string json, string title, string artist, TimeSpan duration)
+    {
+        string wantedTitle = NormalizeForCompare(title);
+        string wantedArtist = NormalizeForCompare(artist);
+        double wantedSeconds = duration.TotalSeconds;
+
+        double bestScore = double.MaxValue;
+        long? bestId = null;
+        // Kuwo answers with a JS-ish literal (single quotes, &nbsp; entities, hundreds of KB). A
+        // nested-quantifier regex over that text backtracked for seconds and froze the overlay on
+        // every track change, so the objects are sliced out with a single linear scan instead.
+        foreach (string item in ScanJsonLikeObjects(json))
+        {
+            string name = HtmlDecode(JsonLikeValue(item, "SONGNAME", "NAME"));
+            string singer = HtmlDecode(JsonLikeValue(item, "ARTIST"));
+            string rid = JsonLikeValue(item, "MUSICRID");
+            double seconds = double.TryParse(JsonLikeValue(item, "DURATION"),
+                NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed) ? parsed : 0;
+            if (name.Length == 0 || !rid.StartsWith("MUSIC_", StringComparison.OrdinalIgnoreCase)) continue;
+            if (!long.TryParse(rid["MUSIC_".Length..], out long id)) continue;
+
+            double? difference = wantedSeconds >= 5 && seconds > 0 ? Math.Abs(seconds - wantedSeconds) : null;
+            double? score = ScoreCandidate(wantedTitle, wantedArtist, NormalizeForCompare(name),
+                NormalizeForCompare(singer), difference);
+            if (score is not double value || value >= bestScore) continue;
+            bestScore = value;
+            bestId = id;
+        }
+        return bestId;
+    }
+
+    /// <summary>
+    /// Slices the song objects out of Kuwo's JS-ish literal (single quotes, hundreds of KB) in one
+    /// linear pass. A nested-quantifier regex over that text backtracked for seconds and froze the
+    /// overlay on every track change. String literals are skipped so braces in text cannot break the
+    /// nesting count.
+    /// </summary>
+    private static IEnumerable<string> ScanJsonLikeObjects(string text)
+    {
+        int searchFrom = text.IndexOf("abslist", StringComparison.OrdinalIgnoreCase);
+        int index = searchFrom < 0 ? 0 : searchFrom;
+
+        while (index < text.Length)
+        {
+            if (text[index] != '{')
+            {
+                index++;
+                continue;
+            }
+
+            int depth = 0;
+            int end = -1;
+            for (int cursor = index; cursor < text.Length; cursor++)
+            {
+                char current = text[cursor];
+                if (current is '\'' or '"')
+                {
+                    char quote = current;
+                    cursor++;
+                    while (cursor < text.Length)
+                    {
+                        if (text[cursor] == '\\') cursor++;
+                        else if (text[cursor] == quote) break;
+                        cursor++;
+                    }
+                    if (cursor >= text.Length) yield break;
+                    continue;
+                }
+
+                if (current == '{')
+                {
+                    depth++;
+                }
+                else if (current == '}' && --depth == 0)
+                {
+                    end = cursor;
+                    break;
+                }
+            }
+
+            if (end < 0) yield break;
+            yield return text[index..(end + 1)];
+            index = end + 1;
+        }
+    }
+
+    /// <summary>Pulls a plain value out of the loosely-quoted Kuwo literal (no HTML escaping).</summary>
+    private static string JsonLikeValue(string source, params string[] names)
+    {
+        foreach (string name in names)
+        {
+            Match match = Regex.Match(source,
+                "['\"]" + Regex.Escape(name) + "['\"]\\s*:\\s*(?:\"([^\"]*)\"|'([^']*)'|([^,}]*))");
+            if (!match.Success) continue;
+            string value = match.Groups[1].Success ? match.Groups[1].Value
+                : match.Groups[2].Success ? match.Groups[2].Value
+                : match.Groups[3].Value;
+            value = value.Trim().Trim('\'', '"');
+            if (value.Length > 0) return value;
+        }
+        return string.Empty;
+    }
+
+    private static string HtmlDecode(string value) =>
+        System.Net.WebUtility.HtmlDecode(value.Replace("\\u0026", "&", StringComparison.Ordinal)).Trim();
+
+    /// <summary>Turns Kuwo's line list into an LRC document so the normal parser can be reused.</summary>
+    private static string? ReadKuwoLyric(string json)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+        if (!document.RootElement.TryGetProperty("data", out JsonElement data)) return null;
+        if (!data.TryGetProperty("lrclist", out JsonElement lines) || lines.ValueKind != JsonValueKind.Array) return null;
+
+        var builder = new System.Text.StringBuilder();
+        foreach (JsonElement line in lines.EnumerateArray())
+        {
+            string text = line.TryGetProperty("lineLyric", out JsonElement textElement) ? textElement.GetString() ?? string.Empty : string.Empty;
+            string time = line.TryGetProperty("time", out JsonElement timeElement) ? timeElement.ToString() : string.Empty;
+            if (text.Length == 0 || !double.TryParse(time, NumberStyles.Float, CultureInfo.InvariantCulture, out double seconds)) continue;
+            builder.Append('[').Append(TimeSpan.FromSeconds(seconds).ToString(@"mm\:ss\.ff", CultureInfo.InvariantCulture)).Append(']')
+                .Append(text).Append('\n');
+        }
+        return builder.Length == 0 ? null : builder.ToString();
+    }
+
+    /// <summary>
+    /// QQ Music (QQ 音乐): the only other mainland-reachable provider that returns a timestamped
+    /// translation (<c>trans</c>) next to the original lyric. Both endpoints require a y.qq.com
+    /// referer, otherwise they answer "禁止跨域访问".
+    /// </summary>
+    private static async Task<(LrcLibResponse? Data, bool Failed)> TryQQMusicAsync(
+        IReadOnlyList<(string Title, string Artist)> candidates, TimeSpan duration, CancellationToken token)
+    {
+        try
+        {
+            bool failed = false;
+            int tried = 0;
+            foreach ((string title, string artist) in candidates)
+            {
+                if (tried++ >= 1) break;
+                (LrcLibResponse? data, bool callFailed) = await TryQQMusicCandidateAsync(title, artist, duration, token);
+                failed |= callFailed;
+                if (data is not null) return (data, false);
+            }
+            return (null, failed);
+        }
+        catch (Exception ex) when (IsTransient(ex) && !token.IsCancellationRequested)
+        {
+            CrashLog.Write(ex, "Lyrics:QQMusic");
+            return (null, true);
+        }
+    }
+
+    private static async Task<(LrcLibResponse? Data, bool Failed)> TryQQMusicCandidateAsync(
+        string title, string artist, TimeSpan duration, CancellationToken token)
+    {
+        string keyword = string.IsNullOrWhiteSpace(artist) ? title : $"{title} {artist}";
+        string searchUrl = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp?format=json&cr=1&gtk=5381&t=0&aggr=1&lossless=0&flag_qc=0&p=1&n=10&w="
+            + Uri.EscapeDataString(keyword);
+        using HttpResponseMessage search = await SendAsync(() => QQMusicRequest(searchUrl), token);
+        if (!search.IsSuccessStatusCode) return (null, IsRetriableStatus(search.StatusCode));
+
+        QqSearchResponse? payload = await search.Content.ReadFromJsonAsync<QqSearchResponse>(token);
+        string? songMid = PickQqSongMid(payload, title, artist, duration);
+        if (songMid is null)
+        {
+            CrashLog.WriteNote("LyricsQQ", $"no match for {title} | {artist} ({payload?.Data?.Song?.List?.Count ?? 0} candidates)");
+            return (null, false);
+        }
+
+        // Two documented spellings of the same lyric endpoint; the first is what the web player uses.
+        // The extra parameters mirror the web player request, which the endpoint validates.
+        const string webArgs = "&format=json&nobase64=1&gtk=5381&loginUin=0&hostUin=0&platform=yqq&needNewCode=0";
+        string[] lyricUrls =
+        {
+            $"https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg?songmid={Uri.EscapeDataString(songMid)}{webArgs}",
+            $"https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric.fcg?songmid={Uri.EscapeDataString(songMid)}{webArgs}"
+        };
+        foreach (string lyricUrl in lyricUrls)
+        {
+            using HttpResponseMessage lyric = await SendAsync(() => QQMusicRequest(lyricUrl), token);
+            if (!lyric.IsSuccessStatusCode)
+            {
+                CrashLog.WriteNote("LyricsQQ", $"lyric http {(int)lyric.StatusCode} for {title}");
+                continue;
+            }
+
+            QqLyricResponse? data = await lyric.Content.ReadFromJsonAsync<QqLyricResponse>(token);
+            string? synced = HtmlDecode(data?.Lyric ?? string.Empty);
+            if (string.IsNullOrWhiteSpace(synced))
+            {
+                CrashLog.WriteNote("LyricsQQ", $"no lyric payload for {title} (mid={songMid})");
+                continue;
+            }
+
+            string translation = HtmlDecode(data?.Trans ?? string.Empty);
+            if (translation.Length == 0)
+                CrashLog.WriteNote("LyricsQQ", $"lyric without translation for {title} (mid={songMid})");
+            return (new LrcLibResponse
+            {
+                TrackName = title,
+                ArtistName = artist,
+                SyncedLyrics = synced,
+                TranslationLyrics = translation.Length == 0 ? null : translation
+            }, false);
+        }
+        return (null, false);
+    }
+
+    private static string? PickQqSongMid(QqSearchResponse? payload, string title, string artist, TimeSpan duration)
+    {
+        List<QqSong>? songs = payload?.Data?.Song?.List;
+        if (songs is null || songs.Count == 0) return null;
+
+        string wantedTitle = NormalizeForCompare(title);
+        string wantedArtist = NormalizeForCompare(artist);
+        double wantedSeconds = duration.TotalSeconds;
+
+        double bestScore = double.MaxValue;
+        string? bestMid = null;
+        foreach (QqSong song in songs)
+        {
+            if (string.IsNullOrWhiteSpace(song.SongMid) || string.IsNullOrWhiteSpace(song.SongName)) continue;
+            bool artistMatch = song.Singers?.Any(s => MatchesText(NormalizeForCompare(s.Name ?? string.Empty), wantedArtist)) == true;
+            double? difference = wantedSeconds >= 5 && song.Interval > 0 ? Math.Abs(song.Interval - wantedSeconds) : null;
+            double? score = ScoreCandidate(wantedTitle, NormalizeForCompare(song.SongName), artistMatch, difference);
+            if (score is not double value || value >= bestScore) continue;
+            bestScore = value;
+            bestMid = song.SongMid;
+        }
+        return bestMid;
+    }
+
+    private static HttpRequestMessage QQMusicRequest(string url)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Get, url);
+        request.Headers.TryAddWithoutValidation("User-Agent", BrowserUserAgent);
+        request.Headers.Referrer = new Uri("https://y.qq.com/");
+        return request;
+    }
+
+    /// <summary>
+    /// Aggregator endpoint that proxies the NetEase catalogue (search + lyric with translation) and
+    /// is reachable from mainland China even when <c>music.163.com</c> itself is blocked or throttled.
+    /// It is the only source that reliably returns a translation for international tracks, so it is
+    /// queried whenever the caller wants one.
+    /// </summary>
+    private static async Task<(LrcLibResponse? Data, bool Failed)> TryAggregatorAsync(
+        IReadOnlyList<(string Title, string Artist)> candidates, TimeSpan duration, CancellationToken token)
+    {
+        try
+        {
+            bool failed = false;
+            int tried = 0;
+            foreach ((string title, string artist) in candidates)
+            {
+                if (tried++ >= 1) break;
+                (LrcLibResponse? data, bool callFailed) = await TryAggregatorCandidateAsync(title, artist, duration, token);
+                failed |= callFailed;
+                if (data is not null) return (data, false);
+            }
+            return (null, failed);
+        }
+        catch (Exception ex) when (IsTransient(ex) && !token.IsCancellationRequested)
+        {
+            CrashLog.Write(ex, "Lyrics:Aggregator");
+            return (null, true);
+        }
+    }
+
+    private static async Task<(LrcLibResponse? Data, bool Failed)> TryAggregatorCandidateAsync(
+        string title, string artist, TimeSpan duration, CancellationToken token)
+    {
+        string keyword = string.IsNullOrWhiteSpace(artist) ? title : $"{title} {artist}";
+        string searchUrl = "https://music-api.gdstudio.xyz/api.php?types=search&source=netease&count=10&name="
+            + Uri.EscapeDataString(keyword);
+        using HttpResponseMessage search = await SendAsync(() => BrowserRequest(searchUrl), token);
+        if (!search.IsSuccessStatusCode) return (null, IsRetriableStatus(search.StatusCode));
+
+        List<AggregatorSong>? songs = await search.Content.ReadFromJsonAsync<List<AggregatorSong>>(token);
+        string? lyricId = PickAggregatorSong(songs, title, artist);
+        if (lyricId is null)
+        {
+            CrashLog.WriteNote("LyricsAggregator", $"no match for {title} | {artist} ({songs?.Count ?? 0} candidates)");
+            return (null, false);
+        }
+
+        string lyricUrl = "https://music-api.gdstudio.xyz/api.php?types=lyric&source=netease&id="
+            + Uri.EscapeDataString(lyricId);
+        using HttpResponseMessage lyric = await SendAsync(() => BrowserRequest(lyricUrl), token);
+        if (!lyric.IsSuccessStatusCode) return (null, IsRetriableStatus(lyric.StatusCode));
+
+        AggregatorLyric? data = await lyric.Content.ReadFromJsonAsync<AggregatorLyric>(token);
+        string? synced = data?.Lyric;
+        if (string.IsNullOrWhiteSpace(synced)) return (null, false);
+        string? translation = string.IsNullOrWhiteSpace(data?.TLyric) ? null : data.TLyric;
+        return (new LrcLibResponse
+        {
+            TrackName = title,
+            ArtistName = artist,
+            SyncedLyrics = synced,
+            TranslationLyrics = translation
+        }, false);
+    }
+
+    private static string? PickAggregatorSong(List<AggregatorSong>? songs, string title, string artist)
+    {
+        if (songs is null || songs.Count == 0) return null;
+
+        string wantedTitle = NormalizeForCompare(title);
+        string wantedArtist = NormalizeForCompare(artist);
+        double bestScore = double.MaxValue;
+        string? bestId = null;
+        foreach (AggregatorSong song in songs)
+        {
+            string id = song.LyricId ?? song.Id ?? string.Empty;
+            if (id.Length == 0 || string.IsNullOrWhiteSpace(song.Name)) continue;
+
+            string itemTitle = NormalizeForCompare(song.Name);
+            bool titleExact = itemTitle == wantedTitle;
+            if (!titleExact && !MatchesText(itemTitle, wantedTitle)) continue;
+            bool artistMatch = wantedArtist.Length == 0
+                || song.Artist?.Any(name => MatchesText(NormalizeForCompare(name ?? string.Empty), wantedArtist)) == true;
+            // No duration in this payload, so an artist match is what makes the pick trustworthy.
+            if (!artistMatch) continue;
+
+            double score = titleExact ? -8 : -3;
+            if (score >= bestScore) continue;
+            bestScore = score;
+            bestId = id;
+        }
+        return bestId;
     }
 
     private readonly record struct KugouHit(string Hash, string Song, string Singer, double DurationSeconds);
@@ -1732,6 +2174,37 @@ public sealed class LyricsService
     private sealed class NeteaseArtist { [JsonPropertyName("name")] public string? Name { get; set; } }
     private sealed class NeteaseLyricsResponse { [JsonPropertyName("lrc")] public NeteaseLrc? Lrc { get; set; } [JsonPropertyName("tlyric")] public NeteaseLrc? Tlyric { get; set; } }
     private sealed class NeteaseLrc { [JsonPropertyName("lyric")] public string? Lyric { get; set; } }
+
+    private sealed class QqSearchResponse { [JsonPropertyName("data")] public QqSearchData? Data { get; set; } }
+    private sealed class QqSearchData { [JsonPropertyName("song")] public QqSongList? Song { get; set; } }
+    private sealed class QqSongList { [JsonPropertyName("list")] public List<QqSong>? List { get; set; } }
+    private sealed class QqSong
+    {
+        [JsonPropertyName("songmid")] public string? SongMid { get; set; }
+        [JsonPropertyName("songname")] public string? SongName { get; set; }
+        [JsonPropertyName("singer")] public List<QqSinger>? Singers { get; set; }
+        [JsonPropertyName("interval")] public double Interval { get; set; }
+    }
+    private sealed class QqSinger { [JsonPropertyName("name")] public string? Name { get; set; } }
+    private sealed class QqLyricResponse
+    {
+        [JsonPropertyName("lyric")] public string? Lyric { get; set; }
+        [JsonPropertyName("trans")] public string? Trans { get; set; }
+    }
+
+    private sealed class AggregatorSong
+    {
+        [JsonPropertyName("id")] public string? Id { get; set; }
+        [JsonPropertyName("name")] public string? Name { get; set; }
+        [JsonPropertyName("artist")] public List<string?>? Artist { get; set; }
+        [JsonPropertyName("album")] public string? Album { get; set; }
+        [JsonPropertyName("lyric_id")] public string? LyricId { get; set; }
+    }
+    private sealed class AggregatorLyric
+    {
+        [JsonPropertyName("lyric")] public string? Lyric { get; set; }
+        [JsonPropertyName("tlyric")] public string? TLyric { get; set; }
+    }
 
     #endregion
 }
