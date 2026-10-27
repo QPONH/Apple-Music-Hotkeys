@@ -30,6 +30,18 @@ public partial class App : Application
             CrashLog.Write(args.Exception, "TaskScheduler.UnobservedTaskException");
             args.SetObserved();
         };
+        // A GPU driver fault kills the process without any managed exception (no crash.log entry),
+        // so software rendering is offered as an opt-in escape hatch under 设置 → 通用.
+        try
+        {
+            if (new OverlaySettingsService().Load().SoftwareRendering)
+                System.Windows.Media.RenderOptions.ProcessRenderMode = System.Windows.Interop.RenderMode.SoftwareOnly;
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, "Startup:RenderMode");
+        }
+
         base.OnStartup(e);
         SessionEnding += App_SessionEnding;
 

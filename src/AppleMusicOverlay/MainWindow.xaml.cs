@@ -385,6 +385,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         CloseToTrayCheckBox.IsChecked = _draftSettings.CloseToTray;
         HideOnStartupCheckBox.IsChecked = _draftSettings.HideWindowOnStartup;
         StartWithWindowsCheckBox.IsChecked = _draftSettings.StartWithWindows;
+        SoftwareRenderingCheckBox.IsChecked = _draftSettings.SoftwareRendering;
         StartupPlaybackRecoveryCheckBox.IsChecked = _draftSettings.StartupPlaybackRecovery;
         RecoveryWaitSecondsBox.Text = _draftSettings.RecoveryWaitSeconds.ToString();
         RecoveryQueueXBox.Text = _draftSettings.RecoveryQueueXPercent.ToString();
@@ -677,7 +678,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
                 buildTime = System.IO.File.GetLastWriteTime(path).ToString("yyyy-MM-dd HH:mm");
         }
         catch { }
-        VersionText.Text = $"v14.47 · 构建 {buildTime} · {Environment.OSVersion.Version}";
+        VersionText.Text = $"v14.50 · 构建 {buildTime} · {Environment.OSVersion.Version}";
     }
 
     private bool _lowIntegrityWarningShown;
@@ -792,6 +793,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
             case nameof(OverlaySettings.CloseToTray): _draftSettings.CloseToTray = value; break;
             case nameof(OverlaySettings.HideWindowOnStartup): _draftSettings.HideWindowOnStartup = value; break;
             case nameof(OverlaySettings.StartWithWindows): _draftSettings.StartWithWindows = value; break;
+            case nameof(OverlaySettings.SoftwareRendering): _draftSettings.SoftwareRendering = value; break;
             case nameof(OverlaySettings.StartupPlaybackRecovery): _draftSettings.StartupPlaybackRecovery = value; break;
             default: return;
         }

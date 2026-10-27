@@ -36,6 +36,11 @@ public sealed class OverlaySettings
     public bool CloseToTray { get; set; } = true;
     /// <summary>Set after the one-time hint that points at the notification area has been shown.</summary>
     public bool TrayHintShown { get; set; }
+    /// <summary>
+    /// Forces WPF's software renderer. Hardware rendering on some GPU drivers crashes the process
+    /// without any managed exception (no crash.log entry), so this is the escape hatch for that.
+    /// </summary>
+    public bool SoftwareRendering { get; set; }
     public bool HideWindowOnStartup { get; set; }
     public bool StartWithWindows { get; set; }
     public bool StartupPlaybackRecovery { get; set; }

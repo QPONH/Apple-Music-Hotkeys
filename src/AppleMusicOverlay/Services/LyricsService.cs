@@ -322,7 +322,12 @@ public sealed class LyricsService
 
             string candidateTitle = CleanMetadata(track.TrackName);
             if (candidateTitle.Length == 0) continue;
-            if (string.Equals(NormalizeForCompare(candidateTitle), wantedTitle, StringComparison.Ordinal)) continue;
+            string candidateKey = NormalizeForCompare(candidateTitle);
+            if (string.Equals(candidateKey, wantedTitle, StringComparison.Ordinal)) continue;
+            // The probe exists for *localized* titles (Latin "VOID" → CJK 「空の箱」). When both the
+            // playing title and the catalog title use the same script, a "different title" is just a
+            // different song (Thriller → Beat It), so it must never be used as a replacement.
+            if (!IsLocalizedPair(wantedTitle, candidateKey)) continue;
 
             bool artistMatched = CatalogTextMatches(NormalizeForCompare(track.ArtistName ?? string.Empty), wantedArtist);
             if (wantedSeconds <= 0)
@@ -353,6 +358,24 @@ public sealed class LyricsService
             return (candidateTitle, candidateArtist.Length > 0 ? candidateArtist : artist);
         }
         return null;
+    }
+
+    /// <summary>
+    /// True when the two normalized titles use different scripts, i.e. the catalog title is a
+    /// localization of the playing title rather than a different song. Latin ↔ CJK/Hangul only.
+    /// </summary>
+    private static bool IsLocalizedPair(string wantedTitle, string candidateTitle)
+    {
+        static bool IsLatin(string text)
+        {
+            foreach (char c in text)
+            {
+                if (c >= 0x2E80) return false;   // CJK radicals / kana / hangul block starts here
+            }
+            return text.Length > 0;
+        }
+
+        return IsLatin(wantedTitle) != IsLatin(candidateTitle);
     }
 
     private static bool LooksLikeCover(ItunesTrack track)
@@ -581,6 +604,18 @@ public sealed class LyricsService
             return states.ToArray();
         }
 
+        string ProviderName(Task<(LrcLibResponse? Data, bool Failed)> task) =>
+            task == neteaseTask ? "netease" : task == kugouTask ? "kugou" : "kuwo";
+
+        // Which source won is the one piece of context the log was missing: a wrong lyric is much
+        // easier to explain when the provider is known.
+        LyricsLookupResult Seal(LyricsLookupResult result, string source)
+        {
+            if (result.Lyrics is not null)
+                CrashLog.WriteNote("LyricsSource", $"{source} | {title} | {artist} | {result.Lyrics.Lines.Count} lines");
+            return result;
+        }
+
         try
         {
             while (true)
@@ -597,7 +632,7 @@ public sealed class LyricsService
                 if (lrclibTask.IsCompleted)
                 {
                     LyricsLookupResult? found = TryBuild(title, artist, duration, await lrclibTask);
-                    if (found is not null) return await FinalizeAsync(found);
+                    if (found is not null) return await FinalizeAsync(Seal(found, "lrclib"));
                 }
 
                 if (lrclibTask.IsCompleted || grace.IsCompleted)
@@ -606,7 +641,7 @@ public sealed class LyricsService
                     {
                         if (!task.IsCompleted) continue;
                         LyricsLookupResult? found = TryBuild(title, artist, duration, await task);
-                        if (found is not null) return await FinalizeAsync(found);
+                        if (found is not null) return await FinalizeAsync(Seal(found, ProviderName(task)));
                     }
                 }
 
@@ -614,11 +649,11 @@ public sealed class LyricsService
             }
 
             LyricsLookupResult? lrclibFound = TryBuild(title, artist, duration, await lrclibTask);
-            if (lrclibFound is not null) return await FinalizeAsync(lrclibFound);
+            if (lrclibFound is not null) return await FinalizeAsync(Seal(lrclibFound, "lrclib"));
             foreach (Task<(LrcLibResponse? Data, bool Failed)> task in fallbacks)
             {
                 LyricsLookupResult? found = TryBuild(title, artist, duration, await task);
-                if (found is not null) return await FinalizeAsync(found);
+                if (found is not null) return await FinalizeAsync(Seal(found, ProviderName(task)));
             }
 
             bool anyFailed = (await lrclibTask).Failed || (await neteaseTask).Failed || (await kugouTask).Failed;
@@ -636,6 +671,14 @@ public sealed class LyricsService
         }
         finally
         {
+            // Kept in memory (not the log file) so a diagnostic harness can print it even while
+            // another instance holds the log file open.
+            LastTrace = string.Join(" || ",
+                DescribeProvider(lrclibTask, "lrclib"),
+                DescribeProvider(neteaseTask, "netease"),
+                DescribeProvider(kugouTask, "kugou"),
+                DescribeProvider(kuwoTask, "kuwo"));
+
             lookupCancellation.Cancel();
             // Observe every provider task so a late cancellation/fault cannot become an
             // unobserved task exception. Cancellation is expected when another provider wins.
@@ -643,6 +686,18 @@ public sealed class LyricsService
             catch (OperationCanceledException) { }
             catch (Exception ex) { CrashLog.Write(ex, "Lyrics:ProviderCompletion"); }
         }
+    }
+
+    /// <summary>Last provider outcome, for diagnostics (the log file may be locked by another instance).</summary>
+    public static string LastTrace { get; private set; } = string.Empty;
+
+    private static string DescribeProvider(Task<(LrcLibResponse? Data, bool Failed)> task, string name)
+    {
+        if (!task.IsCompleted) return $"{name}: pending";
+        if (task.IsFaulted) return $"{name}: faulted {task.Exception?.GetBaseException().GetType().Name}";
+        if (task.IsCanceled) return $"{name}: canceled";
+        LrcLibResponse? data = task.Result.Data;
+        return $"{name}: failed={task.Result.Failed} lyric={data?.SyncedLyrics?.Length ?? -1} trans={data?.TranslationLyrics?.Length ?? -1} name={data?.TrackName} artist={data?.ArtistName}";
     }
 
     private static LyricsLookupResult? TryBuild(string title, string artist, TimeSpan duration, (LrcLibResponse? Data, bool Failed) outcome)
@@ -940,7 +995,7 @@ public sealed class LyricsService
         handler.SslOptions.EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;
         var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(12) };
         // LRCLIB asks clients to identify themselves; generic agents are rate limited harder.
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.47 (https://github.com/QPONH/Apple-Music-Hotkeys)");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.50 (https://github.com/QPONH/Apple-Music-Hotkeys)");
         client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
         return client;
     }
@@ -1083,9 +1138,23 @@ public sealed class LyricsService
     private static double? ScoreCandidate(string wantedTitle, string itemTitle, bool artistMatch, double? durationDiff)
     {
         bool titleExact = wantedTitle.Length > 0 && itemTitle == wantedTitle;
-        if (!IsPlausibleHit(titleExact || MatchesText(itemTitle, wantedTitle), artistMatch, durationDiff)) return null;
+        if (!IsPlausibleHit(titleExact || TitleMatches(itemTitle, wantedTitle), artistMatch, durationDiff)) return null;
         double score = (titleExact ? -8 : -3) + (artistMatch ? -4 : 6);
         return durationDiff is double diff ? score + Math.Min(diff, 60) * 0.15 : score;
+    }
+
+    /// <summary>
+    /// Title comparison for a search hit. Only an exact match or a prefix relation counts
+    /// ("Thriller" vs "thriller25thanniversary" is the same song in another edition). Mere
+    /// containment does not: NetEase carries mashup entries such as "Beat It Thriller
+    /// (25th Anniversary Remix)", and accepting those made Thriller play Beat It's lyrics.
+    /// </summary>
+    private static bool TitleMatches(string candidate, string wanted)
+    {
+        if (candidate.Length == 0 || wanted.Length == 0) return false;
+        if (candidate == wanted) return true;
+        return candidate.StartsWith(wanted, StringComparison.Ordinal)
+            || wanted.StartsWith(candidate, StringComparison.Ordinal);
     }
 
     private static bool MatchesText(string candidate, string wanted) =>
@@ -1257,7 +1326,12 @@ public sealed class LyricsService
     {
         string coreTitle = Regex.Replace(title, @"\s*[\(\[（【].*?[\)\]）】]\s*", " ").Trim();
         if (coreTitle.Length == 0) coreTitle = title;
-        string coreArtist = Regex.Split(artist,
+        // Apple Music reports the whole billing line as the artist for some albums
+        // ("Michael Jackson — Thriller (25th Anniversary) [Deluxe Edition]"). Searching NetEase
+        // with that string returns mashup entries and lost the real track, so the dash-split lead
+        // credit is used, exactly like the KuGou provider already did.
+        string leadArtist = Regex.Split(artist, @"\s+[—–]\s+|\s+-\s+")[0].Trim();
+        string coreArtist = Regex.Split(leadArtist,
             @"\s*(?:,|&|;|、|／|\+|\bfeat\.?|\bft\.?|\bfeaturing\b|\bwith\b|\bx\b|\bvs\.?\b)\s*",
             RegexOptions.IgnoreCase)[0].Trim();
 
@@ -1354,11 +1428,13 @@ public sealed class LyricsService
                 }
 
                 using JsonDocument lyricDoc = JsonDocument.Parse(await found.Content.ReadAsStringAsync(token));
+                if (lyricDoc.RootElement.ValueKind != JsonValueKind.Object) continue;
                 if (!lyricDoc.RootElement.TryGetProperty("candidates", out JsonElement candidates) || candidates.ValueKind != JsonValueKind.Array)
                     continue;
 
                 foreach (JsonElement candidate in candidates.EnumerateArray())
                 {
+                    if (candidate.ValueKind != JsonValueKind.Object) continue;
                     string id = candidate.TryGetProperty("id", out JsonElement idElement) ? idElement.ToString() : string.Empty;
                     string accessKey = candidate.TryGetProperty("accesskey", out JsonElement keyElement) ? keyElement.GetString() ?? string.Empty : string.Empty;
                     if (id.Length == 0 || accessKey.Length == 0) continue;
@@ -1551,12 +1627,17 @@ public sealed class LyricsService
     private static string? ReadKuwoLyric(string json)
     {
         using JsonDocument document = JsonDocument.Parse(json);
+        // TryGetProperty throws on a non-object element: Kuwo answers {"data":null} for tracks
+        // without lyrics, which used to surface as InvalidOperationException in the log.
+        if (document.RootElement.ValueKind != JsonValueKind.Object) return null;
         if (!document.RootElement.TryGetProperty("data", out JsonElement data)) return null;
+        if (data.ValueKind != JsonValueKind.Object) return null;
         if (!data.TryGetProperty("lrclist", out JsonElement lines) || lines.ValueKind != JsonValueKind.Array) return null;
 
         var builder = new System.Text.StringBuilder();
         foreach (JsonElement line in lines.EnumerateArray())
         {
+            if (line.ValueKind != JsonValueKind.Object) continue;
             string text = line.TryGetProperty("lineLyric", out JsonElement textElement) ? textElement.GetString() ?? string.Empty : string.Empty;
             string time = line.TryGetProperty("time", out JsonElement timeElement) ? timeElement.ToString() : string.Empty;
             if (text.Length == 0 || !double.TryParse(time, NumberStyles.Float, CultureInfo.InvariantCulture, out double seconds)) continue;
@@ -1781,7 +1862,10 @@ public sealed class LyricsService
     {
         var hits = new List<KugouHit>();
         using JsonDocument doc = JsonDocument.Parse(json);
+        // Same guard as the other providers: TryGetProperty throws on non-object elements.
+        if (doc.RootElement.ValueKind != JsonValueKind.Object) return hits;
         if (!doc.RootElement.TryGetProperty("data", out JsonElement data)) return hits;
+        if (data.ValueKind != JsonValueKind.Object) return hits;
         if (!data.TryGetProperty("lists", out JsonElement list) && !data.TryGetProperty("info", out list)) return hits;
         if (list.ValueKind != JsonValueKind.Array) return hits;
 
@@ -1844,6 +1928,7 @@ public sealed class LyricsService
 
     private static string FirstString(JsonElement item, params string[] names)
     {
+        if (item.ValueKind != JsonValueKind.Object) return string.Empty;
         foreach (string name in names)
         {
             if (!item.TryGetProperty(name, out JsonElement value)) continue;
@@ -1855,6 +1940,7 @@ public sealed class LyricsService
 
     private static double FirstDouble(JsonElement item, params string[] names)
     {
+        if (item.ValueKind != JsonValueKind.Object) return 0;
         foreach (string name in names)
         {
             if (!item.TryGetProperty(name, out JsonElement value)) continue;
@@ -2019,7 +2105,7 @@ public sealed class LyricsService
                 // Oldest first so the eviction order below matches the original usage order.
                 foreach (CachedLyrics entry in entries.OfType<CachedLyrics>().OrderBy(entry => entry.UsedAt))
                 {
-                    if (entry.Schema < 2) continue;
+                    if (entry.Schema < 4) continue;
                     if (string.IsNullOrWhiteSpace(entry.Key) || entry.Lines is null || entry.Lines.Count == 0) continue;
                     if (_lyricsCache.ContainsKey(entry.Key)) continue;
                     var lines = entry.Lines
@@ -2136,8 +2222,13 @@ public sealed class LyricsService
 
     private sealed class CachedLyrics
     {
-        /// <summary>Bumped when the matching rules change, so old (possibly wrong) hits are dropped.</summary>
-        public int Schema { get; set; } = 2;
+        /// <summary>
+        /// Bumped when the matching rules change, so old (possibly wrong) hits are dropped.
+        /// 3 = localized-title replacements must cross scripts.
+        /// 4 = titles match by exact/prefix only, and NetEase searches the lead credit of a billing
+        ///     artist string (drops the stale "Thriller → Beat It mashup" hits).
+        /// </summary>
+        public int Schema { get; set; } = 4;
         public string Key { get; set; } = string.Empty;
         public string Title { get; set; } = string.Empty;
         public string Artist { get; set; } = string.Empty;

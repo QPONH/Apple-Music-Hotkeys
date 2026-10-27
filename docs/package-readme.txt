@@ -1,10 +1,51 @@
-MusicFloat v14.47 —— Apple Music 歌词浮窗 + 全局快捷键
+MusicFloat v14.50 —— Apple Music 歌词浮窗 + 全局快捷键
 （Apple-Music-Hotkeys 修改版）
 
 使用方法
 1. 把压缩包完整解压到任意文件夹。
 2. 直接运行 MusicFloat.exe（单文件，自带 .NET 运行时，不需要另外安装）。
 3. 启动后出现设置窗口（或已按设置隐藏到托盘）；在设置里勾选“启用”并点“应用”即可显示歌词浮窗。
+
+本版相对 14.49 的变化（Thriller → Beat It 的真正原因，已在本机复现并修好）
+· 原因一：Apple Music 把整条艺人信息当成艺人串
+  （"Michael Jackson — Thriller (25th Anniversary) [Deluxe Edition]"）。网易云搜索时直接用了整串，
+  于是只搜到一个混搭条目「Beat It Thriller (25th Anniversary Remix)」。现在搜索前先按破折号取主艺人
+  （"Michael Jackson"），和酷狗的处理方式一致。
+· 原因二：标题匹配允许"包含"。那个混搭条目的标题里同时含 "Beat It" 和 "Thriller"，
+  于是被当成 Thriller。现在标题只接受**精确匹配或前缀关系**（"thriller" ↔ "thriller25thanniversary"
+  算同一首，"beatitthriller…" 不算）。
+· 缓存格式升级到 4，之前那条错误的 52 行结果会自动作废重查。
+· 新增 `LyricsService.LastTrace`（内存中的各路来源结果），便于定位串歌。
+
+本机实测（真实网络，含 billing 艺人串）：
+  Thriller（整串艺人）  54 行 / 54 行翻译，首句 "It's close to midnight…"
+  Thriller（短艺人）    54 行 / 54 行翻译
+  Beat It              69 行 / 58 行翻译，首句 "They Told Him…"（自身正确）
+  Mockingbird         102 行 / 102 行翻译
+  VOID                 32 行 / 32 行翻译（日文原文）
+
+本版相对 14.48 的变化
+· 修复「Thriller 仍被识别成 Beat It」：14.48 已经修正了匹配规则，但**旧歌词缓存**里还存着
+  上一次错误匹配的结果（Beat It 的歌词挂在 Thriller 的键下）。缓存命中会直接返回，绕过所有
+  新规则，所以看起来"没修好"。
+  现在把缓存格式版本从 2 升到 3，**旧缓存条目在启动时自动丢弃并按新规则重查**，无需手动清理。
+· 以后只要匹配规则再调整，都会同步提升这个版本号，避免旧结论一直生效。
+
+本版相对 14.47 的变化
+· 修复歌词解析在异常返回上崩溃：酷我返回 `{"data":null}`（无歌词）时，`JsonElement.TryGetProperty`
+  会抛 `InvalidOperationException`（不是 JSON 异常，所以之前的重试/捕获都不管）。crash.log 里
+  已有 8 次这类记录。现在所有 provider 的 JSON 解析都先校验 `ValueKind`，数组/空值/`data:null`
+  都安全返回。
+· 修复「Thriller 被识别成 Beat It」：本地化标题探测原本对**任何**标题都会替换，且无播放时长时
+  直接信任商店返回顺序 —— 于是把同一张专辑里的另一首歌当成了译名。现在只接受**脚本不同**的
+  映射（拉丁 ↔ 中文/日文/韩文），英文→英文的替换一律拒绝。
+· 偶发闪退兜底：设置 → 通用新增「软件渲染」开关（重启生效）。WPF 硬件渲染在部分显卡驱动上会
+  直接杀掉进程（日志里没有任何记录），开启后改用软件渲染规避。
+· 诊断：新增 `LyricsSource` 日志，记录每首歌最终命中的来源（lrclib / netease / kugou / kuwo），
+  出现「歌词串歌」时可据此定位。
+
+实测（本机联网）：Thriller 54 行（首句 "It's close to midnight…"，非 Beat It）；无播放时长时
+同样不串；Mockingbird 102/102、FMB 49/49、VOID 32/32 翻译保持正常。
 
 本版相对 14.46 的变化（同为联网实测）
 · 把「多条目录条目只取第一个」这个错误类型在所有数据源上统一修掉：

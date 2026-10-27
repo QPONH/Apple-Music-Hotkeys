@@ -1065,6 +1065,9 @@
                                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Windows 登录启动" Style="{StaticResource SectionTitleStyle}"/><TextBlock Text="登录 Windows 后自动启动本程序，以便全局快捷键和系统托盘功能可用。" Margin="0,5,20,0" Style="{StaticResource BodyTextStyle}"/></StackPanel><CheckBox x:Name="StartWithWindowsCheckBox" Tag="StartWithWindows" Grid.Column="1" Content="开机启动" VerticalAlignment="Center" Checked="BooleanSetting_Changed" Unchecked="BooleanSetting_Changed"/></Grid>
                                 </Border>
                                 <Border Style="{StaticResource CardStyle}" Margin="0,0,0,14">
+                                    <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="渲染方式" Style="{StaticResource SectionTitleStyle}"/><TextBlock Text="遇到偶发闪退（多为显卡驱动导致、日志里没有记录）时可开启软件渲染；更改后重启程序生效。" Margin="0,5,20,0" Style="{StaticResource BodyTextStyle}"/></StackPanel><CheckBox x:Name="SoftwareRenderingCheckBox" Tag="SoftwareRendering" Grid.Column="1" Content="软件渲染" VerticalAlignment="Center" Checked="BooleanSetting_Changed" Unchecked="BooleanSetting_Changed"/></Grid>
+                                </Border>
+                                <Border Style="{StaticResource CardStyle}" Margin="0,0,0,14">
                                     <StackPanel>
                                         <Grid>
                                             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
