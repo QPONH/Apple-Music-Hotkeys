@@ -1134,6 +1134,41 @@
                         </Grid>
                     </ScrollViewer>
                 </TabItem>
+
+                <TabItem>
+                    <TabItem.Header>
+                        <views:ExpandableNavigationCard Header="歌词缓存" Style="{StaticResource ExpandableNavigationCardStyle}" />
+                    </TabItem.Header>
+                    <ScrollViewer Style="{StaticResource PanelScrollViewerStyle}">
+                        <Grid Style="{StaticResource FadePageStyle}">
+                            <StackPanel>
+                                <TextBlock Text="歌词缓存" Style="{StaticResource PageTitleStyle}" />
+                                <TextBlock Text="把整个歌单的歌词提前抓下来，之后播放时立刻出词；也能清理不再需要的旧歌词。" Margin="0,5,0,16" Style="{StaticResource BodyTextStyle}" />
+                                <Border Style="{StaticResource CardStyle}" Margin="0,0,0,14">
+                                    <StackPanel>
+                                        <TextBlock Text="歌单歌词离线缓存" Style="{StaticResource SectionTitleStyle}" />
+                                        <TextBlock Text="粘贴歌单链接（music.apple.com/…），或每行一首「歌名 - 艺人」。链接与文字可以混着贴，会合并去重。" Margin="0,5,0,10" TextWrapping="Wrap" Style="{StaticResource BodyTextStyle}" />
+                                        <TextBox x:Name="PlaylistInputBox" Height="120" Padding="8,6" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" VerticalContentAlignment="Top" ToolTip="每行一首：歌名 - 艺人（也支持「歌名 | 艺人」或制表符分隔）；也可以直接粘贴 Apple Music 歌单/专辑链接，支持多个链接。" />
+                                        <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                                            <Button x:Name="PlaylistScanButton" Content="扫描歌单" Width="120" Height="36" Style="{StaticResource SecondaryButtonStyle}" Click="PlaylistScan_Click" ToolTip="解析上面的链接或文字，列出歌曲清单。" />
+                                            <Button x:Name="PlaylistMusicScanButton" Content="从 Apple Music 读取" Width="150" Height="36" Margin="10,0,0,0" Style="{StaticResource SecondaryButtonStyle}" Click="PlaylistMusicScan_Click" ToolTip="直接读取 Apple Music 窗口里当前打开的播放列表（会滚动列表并自动回到顶部），不受 300 首限制。" />
+                                            <Button x:Name="PlaylistDownloadButton" Content="下载全部歌词" Width="140" Height="36" Margin="10,0,0,0" Style="{StaticResource SecondaryButtonStyle}" Click="PlaylistDownload_Click" ToolTip="为清单里还没有缓存的歌曲逐首查询歌词并保存到本地缓存（已缓存的会跳过）。" />
+                                            <Button x:Name="PlaylistPruneButton" Content="清理歌单外缓存" Width="140" Height="36" Margin="10,0,0,0" Style="{StaticResource SecondaryButtonStyle}" Click="PlaylistPrune_Click" ToolTip="删除不在当前清单内的已缓存歌词。" />
+                                        </StackPanel>
+                                        <TextBlock x:Name="PlaylistStatusText" Text="尚未扫描歌单。" Margin="0,10,0,0" TextWrapping="Wrap" Style="{StaticResource CaptionTextStyle}" />
+                                    </StackPanel>
+                                </Border>
+                                <Border Style="{StaticResource CardStyle}">
+                                    <StackPanel>
+                                        <TextBlock Text="缓存说明" Style="{StaticResource SectionTitleStyle}" />
+                                        <TextBlock x:Name="PlaylistCacheInfoText" Text="正在统计…" Margin="0,5,0,0" TextWrapping="Wrap" Style="{StaticResource BodyTextStyle}" />
+                                        <Button Content="刷新统计" Width="120" Height="34" Margin="0,10,0,0" HorizontalAlignment="Left" Style="{StaticResource SecondaryButtonStyle}" Click="PlaylistRefreshInfo_Click" />
+                                    </StackPanel>
+                                </Border>
+                            </StackPanel>
+                        </Grid>
+                    </ScrollViewer>
+                </TabItem>
             </TabControl>
         </Grid>
     </Border>

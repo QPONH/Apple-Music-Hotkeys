@@ -23,6 +23,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
     private readonly GlobalHotkeyService _hotkeyService;
     private readonly SmtcMediaSessionService _mediaService = new();
     private readonly LyricsService _lyricsService;
+    private readonly PlaylistCacheService _playlistCache;
     private readonly AppleMusicVolumeService _volumeService = new();
     private readonly StartupPlaybackRecoveryService _startupPlaybackRecoveryService;
     private CancellationTokenSource? _startupRecoveryCancellation;
@@ -49,6 +50,8 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         NormalizeSettings(_settings);
         _draftSettings = CloneSettings(_settings);
         _lyricsService = new LyricsService(_mediaService);
+        _playlistCache = new PlaylistCacheService(_lyricsService);
+        _playlistCache.LoadLastScanned();
         _startupPlaybackRecoveryService = new StartupPlaybackRecoveryService(_mediaService);
         // XAML default values (Text="0", IsChecked="True", ...) raise the change handlers while
         // InitializeComponent runs, so the loading flag has to be set before it. Without this
@@ -334,6 +337,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         // loaded window is always the one the user is looking at; never hide it again here or
         // the tray's "打开设置" would immediately disappear.
         RunStartupInitialization();
+        RefreshPlaylistCacheInfo();
     }
 
     private void RunStartupInitialization()
@@ -678,7 +682,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
                 buildTime = System.IO.File.GetLastWriteTime(path).ToString("yyyy-MM-dd HH:mm");
         }
         catch { }
-        VersionText.Text = $"v14.50 · 构建 {buildTime} · {Environment.OSVersion.Version}";
+        VersionText.Text = $"v14.62 · 构建 {buildTime} · {Environment.OSVersion.Version}";
     }
 
     private bool _lowIntegrityWarningShown;
@@ -825,6 +829,144 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         else
         {
             StatusText = "歌词缓存已清除。勾选「启用」并应用后即可重新查找。";
+        }
+    }
+
+    private async void PlaylistMusicScan_Click(object sender, RoutedEventArgs e)
+    {
+        PlaylistScanButton.IsEnabled = false;
+        PlaylistMusicScanButton.IsEnabled = false;
+        PlaylistDownloadButton.IsEnabled = false;
+        PlaylistPruneButton.IsEnabled = false;
+        PlaylistStatusText.Text = "正在读取 Apple Music 当前播放列表（列表会自动滚动，读完回到顶部）……";
+        var progress = new Progress<string>(text => PlaylistStatusText.Text = text);
+        try
+        {
+            var scanner = new AppleMusicWindowService();
+            IReadOnlyList<PlaylistTrack> tracks = await scanner.ReadPlaylistAsync(progress, CancellationToken.None);
+            if (tracks.Count == 0)
+            {
+                PlaylistStatusText.Text = "没有读到歌曲列表。请先在 Apple Music 里打开「播放列表」并停留在歌单页，然后重试。";
+            }
+            else
+            {
+                _playlistCache.SetScanned(tracks);
+                PlaylistStatusText.Text = $"已从 Apple Music 读取 {tracks.Count} 首：{string.Join("、", tracks.Take(5).Select(track => track.Title))}"
+                    + (tracks.Count > 5 ? " …" : string.Empty);
+                RefreshPlaylistCacheInfo();
+            }
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, "Playlist:MusicScan");
+            PlaylistStatusText.Text = "读取失败：" + ex.Message;
+        }
+        finally
+        {
+            PlaylistScanButton.IsEnabled = true;
+            PlaylistMusicScanButton.IsEnabled = true;
+            PlaylistDownloadButton.IsEnabled = true;
+            PlaylistPruneButton.IsEnabled = true;
+        }
+    }
+
+    private void PlaylistRefreshInfo_Click(object sender, RoutedEventArgs e) => RefreshPlaylistCacheInfo();
+
+    /// <summary>Shows how many lyrics are cached, and how many of them belong to the scanned playlist.</summary>
+    private void RefreshPlaylistCacheInfo()
+    {
+        try
+        {
+            var cached = new HashSet<string>(_lyricsService.GetCachedKeys(), StringComparer.Ordinal);
+            IReadOnlyList<PlaylistTrack> scanned = _playlistCache.LastScanned;
+            int inPlaylist = scanned.Count(track => cached.Contains(LyricsService.CacheKeyFor(track.Title, track.Artist)));
+            PlaylistCacheInfoText.Text = scanned.Count == 0
+                ? $"本地共有 {cached.Count} 首歌词缓存。尚未扫描歌单，无法判断哪些属于歌单。"
+                : $"本地共有 {cached.Count} 首歌词缓存；当前歌单 {scanned.Count} 首，其中 {inPlaylist} 首已缓存"
+                  + $"（{inPlaylist * 100 / Math.Max(1, scanned.Count)}%）。";
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, "Playlist:Info");
+            PlaylistCacheInfoText.Text = "统计失败：" + ex.Message;
+        }
+    }
+
+    private async void PlaylistScan_Click(object sender, RoutedEventArgs e)
+    {
+        PlaylistScanButton.IsEnabled = false;
+        PlaylistStatusText.Text = "正在扫描歌单……";
+        try
+        {
+            IReadOnlyList<PlaylistTrack> tracks = await _playlistCache.ScanAsync(PlaylistInputBox.Text);
+            PlaylistStatusText.Text = tracks.Count == 0
+                ? "没有解析到歌曲。请粘贴歌单链接，或每行一首「歌名 - 艺人」。"
+                : $"已扫描 {tracks.Count} 首：{string.Join("、", tracks.Take(5).Select(track => track.Title))}"
+                  + (tracks.Count > 5 ? " …" : string.Empty)
+                  + (tracks.Count >= 200
+                      ? "\n提示：Apple Music 页面通常只暴露已加载的曲目（约 300 首上限）。更大的歌单可以分几段链接一起粘贴，或直接贴文字清单，会合并去重。"
+                      : string.Empty);
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, "Playlist:Scan");
+            PlaylistStatusText.Text = "扫描失败：" + ex.Message;
+        }
+        finally
+        {
+            PlaylistScanButton.IsEnabled = true;
+        }
+    }
+
+    private async void PlaylistDownload_Click(object sender, RoutedEventArgs e)
+    {
+        IReadOnlyList<PlaylistTrack> tracks = _playlistCache.LastScanned;
+        if (tracks.Count == 0)
+        {
+            PlaylistStatusText.Text = "请先扫描歌单。";
+            return;
+        }
+
+        PlaylistScanButton.IsEnabled = false;
+        PlaylistDownloadButton.IsEnabled = false;
+        PlaylistPruneButton.IsEnabled = false;
+        var progress = new Progress<string>(text => PlaylistStatusText.Text = "正在查询：" + text);
+        try
+        {
+            (int cached, int failed) = await _playlistCache.DownloadAsync(tracks, progress, CancellationToken.None);
+            PlaylistStatusText.Text = $"完成：已缓存 {cached} 首，失败 {failed} 首（失败的歌可在下次重试）。";
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, "Playlist:DownloadAll");
+            PlaylistStatusText.Text = "下载失败：" + ex.Message;
+        }
+        finally
+        {
+            PlaylistScanButton.IsEnabled = true;
+            PlaylistDownloadButton.IsEnabled = true;
+            PlaylistPruneButton.IsEnabled = true;
+        }
+    }
+
+    private void PlaylistPrune_Click(object sender, RoutedEventArgs e)
+    {
+        IReadOnlyList<PlaylistTrack> tracks = _playlistCache.LastScanned;
+        if (tracks.Count == 0)
+        {
+            PlaylistStatusText.Text = "请先扫描歌单，再清理歌单外的缓存。";
+            return;
+        }
+
+        try
+        {
+            int removed = _playlistCache.PruneAsync(tracks);
+            PlaylistStatusText.Text = $"已清理 {removed} 首不在歌单内的缓存；歌单内的 {Math.Min(tracks.Count, _lyricsService.GetCachedKeys().Count)} 首保留。";
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, "Playlist:Prune");
+            PlaylistStatusText.Text = "清理失败：" + ex.Message;
         }
     }
 

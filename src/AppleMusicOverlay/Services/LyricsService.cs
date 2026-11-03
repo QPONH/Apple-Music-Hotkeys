@@ -618,6 +618,23 @@ public sealed class LyricsService
 
         try
         {
+            // A provider can answer with lyrics for a shorter edit of the track (radio edit, live
+            // take): the text is then correct but stops halfway, which drifts the overlay. Such an
+            // answer is only used when no complete one shows up.
+            LyricsLookupResult? incomplete = null;
+
+            async Task<LyricsLookupResult?> AcceptAsync(LyricsLookupResult? found, string provider)
+            {
+                if (found is null) return null;
+                if (IsCompleteLyrics(found.Lyrics, duration)) return await FinalizeAsync(Seal(found, provider));
+
+                incomplete ??= found;
+                TimeSpan last = found.Lyrics!.Lines[^1].Start;
+                CrashLog.WriteNote("LyricsIncomplete",
+                    $"{provider} | {title} | last={(int)last.TotalSeconds}s / {(int)duration.TotalSeconds}s");
+                return null;
+            }
+
             while (true)
             {
                 var pending = new List<Task>();
@@ -631,8 +648,8 @@ public sealed class LyricsService
 
                 if (lrclibTask.IsCompleted)
                 {
-                    LyricsLookupResult? found = TryBuild(title, artist, duration, await lrclibTask);
-                    if (found is not null) return await FinalizeAsync(Seal(found, "lrclib"));
+                    LyricsLookupResult? accepted = await AcceptAsync(TryBuild(title, artist, duration, await lrclibTask), "lrclib");
+                    if (accepted is not null) return accepted;
                 }
 
                 if (lrclibTask.IsCompleted || grace.IsCompleted)
@@ -640,20 +657,20 @@ public sealed class LyricsService
                     foreach (Task<(LrcLibResponse? Data, bool Failed)> task in fallbacks)
                     {
                         if (!task.IsCompleted) continue;
-                        LyricsLookupResult? found = TryBuild(title, artist, duration, await task);
-                        if (found is not null) return await FinalizeAsync(Seal(found, ProviderName(task)));
+                        LyricsLookupResult? accepted = await AcceptAsync(TryBuild(title, artist, duration, await task), ProviderName(task));
+                        if (accepted is not null) return accepted;
                     }
                 }
 
                 if (lrclibTask.IsCompleted && fallbacks.All(task => task.IsCompleted)) break;
             }
 
-            LyricsLookupResult? lrclibFound = TryBuild(title, artist, duration, await lrclibTask);
-            if (lrclibFound is not null) return await FinalizeAsync(Seal(lrclibFound, "lrclib"));
+            LyricsLookupResult? lrclibAccepted = await AcceptAsync(TryBuild(title, artist, duration, await lrclibTask), "lrclib");
+            if (lrclibAccepted is not null) return lrclibAccepted;
             foreach (Task<(LrcLibResponse? Data, bool Failed)> task in fallbacks)
             {
-                LyricsLookupResult? found = TryBuild(title, artist, duration, await task);
-                if (found is not null) return await FinalizeAsync(Seal(found, ProviderName(task)));
+                LyricsLookupResult? accepted = await AcceptAsync(TryBuild(title, artist, duration, await task), ProviderName(task));
+                if (accepted is not null) return accepted;
             }
 
             bool anyFailed = (await lrclibTask).Failed || (await neteaseTask).Failed || (await kugouTask).Failed;
@@ -663,10 +680,12 @@ public sealed class LyricsService
             {
                 (LrcLibResponse? ovh, bool ovhFailed) = await TryLyricsOvhAsync(candidates[0].Title, candidates[0].Artist, lookupToken);
                 anyFailed |= ovhFailed;
-                LyricsLookupResult? ovhFound = TryBuild(candidates[0].Title, candidates[0].Artist, duration, (ovh, ovhFailed));
-                if (ovhFound is not null) return await FinalizeAsync(ovhFound);
+                LyricsLookupResult? ovhAccepted = await AcceptAsync(
+                    TryBuild(candidates[0].Title, candidates[0].Artist, duration, (ovh, ovhFailed)), "lyricsovh");
+                if (ovhAccepted is not null) return ovhAccepted;
             }
 
+            if (incomplete is not null) return await FinalizeAsync(Seal(incomplete, "incomplete"));
             return anyFailed ? LyricsLookupResult.Unavailable : LyricsLookupResult.NotFound;
         }
         finally
@@ -690,6 +709,32 @@ public sealed class LyricsService
 
     /// <summary>Last provider outcome, for diagnostics (the log file may be locked by another instance).</summary>
     public static string LastTrace { get; private set; } = string.Empty;
+
+    /// <summary>
+    /// True when the lyric timeline reaches the end of the track. Lyrics for a shorter edit stop
+    /// halfway, so they are treated as a weak answer: usable, but never preferred over a complete one.
+    /// </summary>
+    private static bool IsCompleteLyrics(LyricsResult? lyrics, TimeSpan duration)
+    {
+        if (lyrics is null || lyrics.Lines.Count == 0) return false;
+        if (lyrics.Placeholder) return true;   // instrumental notice: nothing to cover
+        return LyricsCoverTrack(lyrics.Lines, duration);
+    }
+
+    /// <summary>Shared coverage rule: the last timestamp must reach (nearly) the end of the track.</summary>
+    private static bool LyricsCoverTrack(IReadOnlyList<LyricLine> lines, TimeSpan duration)
+    {
+        if (lines.Count == 0) return false;
+        if (duration < TimeSpan.FromSeconds(90)) return true;   // too short to judge reliably
+        TimeSpan last = lines[^1].Start;
+        if (last >= duration - TimeSpan.FromSeconds(60)) return true;
+        // Long instrumental outros legitimately have no lyric; accept anything covering most of it.
+        return last >= duration * 0.85;
+    }
+
+    /// <summary>Same coverage check for a raw LRC payload, used inside the providers.</summary>
+    private static bool LrcCoversTrack(string lrc, TimeSpan duration) =>
+        LyricsCoverTrack(ParseLrc(lrc), duration);
 
     private static string DescribeProvider(Task<(LrcLibResponse? Data, bool Failed)> task, string name)
     {
@@ -724,6 +769,10 @@ public sealed class LyricsService
         // the overlay show two lines of credits for the whole song, so ask the next provider.
         lines = WithoutCreditLines(lines);
         if (lines.Count == 0) return LyricsLookupResult.NotFound;
+
+        // LRC files often open with a "Title - Artist" header line at 00:00; showing it as a lyric
+        // adds a phantom first line that shifts the whole timeline by one sentence.
+        lines = WithoutHeaderLine(lines, title, artist);
 
         // NetEase can return a separate timestamped translation lyric (tlyric). Match each
         // translation to the nearest original line; other providers simply leave this empty.
@@ -806,6 +855,26 @@ public sealed class LyricsService
         if (filtered.Count == 0 || (lines.Count >= 3 && filtered.Count < 2 && filtered.Count * 2 < lines.Count))
             return new List<LyricLine>();
         return filtered;
+    }
+
+    /// <summary>
+    /// Drops the "Title - Artist" line that many LRC files place at 00:00 before the first lyric.
+    /// Keeping it shows a phantom line and shifts every following sentence by one position.
+    /// </summary>
+    private static List<LyricLine> WithoutHeaderLine(List<LyricLine> lines, string title, string artist)
+    {
+        if (lines.Count < 2 || lines[0].Start > TimeSpan.FromSeconds(3)) return lines;
+
+        string text = NormalizeForCompare(lines[0].Text);
+        if (text.Length == 0) return lines;
+        string wantedTitle = NormalizeForCompare(title);
+        string wantedArtist = NormalizeForCompare(artist);
+        bool looksLikeHeader = (wantedTitle.Length > 2 && text.Contains(wantedTitle, StringComparison.Ordinal))
+            || (wantedArtist.Length > 2 && text.Contains(wantedArtist, StringComparison.Ordinal));
+        // Only drop it when the payload has no translation attached to that line either.
+        return looksLikeHeader && string.IsNullOrWhiteSpace(lines[0].Translation)
+            ? lines.Skip(1).ToList()
+            : lines;
     }
 
     #region title / artist variants
@@ -995,7 +1064,7 @@ public sealed class LyricsService
         handler.SslOptions.EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;
         var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(12) };
         // LRCLIB asks clients to identify themselves; generic agents are rate limited harder.
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.50 (https://github.com/QPONH/Apple-Music-Hotkeys)");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.62 (https://github.com/QPONH/Apple-Music-Hotkeys)");
         client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
         return client;
     }
@@ -1140,7 +1209,9 @@ public sealed class LyricsService
         bool titleExact = wantedTitle.Length > 0 && itemTitle == wantedTitle;
         if (!IsPlausibleHit(titleExact || TitleMatches(itemTitle, wantedTitle), artistMatch, durationDiff)) return null;
         double score = (titleExact ? -8 : -3) + (artistMatch ? -4 : 6);
-        return durationDiff is double diff ? score + Math.Min(diff, 60) * 0.15 : score;
+        // The length is the only signal that separates the album take from a radio edit, a live
+        // version or a remix, so it outweighs the title/artist terms instead of nudging them.
+        return durationDiff is double diff ? score + Math.Min(diff, 30) * 0.5 : score;
     }
 
     /// <summary>
@@ -1163,16 +1234,21 @@ public sealed class LyricsService
             || wanted.Contains(candidate, StringComparison.Ordinal));
 
     /// <summary>
-    /// A hit is only accepted when it carries the playing artist, or when its length matches the
-    /// playing track within a couple of seconds. Accepting a same-titled hit from another artist
-    /// is what made the overlay show a completely different song's lyrics.
+    /// A hit is accepted when the title agrees and either the artist agrees or the length matches.
+    /// When the length is known it is a hard constraint: the same artist/title also exists as radio
+    /// edits, live takes and remixes, and accepting one of those produced lyrics that stop or drift
+    /// halfway through the real song.
     /// </summary>
     private static bool IsPlausibleHit(bool titleMatches, bool artistMatches, double? durationDiff)
     {
         if (!titleMatches) return false;
-        if (artistMatches) return true;
-        return durationDiff is double diff && diff <= 2.5;
+        if (durationDiff is double difference)
+            return difference <= (artistMatches ? MaxDurationDriftSeconds : 2.5);
+        return artistMatches;
     }
+
+    /// <summary>How far a catalogue entry's length may be from the playing track and still be the same recording.</summary>
+    private const double MaxDurationDriftSeconds = 5.0;
 
     /// <summary>Picks the closest hit by title, artist and duration instead of the first row.</summary>
     private static LrcLibResponse? PickBest(List<LrcLibResponse>? results, string title, string artist, TimeSpan duration)
@@ -1265,10 +1341,12 @@ public sealed class LyricsService
             }
 
             // Several catalogue entries can share title/artist/duration; only some carry a lyric
-            // (and a translation), so walk the ranked hits until one answers with content. When a
-            // translation is wanted, an entry that has one is preferred over the first hit with
-            // lyrics only (duplicates and instrumental editions are common).
-            LrcLibResponse? withoutTranslation = null;
+            // (and a translation). Preference order: complete + translated, complete, translated,
+            // anything — because an entry for a shorter edit yields lyrics that stop halfway.
+            LrcLibResponse? completeWithoutTranslation = null;
+            LrcLibResponse? completeTranslated = null;
+            LrcLibResponse? incompleteTranslated = null;
+            LrcLibResponse? anyFallback = null;
             foreach (NeteaseSong song in RankNeteaseSongs(results?.Result?.Songs, title, artist, duration))
             {
                 // The lyric endpoint is mirrored on several NetEase hosts. A single blocked host (the
@@ -1298,11 +1376,20 @@ public sealed class LyricsService
                     SyncedLyrics = synced,
                     TranslationLyrics = data?.Tlyric?.Lyric
                 };
-                if (!preferTranslation || !string.IsNullOrWhiteSpace(response.TranslationLyrics))
-                    return (response, false);
-                withoutTranslation ??= response;
+                // Several entries can share title/artist/duration. Preference: complete + translated,
+                // complete, translated, anything — an entry for a shorter edit stops halfway.
+                bool complete = LrcCoversTrack(synced, duration);
+                bool translated = !string.IsNullOrWhiteSpace(response.TranslationLyrics);
+                if (complete && (!preferTranslation || translated)) return (response, false);
+                if (complete && translated) completeTranslated ??= response;
+                if (complete) completeWithoutTranslation ??= response;
+                else if (translated) incompleteTranslated ??= response;
+                anyFallback ??= response;
             }
-            if (withoutTranslation is not null) return (withoutTranslation, false);
+
+            LrcLibResponse? best = completeTranslated ?? completeWithoutTranslation
+                ?? incompleteTranslated ?? anyFallback;
+            if (best is not null) return (best, false);
         }
         return (null, failed);
     }
@@ -1974,6 +2061,69 @@ public sealed class LyricsService
 
     #region parsing / helpers
 
+    /// <summary>
+    /// Parses NetEase's word-level lyric — "[lineStart,lineDuration](wordStart,wordDuration,0)char…" —
+    /// and starts a new line wherever the words pause. A provider line that merges several sung
+    /// sentences then becomes several timed lines, so the overlay advances sentence by sentence
+    /// instead of jumping a whole phrase at the line's start.
+    /// </summary>
+    private static List<LyricLine> ParseWordLevelLyrics(string payload)
+    {
+        const double SentencePauseMs = 700;
+        const double PunctuationPauseMs = 350;
+        const int MinSegmentChars = 4;
+        const string Punctuation = ",，.。!！?？;；、…—";
+
+        var result = new List<LyricLine>();
+        foreach (string rawLine in payload.Replace("\r", string.Empty).Split('\n'))
+        {
+            Match header = Regex.Match(rawLine, @"^\[(\d+),(\d+)\](.*)$");
+            if (!header.Success || !int.TryParse(header.Groups[1].Value, out int lineStartMs)) continue;
+
+            var segment = new System.Text.StringBuilder();
+            double segmentStartMs = lineStartMs;
+            double previousEndMs = lineStartMs;
+            bool first = true;
+
+            void Flush()
+            {
+                string text = segment.ToString().Trim();
+                segment.Clear();
+                if (text.Length == 0) return;
+                result.Add(new LyricLine(TimeSpan.FromMilliseconds(segmentStartMs), text));
+            }
+
+            foreach (Match word in Regex.Matches(header.Groups[3].Value, @"\((\d+),(\d+),\d+\)([^(]*)"))
+            {
+                if (!int.TryParse(word.Groups[1].Value, out int startMs)) continue;
+                _ = int.TryParse(word.Groups[2].Value, out int durationMs);
+                string text = word.Groups[3].Value;
+                if (text.Length == 0) continue;
+
+                if (!first)
+                {
+                    double gap = startMs - previousEndMs;
+                    char previous = segment.Length > 0 ? segment[segment.Length - 1] : ' ';
+                    bool afterPunctuation = Punctuation.Contains(previous);
+                    if ((gap > SentencePauseMs && segment.Length >= MinSegmentChars)
+                        || (gap > PunctuationPauseMs && afterPunctuation && segment.Length >= 2))
+                    {
+                        Flush();
+                        segmentStartMs = startMs;
+                    }
+                }
+
+                segment.Append(text);
+                previousEndMs = startMs + durationMs;
+                first = false;
+            }
+
+            Flush();
+        }
+
+        return result;
+    }
+
     private static List<LyricLine> ParseLrc(string lrc)
     {
         var result = new List<LyricLine>();
@@ -2158,6 +2308,47 @@ public sealed class LyricsService
         CrashLog.WriteNote("LyricsCache", "cleared");
     }
 
+    /// <summary>Snapshot of the cached track keys (title/artist, lower-cased) for the playlist cache manager.</summary>
+    public IReadOnlyList<string> GetCachedKeys()
+    {
+        lock (_cacheGate) return _lyricsCache.Keys.ToList();
+    }
+
+    /// <summary>Cache key for a track, so callers can tell whether its lyric is already stored.</summary>
+    public static string CacheKeyFor(string title, string artist) => BuildCacheKey(title, artist);
+
+    /// <summary>
+    /// Drops every cached lyric whose key is not in <paramref name="keepKeys"/>. Used to prune the
+    /// offline cache down to the current playlist. Returns how many entries were removed.
+    /// </summary>
+    public int RemoveCachedKeysExcept(ISet<string> keepKeys)
+    {
+        int removed = 0;
+        lock (_cacheGate)
+        {
+            foreach (string key in _lyricsCache.Keys.ToList())
+            {
+                if (keepKeys.Contains(key)) continue;
+                _lyricsCache.Remove(key);
+                removed++;
+            }
+
+            if (removed > 0)
+            {
+                string[] retained = _cacheOrder.Where(key => _lyricsCache.ContainsKey(key)).ToArray();
+                _cacheOrder.Clear();
+                foreach (string key in retained) _cacheOrder.Enqueue(key);
+            }
+        }
+
+        if (removed > 0)
+        {
+            CrashLog.WriteNote("LyricsCache", $"pruned {removed} entries");
+            SaveCacheToDisk();
+        }
+        return removed;
+    }
+
     /// <summary>
     /// Coalesces cache writes, but snapshots only after the debounce interval. This avoids losing
     /// lyrics learned during a quick sequence of track changes and keeps dictionary access safe.
@@ -2257,6 +2448,8 @@ public sealed class LyricsService
         [JsonPropertyName("syncedLyrics")] public string? SyncedLyrics { get; set; }
         [JsonPropertyName("plainLyrics")] public string? PlainLyrics { get; set; }
         [JsonIgnore] public string? TranslationLyrics { get; set; }
+        /// <summary>NetEase's word-level lyric (yrc): per-word timings that allow sentence splitting.</summary>
+        [JsonIgnore] public string? WordLevelLyrics { get; set; }
     }
 
     private sealed class ItunesSearchResponse
@@ -2302,7 +2495,7 @@ public sealed class LyricsService
         public List<NeteaseArtist>? ArtistList => Artists ?? Ar;
     }
     private sealed class NeteaseArtist { [JsonPropertyName("name")] public string? Name { get; set; } }
-    private sealed class NeteaseLyricsResponse { [JsonPropertyName("lrc")] public NeteaseLrc? Lrc { get; set; } [JsonPropertyName("tlyric")] public NeteaseLrc? Tlyric { get; set; } }
+    private sealed class NeteaseLyricsResponse { [JsonPropertyName("lrc")] public NeteaseLrc? Lrc { get; set; } [JsonPropertyName("tlyric")] public NeteaseLrc? Tlyric { get; set; } [JsonPropertyName("yrc")] public NeteaseLrc? Yrc { get; set; } }
     private sealed class NeteaseLrc { [JsonPropertyName("lyric")] public string? Lyric { get; set; } }
 
     private sealed class QqSearchResponse { [JsonPropertyName("data")] public QqSearchData? Data { get; set; } }

@@ -234,8 +234,8 @@ public sealed class LyricsWindow : Window
 
             // Positive offset means lyrics should appear later, so evaluate the timeline earlier.
             TimeSpan adjustedPosition = playback.Position - TimeSpan.FromMilliseconds(_settings.LyricsOffsetMilliseconds);
-            int index = _lines.TakeWhile(line => line.Start <= adjustedPosition).Count() - 1;
-            if (index < 0) index = 0;
+            int index = FindLineIndex(adjustedPosition);
+            LogSyncDiagnostic(playback, adjustedPosition, index);
             index = StableLineIndex(index, adjustedPosition);
             Render(_lines[index].Text, index + 1 < _lines.Count ? _lines[index + 1].Text : string.Empty, _lines[index].Translation ?? string.Empty, index + 1 < _lines.Count ? _lines[index + 1].Translation ?? string.Empty : string.Empty);
         }
@@ -246,6 +246,54 @@ public sealed class LyricsWindow : Window
             if (!_lifetimeCancellation.IsCancellationRequested) Render("歌词读取异常；详情已写入日志", "");
         }
         finally { _updating = false; }
+    }
+
+    private DateTime _lastSyncLogUtc = DateTime.MinValue;
+
+    /// <summary>
+    /// Index of the last line that has started at <paramref name="position"/>. Binary search: this
+    /// runs on every tick and the previous linear scan walked the whole list each time.
+    /// </summary>
+    private int FindLineIndex(TimeSpan position)
+    {
+        if (_lines.Count == 0) return 0;
+        int low = 0;
+        int high = _lines.Count - 1;
+        int found = 0;
+        while (low <= high)
+        {
+            int mid = (low + high) / 2;
+            if (_lines[mid].Start <= position)
+            {
+                found = mid;
+                low = mid + 1;
+            }
+            else
+            {
+                high = mid - 1;
+            }
+        }
+        return found;
+    }
+
+    /// <summary>
+    /// Writes one line every five seconds with the numbers that decide the current sentence, so a
+    /// persistent offset can be read off the log instead of guessed: raw session position, the
+    /// compensated position, the applied offset and the line that was picked.
+    /// </summary>
+    private void LogSyncDiagnostic(PlaybackSnapshot playback, TimeSpan adjustedPosition, int index)
+    {
+        DateTime now = DateTime.UtcNow;
+        if ((now - _lastSyncLogUtc).TotalSeconds < 5) return;
+        _lastSyncLogUtc = now;
+
+        TimeSpan lineStart = _lines.Count > 0 ? _lines[Math.Clamp(index, 0, _lines.Count - 1)].Start : TimeSpan.Zero;
+        CrashLog.WriteNote("LyricsSync",
+            $"{_titleKey} | reported={(int)SmtcMediaSessionService.LastReportedPosition.TotalMilliseconds}ms"
+            + $" computed={(int)playback.Position.TotalMilliseconds}ms"
+            + $" adjusted={(int)adjustedPosition.TotalMilliseconds}ms"
+            + $" offset={_settings.LyricsOffsetMilliseconds}ms"
+            + $" line={index}/{_lines.Count} lineStart={(int)lineStart.TotalMilliseconds}ms");
     }
 
     private void MaybePrefetchNextAlbumTrack(PlaybackSnapshot playback, string title, string artist)

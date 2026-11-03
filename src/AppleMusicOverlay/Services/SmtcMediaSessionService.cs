@@ -150,23 +150,56 @@ public sealed class SmtcMediaSessionService
             var info = session.GetPlaybackInfo();
             if (info?.PlaybackStatus is GlobalSystemMediaTransportControlsSessionPlaybackStatus.Closed) return null;
 
-            var properties = await session.TryGetMediaPropertiesAsync().AsTask(cancellationToken);
+            // TryGetMediaPropertiesAsync crosses into the player process and is by far the most
+            // expensive call on this path — it runs on every overlay tick (~8 Hz) only to read
+            // title/artist/album, which almost never change. It is cached for half a second, which
+            // keeps track-change detection prompt while removing most of the interop traffic.
+            DateTime nowUtc = DateTime.UtcNow;
+            if (_cachedProperties is null
+                || !string.Equals(_cachedPropertiesSessionId, session.SourceAppUserModelId, StringComparison.Ordinal)
+                || nowUtc - _cachedPropertiesUtc > MetadataTtl)
+            {
+                _cachedProperties = await session.TryGetMediaPropertiesAsync().AsTask(cancellationToken);
+                _cachedPropertiesUtc = nowUtc;
+                _cachedPropertiesSessionId = session.SourceAppUserModelId;
+            }
+
+            var properties = _cachedProperties;
             if (properties is null || string.IsNullOrWhiteSpace(properties.Title)) return null;
 
             var timeline = session.GetTimelineProperties();
             bool playing = info?.PlaybackStatus == GlobalSystemMediaTransportControlsSessionPlaybackStatus.Playing;
             double rate = info?.PlaybackRate is double value && value > 0.05 && value < 4 ? value : 1.0;
             TimeSpan duration = ReadDuration(timeline);
-            TimeSpan position = AdvancePosition(
-                $"{properties.Title}\n{ResolveArtist(properties)}",
-                timeline?.Position ?? TimeSpan.Zero,
-                playing,
-                rate,
-                duration);
+            TimeSpan reportedPosition = timeline?.Position ?? TimeSpan.Zero;
+
+            // Apple Music sometimes reports an end time that is an absolute clock rather than the
+            // track length, which yields a "duration" shorter than the position already played.
+            // The position is clamped to the duration, so trusting such a value freezes the overlay
+            // mid-song; fall back to a length derived from the position instead of dropping it,
+            // because the lyric lookup still needs a usable duration for version matching.
+            if (duration > TimeSpan.Zero && duration < reportedPosition + TimeSpan.FromSeconds(5))
+                duration = reportedPosition + TimeSpan.FromSeconds(1);
+
+            // This runs on every overlay tick (~8 Hz), so the expensive parts (artist resolution and
+            // the title/artist concatenation used as the track key) are only rebuilt when the track
+            // actually changes.
+            string title = properties.Title;
+            string artist = ResolveArtist(properties);
+            if (!string.Equals(title, _cachedTitle, StringComparison.Ordinal)
+                || !string.Equals(artist, _cachedArtist, StringComparison.Ordinal))
+            {
+                _cachedTitle = title;
+                _cachedArtist = artist;
+                _cachedTrackKey = title + "\n" + artist;
+                _cachedAlbum = (properties.AlbumTitle ?? string.Empty).Trim();
+            }
+
+            TimeSpan position = AdvancePosition(_cachedTrackKey, reportedPosition, playing, rate, duration);
             return new PlaybackSnapshot(
-                properties.Title.Trim(),
-                ResolveArtist(properties).Trim(),
-                (properties.AlbumTitle ?? string.Empty).Trim(),
+                title.Trim(),
+                artist.Trim(),
+                _cachedAlbum,
                 position,
                 duration,
                 playing);
@@ -177,50 +210,124 @@ public sealed class SmtcMediaSessionService
             // The SMTC manager itself also goes stale after these RPC failures; drop it so the
             // next poll creates a fresh one instead of failing until the process restarts.
             _manager = null;
+            // The cached metadata belonged to the session that just died; a fresh one must be read.
+            _cachedProperties = null;
+            _cachedPropertiesSessionId = string.Empty;
             return null;
         }
     }
 
     private string _positionTrackKey = string.Empty;
-    private TimeSpan _positionAnchor;
-    private DateTime _positionAnchorUtc;
+    private GlobalSystemMediaTransportControlsSessionMediaProperties? _cachedProperties;
+    private DateTime _cachedPropertiesUtc;
+    private string _cachedPropertiesSessionId = string.Empty;
+    private static readonly TimeSpan MetadataTtl = TimeSpan.FromMilliseconds(500);
+    private string _cachedTitle = string.Empty;
+    private string _cachedArtist = string.Empty;
+    private string _cachedAlbum = string.Empty;
+    private string _cachedTrackKey = string.Empty;
+    private TimeSpan _anchorPosition;
+    private DateTime _anchorUtc;
+    private TimeSpan _lastReported = TimeSpan.MinValue;
+    private TimeSpan _position;
+    private DateTime _lastTickUtc;
+    private bool _positionSeeded;
+    private bool _wasPlaying;
 
     /// <summary>
-    /// Advances the reported position to "now". SMTC only refreshes <c>TimelineProperties.Position</c>
-    /// about once per second, and <c>LastUpdatedTime</c> is not a reliable clock (for Apple Music it
-    /// can lag far behind the reported position). Trusting it made the overlay jump ahead of the
-    /// audio, so the elapsed time since our own previous poll is used instead: the position runs at
-    /// real time and snaps to the reported value when that value is ahead (seek forward) or more
-    /// than two seconds behind (seek back). Pausing freezes it.
+    /// Apple Music's media-session position trails the audio by about a second: with an offset of
+    /// −1000 ms the overlay finally matched the music. A negative offset moves the lyric evaluation
+    /// forward in time, so the compensation adds this much to the position — measured on the
+    /// reference machine, and kept here so the slider can stay at zero.
+    /// </summary>
+    private static readonly TimeSpan SessionLag = TimeSpan.FromMilliseconds(1000);
+
+    /// <summary>
+    /// Turns the once-per-second session position into a smooth, strictly increasing clock.
+    ///
+    /// Each fresh sample starts a new anchor (sample time + elapsed since the sample), which makes the
+    /// target advance at real time; the returned position follows that target with a low-pass filter
+    /// and is clamped so it can never step backwards. The previous implementation re-based on either
+    /// the sample or its own prediction every poll — that is what made a single song speed up and
+    /// slow down.
     /// </summary>
     private TimeSpan AdvancePosition(string trackKey, TimeSpan reported, bool playing, double rate, TimeSpan duration)
     {
         DateTime now = DateTime.UtcNow;
-        TimeSpan position;
 
-        if (!playing || !string.Equals(trackKey, _positionTrackKey, StringComparison.Ordinal))
+        if (!string.Equals(trackKey, _positionTrackKey, StringComparison.Ordinal))
         {
-            position = reported;
             _positionTrackKey = trackKey;
-            _positionAnchor = position;
-            _positionAnchorUtc = now;
+            _positionSeeded = false;
+            _lastReported = TimeSpan.MinValue;
         }
-        else
+
+        // The session value is later than the audio, so the lyric lane is shifted forward by the lag.
+        TimeSpan compensated = reported + SessionLag;
+
+        if (!playing)
         {
-            double elapsed = (now - _positionAnchorUtc).TotalSeconds;
-            if (elapsed < 0) elapsed = 0;
-            TimeSpan predicted = _positionAnchor + TimeSpan.FromSeconds(elapsed * rate);
-
-            if (reported > predicted + TimeSpan.FromMilliseconds(400)) position = reported;   // sample is ahead
-            else if (reported < predicted - TimeSpan.FromSeconds(2)) position = reported;     // real seek back
-            else position = predicted;
-
-            _positionAnchor = position;
-            _positionAnchorUtc = now;
+            // Paused: freeze instead of re-seeding from a stale sample.
+            _wasPlaying = false;
+            return Clamp(_positionSeeded ? _position : compensated, duration);
         }
 
-        if (position < TimeSpan.Zero) position = TimeSpan.Zero;
-        if (duration > TimeSpan.Zero && position > duration) position = duration;
+        // Resuming must re-anchor: otherwise the whole paused stretch is added as elapsed time and
+        // the overlay jumps forward by the pause length.
+        if (!_wasPlaying) _positionSeeded = false;
+        _wasPlaying = true;
+
+        if (!_positionSeeded || reported != _lastReported)
+        {
+            _lastReported = reported;
+            _anchorPosition = compensated;
+            _anchorUtc = now;
+        }
+
+        TimeSpan target = _anchorPosition + (now - _anchorUtc);
+        if (!_positionSeeded)
+        {
+            _position = target;
+            _positionSeeded = true;
+            _lastTickUtc = now;
+            return Clamp(_position, duration);
+        }
+
+        // Advance by the real elapsed time first, then apply a small share of the remaining error.
+        // A pure "follow the target" filter runs a constant distance behind it (the error can never
+        // close while the target keeps moving), which is exactly the fixed lag this is meant to fix.
+        TimeSpan sinceLastTick = now - _lastTickUtc;
+        if (sinceLastTick < TimeSpan.Zero) sinceLastTick = TimeSpan.Zero;
+        _lastTickUtc = now;
+
+        TimeSpan next = _position + sinceLastTick;
+        TimeSpan error = target - next;
+        if (Math.Abs(error.TotalSeconds) > 3)
+            next = target;                                   // seek or large correction: jump
+        else
+            next += TimeSpan.FromMilliseconds(error.TotalMilliseconds * 0.08);
+
+        // Hold the clock steady against sampling jitter, but do not clamp it hard: always forcing it
+        // forward turns every jitter swing into a permanent ratchet, which ended up overshooting the
+        // compensated lane by several hundred milliseconds.
+        if (next < _position - TimeSpan.FromMilliseconds(250)) next = _position - TimeSpan.FromMilliseconds(250);
+
+        _position = Clamp(next, duration);
+        LastReportedPosition = reported;
+        LastComputedPosition = _position;
+        return _position;
+    }
+
+    /// <summary>Raw session position from the last poll, for the sync diagnostic line.</summary>
+    public static TimeSpan LastReportedPosition { get; private set; }
+
+    /// <summary>Compensated position handed to the overlay on the last poll.</summary>
+    public static TimeSpan LastComputedPosition { get; private set; }
+
+    private static TimeSpan Clamp(TimeSpan position, TimeSpan duration)
+    {
+        if (position < TimeSpan.Zero) return TimeSpan.Zero;
+        if (duration > TimeSpan.Zero && position > duration) return duration;
         return position;
     }
 
