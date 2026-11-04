@@ -1064,7 +1064,7 @@ public sealed class LyricsService
         handler.SslOptions.EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;
         var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(12) };
         // LRCLIB asks clients to identify themselves; generic agents are rate limited harder.
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.62 (https://github.com/QPONH/Apple-Music-Hotkeys)");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.63 (https://github.com/QPONH/Apple-Music-Hotkeys)");
         client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
         return client;
     }
@@ -1207,8 +1207,20 @@ public sealed class LyricsService
     private static double? ScoreCandidate(string wantedTitle, string itemTitle, bool artistMatch, double? durationDiff)
     {
         bool titleExact = wantedTitle.Length > 0 && itemTitle == wantedTitle;
-        if (!IsPlausibleHit(titleExact || TitleMatches(itemTitle, wantedTitle), artistMatch, durationDiff)) return null;
-        double score = (titleExact ? -8 : -3) + (artistMatch ? -4 : 6);
+        bool titleMatches = titleExact || TitleMatches(itemTitle, wantedTitle);
+
+        // A localized catalogue entry keeps the artist and the length but translates the title: the
+        // track Apple Music calls "Magic Maid (feat. KASANE TETO)" is indexed by the Chinese
+        // providers as「マジック・メイド (feat. 重音テト)」. Such a hit is only accepted when the two
+        // titles use different scripts, the artist agrees and the length is within a few seconds, so
+        // an unrelated track of the same artist cannot slip through.
+        bool translatedTitle = !titleMatches && artistMatch
+            && durationDiff is double drift && drift <= 3.0
+            && IsLocalizedPair(wantedTitle, itemTitle);
+        if (!titleMatches && !translatedTitle) return null;
+        if (!IsPlausibleHit(true, artistMatch, durationDiff)) return null;
+
+        double score = (titleExact ? -8 : titleMatches ? -3 : 0) + (artistMatch ? -4 : 6);
         // The length is the only signal that separates the album take from a radio edit, a live
         // version or a remix, so it outweighs the title/artist terms instead of nudging them.
         return durationDiff is double diff ? score + Math.Min(diff, 30) * 0.5 : score;
@@ -1432,6 +1444,10 @@ public sealed class LyricsService
 
         Add(string.IsNullOrWhiteSpace(coreArtist) ? coreTitle : $"{coreTitle} {coreArtist}");
         Add(string.IsNullOrWhiteSpace(artist) ? title : $"{title} {artist}");
+        // The title on its own: a localized entry stores a translated title that shares no words with
+        // the reported one, so "artist title" returns unrelated songs while the bare title still
+        // finds it. Tried last because it is the least specific.
+        Add(coreTitle);
         return texts;
     }
 
@@ -1490,17 +1506,34 @@ public sealed class LyricsService
             // Apple Music can report "Artist — Album - Single"; the album part only pollutes the
             // search keyword and made KuGou return nothing.
             string searchArtist = Regex.Split(artist, @"\s+[—–]\s+|\s+-\s+")[0].Trim();
-            string keyword = string.IsNullOrWhiteSpace(searchArtist) ? title : $"{searchArtist} {title}";
-            string url = "https://songsearch.kugou.com/song_search_v2?page=1&pagesize=8&userid=-1&platform=WebFilter&filter=2&iscorrection=1&privilege_filter=0&keyword="
-                + Uri.EscapeDataString(keyword);
-            using HttpResponseMessage search = await SendAsync(() => BrowserRequest(url), token);
-            if (!search.IsSuccessStatusCode) return (null, IsRetriableStatus(search.StatusCode) || search.StatusCode == HttpStatusCode.Forbidden);
-
             bool failed = false;
-            string body = await search.Content.ReadAsStringAsync(token);
-            List<KugouHit> hits = ReadKugouHits(body);
 
-            foreach (KugouHit hit in RankKugouHits(hits, title, searchArtist, duration))
+            async Task<List<KugouHit>> SearchAsync(string searchText)
+            {
+                string url = "https://songsearch.kugou.com/song_search_v2?page=1&pagesize=8&userid=-1&platform=WebFilter&filter=2&iscorrection=1&privilege_filter=0&keyword="
+                    + Uri.EscapeDataString(searchText);
+                using HttpResponseMessage search = await SendAsync(() => BrowserRequest(url), token);
+                if (!search.IsSuccessStatusCode)
+                {
+                    failed = IsRetriableStatus(search.StatusCode) || search.StatusCode == HttpStatusCode.Forbidden;
+                    return new List<KugouHit>();
+                }
+
+                return ReadKugouHits(await search.Content.ReadAsStringAsync(token));
+            }
+
+            string keyword = string.IsNullOrWhiteSpace(searchArtist) ? title : $"{searchArtist} {title}";
+            List<KugouHit> hits = await SearchAsync(keyword);
+            List<KugouHit> ranked = RankKugouHits(hits, title, searchArtist, duration);
+            if (ranked.Count == 0 && !string.Equals(keyword, title, StringComparison.Ordinal))
+            {
+                // A translated catalogue entry shares no words with the reported title, so the
+                // "artist title" query misses it while the bare title still finds it.
+                hits = await SearchAsync(title);
+                ranked = RankKugouHits(hits, title, searchArtist, duration);
+            }
+
+            foreach (KugouHit hit in ranked)
             {
                 int durationMs = hit.DurationSeconds > 0
                     ? (int)Math.Round(hit.DurationSeconds * 1000)
@@ -1580,14 +1613,26 @@ public sealed class LyricsService
         string title, string artist, TimeSpan duration, CancellationToken token)
     {
         string keyword = string.IsNullOrWhiteSpace(artist) ? title : $"{title} {artist}";
-        string searchUrl = "https://search.kuwo.cn/r.s?all=" + Uri.EscapeDataString(keyword)
-            + "&ft=music&client=kt&pn=0&rn=10&rformat=json&encoding=utf8";
-        using HttpResponseMessage search = await SendAsync(() => BrowserRequest(searchUrl), token);
-        if (!search.IsSuccessStatusCode) return (null, IsRetriableStatus(search.StatusCode));
 
-        string body = await search.Content.ReadAsStringAsync(token);
-        // The Kuwo payload is a large JS-ish literal; scanning it must never run on the UI thread.
-        List<long> musicIds = await Task.Run(() => RankKuwoSongIds(body, title, artist, duration), token);
+        async Task<List<long>> SearchAsync(string searchText)
+        {
+            string url = "https://search.kuwo.cn/r.s?all=" + Uri.EscapeDataString(searchText)
+                + "&ft=music&client=kt&pn=0&rn=10&rformat=json&encoding=utf8";
+            using HttpResponseMessage search = await SendAsync(() => BrowserRequest(url), token);
+            if (!search.IsSuccessStatusCode) return new List<long>();
+            string payload = await search.Content.ReadAsStringAsync(token);
+            // The Kuwo payload is a large JS-ish literal; scanning it must never run on the UI thread.
+            return await Task.Run(() => RankKuwoSongIds(payload, title, artist, duration), token);
+        }
+
+        List<long> musicIds = await SearchAsync(keyword);
+        if (musicIds.Count == 0 && !string.Equals(keyword, title, StringComparison.Ordinal))
+        {
+            // A translated catalogue entry shares no words with the reported title, so the
+            // "title artist" query misses it while the bare title still finds it.
+            musicIds = await SearchAsync(title);
+        }
+
         foreach (long musicId in musicIds)
         {
             string lyricUrl = $"https://m.kuwo.cn/newh5/singles/songinfoandlrc?musicId={musicId}&httpsStatus=1";
