@@ -1064,7 +1064,7 @@ public sealed class LyricsService
         handler.SslOptions.EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;
         var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(12) };
         // LRCLIB asks clients to identify themselves; generic agents are rate limited harder.
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.63 (https://github.com/QPONH/Apple-Music-Hotkeys)");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.64 (https://github.com/QPONH/Apple-Music-Hotkeys)");
         client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
         return client;
     }
@@ -1308,6 +1308,10 @@ public sealed class LyricsService
         IReadOnlyList<(string Title, string Artist)> candidates, TimeSpan duration, bool preferTranslation,
         CancellationToken token)
     {
+        // NetEase rate-limits anonymous clients. Hammering it after a failure (the overlay retries
+        // three times per track) turns a short hiccup into minutes of "no lyrics", so a failed
+        // attempt parks this provider for a while.
+        if (DateTime.UtcNow < _neteaseCooldownUntil) return (null, true);
         try
         {
             bool failed = false;
@@ -1317,16 +1321,28 @@ public sealed class LyricsService
                 if (tried++ >= 2) break;
                 (LrcLibResponse? data, bool callFailed) = await TryNeteaseAsync(title, artist, duration, preferTranslation, token);
                 failed |= callFailed;
-                if (data is not null) return (data, false);
+                if (data is not null)
+                {
+                    _neteaseCooldownUntil = default;   // a reply means the provider works again
+                    return (data, false);
+                }
             }
+            if (failed) _neteaseCooldownUntil = DateTime.UtcNow + ProviderCooldown;
             return (null, failed);
         }
         catch (Exception ex) when (IsTransient(ex) && !token.IsCancellationRequested)
         {
             CrashLog.Write(ex, "Lyrics:Netease");
+            _neteaseCooldownUntil = DateTime.UtcNow + ProviderCooldown;
             return (null, true);
         }
     }
+
+    /// <summary>How long a provider is skipped after it starts failing, so a limit is not aggravated.</summary>
+    private static readonly TimeSpan ProviderCooldown = TimeSpan.FromSeconds(20);
+    private static DateTime _neteaseCooldownUntil;
+    private static DateTime _kugouCooldownUntil;
+    private static DateTime _kuwoCooldownUntil;
 
     private static async Task<(LrcLibResponse? Data, bool Failed)> TryNeteaseAsync(
         string title, string artist, TimeSpan duration, bool preferTranslation, CancellationToken token)
@@ -1444,11 +1460,24 @@ public sealed class LyricsService
 
         Add(string.IsNullOrWhiteSpace(coreArtist) ? coreTitle : $"{coreTitle} {coreArtist}");
         Add(string.IsNullOrWhiteSpace(artist) ? title : $"{title} {artist}");
-        // The title on its own: a localized entry stores a translated title that shares no words with
-        // the reported one, so "artist title" returns unrelated songs while the bare title still
-        // finds it. Tried last because it is the least specific.
-        Add(coreTitle);
+        // The title on its own finds a localized entry whose translated title shares no words with
+        // the reported one ("Magic Maid" →「マジック・メイド」). It is only worth an extra request when
+        // the reported title is Latin and the catalogue may hold a CJK translation; adding it
+        // unconditionally multiplied the search traffic and tripped NetEase's rate limit, which
+        // surfaced as "no lyrics" for a whole session.
+        if (IsLatinTitle(coreTitle)) Add(coreTitle);
         return texts;
+    }
+
+    /// <summary>True when the text is written without CJK characters (a translated title would differ).</summary>
+    private static bool IsLatinTitle(string text)
+    {
+        if (text.Length == 0) return false;
+        foreach (char c in text)
+        {
+            if (c >= 0x2E80) return false;
+        }
+        return true;
     }
 
     private static HttpRequestMessage BrowserRequest(string url)
@@ -1501,6 +1530,7 @@ public sealed class LyricsService
 
     private static async Task<(LrcLibResponse? Data, bool Failed)> TryKugouAsync(string title, string artist, TimeSpan duration, CancellationToken token)
     {
+        if (DateTime.UtcNow < _kugouCooldownUntil) return (null, true);
         try
         {
             // Apple Music can report "Artist — Album - Single"; the album part only pollutes the
@@ -1525,10 +1555,11 @@ public sealed class LyricsService
             string keyword = string.IsNullOrWhiteSpace(searchArtist) ? title : $"{searchArtist} {title}";
             List<KugouHit> hits = await SearchAsync(keyword);
             List<KugouHit> ranked = RankKugouHits(hits, title, searchArtist, duration);
-            if (ranked.Count == 0 && !string.Equals(keyword, title, StringComparison.Ordinal))
+            if (ranked.Count == 0 && !string.Equals(keyword, title, StringComparison.Ordinal) && IsLatinTitle(title))
             {
                 // A translated catalogue entry shares no words with the reported title, so the
-                // "artist title" query misses it while the bare title still finds it.
+                // "artist title" query misses it while the bare title still finds it. Restricted to
+                // Latin titles so ordinary tracks do not pay for a second search.
                 hits = await SearchAsync(title);
                 ranked = RankKugouHits(hits, title, searchArtist, duration);
             }
@@ -1571,11 +1602,13 @@ public sealed class LyricsService
                 }
             }
 
+            if (failed) _kugouCooldownUntil = DateTime.UtcNow + ProviderCooldown;
             return (null, failed);
         }
         catch (Exception ex) when (IsTransient(ex) && !token.IsCancellationRequested)
         {
             CrashLog.Write(ex, "Lyrics:Kugou");
+            _kugouCooldownUntil = DateTime.UtcNow + ProviderCooldown;
             return (null, true);
         }
     }
@@ -1600,11 +1633,13 @@ public sealed class LyricsService
                 failed |= callFailed;
                 if (data is not null) return (data, false);
             }
+            if (failed) _kuwoCooldownUntil = DateTime.UtcNow + ProviderCooldown;
             return (null, failed);
         }
         catch (Exception ex) when (IsTransient(ex) && !token.IsCancellationRequested)
         {
             CrashLog.Write(ex, "Lyrics:Kuwo");
+            _kuwoCooldownUntil = DateTime.UtcNow + ProviderCooldown;
             return (null, true);
         }
     }
@@ -1612,6 +1647,7 @@ public sealed class LyricsService
     private static async Task<(LrcLibResponse? Data, bool Failed)> TryKuwoCandidateAsync(
         string title, string artist, TimeSpan duration, CancellationToken token)
     {
+        if (DateTime.UtcNow < _kuwoCooldownUntil) return (null, true);
         string keyword = string.IsNullOrWhiteSpace(artist) ? title : $"{title} {artist}";
 
         async Task<List<long>> SearchAsync(string searchText)
@@ -1626,7 +1662,7 @@ public sealed class LyricsService
         }
 
         List<long> musicIds = await SearchAsync(keyword);
-        if (musicIds.Count == 0 && !string.Equals(keyword, title, StringComparison.Ordinal))
+        if (musicIds.Count == 0 && !string.Equals(keyword, title, StringComparison.Ordinal) && IsLatinTitle(title))
         {
             // A translated catalogue entry shares no words with the reported title, so the
             // "title artist" query misses it while the bare title still finds it.
