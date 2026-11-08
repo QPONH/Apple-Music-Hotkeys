@@ -338,6 +338,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         // the tray's "打开设置" would immediately disappear.
         RunStartupInitialization();
         RefreshPlaylistCacheInfo();
+        RefreshSuppressedList();
     }
 
     private void RunStartupInitialization()
@@ -682,7 +683,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
                 buildTime = System.IO.File.GetLastWriteTime(path).ToString("yyyy-MM-dd HH:mm");
         }
         catch { }
-        VersionText.Text = $"v14.64 · 构建 {buildTime} · {Environment.OSVersion.Version}";
+        VersionText.Text = $"v14.69 · 构建 {buildTime} · {Environment.OSVersion.Version}";
     }
 
     private bool _lowIntegrityWarningShown;
@@ -815,6 +816,86 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         if (_lyricsWindow is not { IsVisible: true }) ShowLyricsWindow();
         _lyricsWindow?.RequestManualReload();
         StatusText = "正在重新查找当前歌曲的歌词……";
+    }
+
+    private async void BlockWrongLyrics_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            PlaybackSnapshot? playback = await _mediaService.GetCurrentPlaybackAsync();
+            if (playback is null || string.IsNullOrWhiteSpace(playback.Title))
+            {
+                LyricsBlockStatusText.Text = "没有正在播放的歌曲，先播放再点。";
+                return;
+            }
+
+            string? source = _lyricsWindow?.CurrentSource;
+            if (string.IsNullOrWhiteSpace(source))
+            {
+                LyricsBlockStatusText.Text = "当前没有可用的歌词来源信息（歌词还没显示出来），等歌词出现后再点。";
+                return;
+            }
+
+            bool exhausted = _lyricsService.BlockSource(playback.Title, playback.Artist, source);
+            if (_settings.LyricsEnabled)
+            {
+                if (_lyricsWindow is not { IsVisible: true }) ShowLyricsWindow();
+                _lyricsWindow?.RequestManualReload();
+            }
+
+            LyricsBlockStatusText.Text = exhausted
+                ? $"「{source}」是这首歌的最后一个来源：{playback.Title} 以后不再显示歌词（已加入下方列表）。"
+                : $"已排除来源「{source}」，正在换下一个来源查找这首歌。";
+            RefreshSuppressedList();
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, "Lyrics:Block");
+            LyricsBlockStatusText.Text = "标记失败：" + ex.Message;
+        }
+    }
+
+    private void ClearBlockedLyrics_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            _lyricsService.ClearBlocked();
+            LyricsBlockStatusText.Text = "已清除全部「歌词不对」标记，这些歌会恢复正常查找。";
+            RefreshSuppressedList();
+            if (_settings.LyricsEnabled)
+            {
+                if (_lyricsWindow is not { IsVisible: true }) ShowLyricsWindow();
+                _lyricsWindow?.RequestManualReload();
+            }
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, "Lyrics:BlockClear");
+            LyricsBlockStatusText.Text = "清除失败：" + ex.Message;
+        }
+    }
+
+    /// <summary>Fills the "no lyrics any more" list from the per-track rejected-source map.</summary>
+    private void RefreshSuppressedList()
+    {
+        try
+        {
+            var rows = new List<string>();
+            foreach ((string key, IReadOnlyList<string> sources) in _lyricsService.GetRejectedMap()
+                .OrderBy(pair => pair.Key, StringComparer.Ordinal))
+            {
+                string label = key.Replace("\n", " — ");
+                rows.Add(sources.Count >= LyricsService.AllProviderNames.Length
+                    ? $"{label}（全部来源已排除）"
+                    : $"{label}（已排除：{string.Join("、", sources)}）");
+            }
+            if (rows.Count == 0) rows.Add("（暂无）");
+            LyricsBlockList.ItemsSource = rows;
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, "Lyrics:BlockList");
+        }
     }
 
     private void ClearLyricsCache_Click(object sender, RoutedEventArgs e)

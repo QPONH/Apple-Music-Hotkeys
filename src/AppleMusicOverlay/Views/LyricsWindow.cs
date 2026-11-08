@@ -32,6 +32,9 @@ public sealed class LyricsWindow : Window
     private readonly DispatcherTimer _boundsSaveTimer = new(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(300) };
     private readonly CancellationTokenSource _lifetimeCancellation = new();
     private IReadOnlyList<LyricLine> _lines = Array.Empty<LyricLine>();
+
+    /// <summary>Source that produced the lyrics on screen, so "wrong lyrics" can drop exactly that one.</summary>
+    public string? CurrentSource { get; private set; }
     private string _trackKey = string.Empty;
     private string _titleKey = string.Empty;
     private string _artistKey = string.Empty;
@@ -324,6 +327,7 @@ public sealed class LyricsWindow : Window
     {
         CancelCurrentLookup();
         _lines = Array.Empty<LyricLine>();
+        CurrentSource = null;
         _lookupStatus = null;
         _lookupRunning = false;
         _correctionPending = false;
@@ -438,6 +442,7 @@ public sealed class LyricsWindow : Window
             if (result.Lyrics is not null)
             {
                 _lines = result.Lyrics.Lines;
+                CurrentSource = result.Lyrics.Source;
                 _lookupStatus = LyricsLookupStatus.Found;
                 _retryAttempt = 0;
                 _nextRetryUtc = DateTime.MaxValue;

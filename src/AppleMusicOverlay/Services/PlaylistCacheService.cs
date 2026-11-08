@@ -176,11 +176,15 @@ public sealed class PlaylistCacheService
     private static string JsonUnescape(string value) =>
         WebUtility.HtmlDecode(Regex.Unescape(value)).Trim();
 
-    /// <summary>Downloads lyrics for every track that is not cached yet. Returns (cached, failed).</summary>
+    /// <summary>
+    /// Downloads lyrics for every track that is not cached yet. Returns (cached, failed); "cached"
+    /// counts both freshly downloaded and already-present lyrics, so a second run reports the whole
+    /// playlist as covered instead of re-downloading it.
+    /// </summary>
     public async Task<(int Cached, int Failed)> DownloadAsync(
         IReadOnlyList<PlaylistTrack> tracks, IProgress<string>? progress, CancellationToken token)
     {
-        int cached = 0, failed = 0;
+        int cached = 0, failed = 0, skipped = 0;
         var existing = new HashSet<string>(_lyrics.GetCachedKeys(), StringComparer.Ordinal);
 
         foreach (PlaylistTrack track in tracks)
@@ -190,15 +194,16 @@ public sealed class PlaylistCacheService
             if (existing.Contains(key))
             {
                 cached++;
+                skipped++;
                 continue;
             }
 
-            progress?.Report($"{cached + failed + 1}/{tracks.Count}：{track.Title}");
+            progress?.Report($"下载 {cached + failed + 1}/{tracks.Count}（已跳过 {skipped} 首已缓存）：{track.Title}");
             try
             {
                 LyricsLookupResult result = await _lyrics.GetLyricsAsync(
                     track.Title, track.Artist, string.IsNullOrWhiteSpace(track.Album) ? null : track.Album,
-                    TimeSpan.Zero, forceRefresh: false, wantTranslation: true, token: token);
+                    TimeSpan.FromSeconds(track.Seconds), forceRefresh: false, wantTranslation: true, token: token);
                 if (result.Lyrics is not null && !result.Lyrics.Placeholder)
                 {
                     cached++;
@@ -218,8 +223,13 @@ public sealed class PlaylistCacheService
                 CrashLog.Write(ex, "Playlist:Download");
                 failed++;
             }
+
+            // The cache writer is debounced; on a long playlist that means the file lags behind by
+            // many tracks and a crash loses them. Flush every 25 tracks so progress is on disk.
+            if ((cached + failed) % 25 == 0) _lyrics.FlushCache();
         }
 
+        _lyrics.FlushCache();
         return (cached, failed);
     }
 

@@ -20,7 +20,7 @@ public sealed record LyricLine(TimeSpan Start, string Text, string? Translation 
 /// 「纯音乐，请欣赏」: it is shown for a real instrumental track, but it must not stop the lookup
 /// from trying a better catalog match when the provider answered for a different (instrumental) track.
 /// </summary>
-public sealed record LyricsResult(string Title, string Artist, IReadOnlyList<LyricLine> Lines, bool Placeholder = false);
+public sealed record LyricsResult(string Title, string Artist, IReadOnlyList<LyricLine> Lines, bool Placeholder = false, string? Source = null);
 
 /// <summary>Outcome of one lyric lookup.</summary>
 public enum LyricsLookupStatus
@@ -49,7 +49,12 @@ public sealed record LyricsLookupResult(LyricsLookupStatus Status, LyricsResult?
 /// </summary>
 public sealed class LyricsService
 {
-    private const int MaxCacheEntries = 200;
+    /// <summary>
+    /// How many lyrics are kept on disk. This is also the ceiling for the playlist downloader: with
+    /// 200 entries a 479-track playlist silently lost every lyric beyond the first 200, because the
+    /// oldest rows were evicted as new ones arrived.
+    /// </summary>
+    private const int MaxCacheEntries = 5000;
     private const string BrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
     /// <summary>
@@ -250,7 +255,7 @@ public sealed class LyricsService
                     if (!response.IsSuccessStatusCode) continue;
                     payload = await response.Content.ReadFromJsonAsync<ItunesSearchResponse>(token);
                 }
-                catch (Exception ex) when (IsTransient(ex) && !token.IsCancellationRequested)
+                catch (Exception) when (!token.IsCancellationRequested)
                 {
                     // An unreachable storefront must not break the regular lookup.
                     continue;
@@ -303,7 +308,7 @@ public sealed class LyricsService
             CrashLog.WriteNote("LyricsKugouTitle", $"{artist} -> {match.Song} | {match.Singer}");
             return (match.Song, string.IsNullOrWhiteSpace(match.Singer) ? artist : match.Singer);
         }
-        catch (Exception ex) when (IsTransient(ex) && !token.IsCancellationRequested)
+        catch (Exception) when (!token.IsCancellationRequested)
         {
             return null;
         }
@@ -332,11 +337,11 @@ public sealed class LyricsService
             bool artistMatched = CatalogTextMatches(NormalizeForCompare(track.ArtistName ?? string.Empty), wantedArtist);
             if (wantedSeconds <= 0)
             {
-                // No usable duration. A specific term (artist + title/album) already ranks the right
-                // entry first in the storefront response, so its ordering is trusted; a bare artist
-                // term additionally needs the album to agree.
-                bool albumMatched = CatalogTextMatches(NormalizeForCompare(track.CollectionName ?? string.Empty), wantedAlbum);
-                if (!albumMatched && !relaxedDuration) continue;
+                // No usable duration, so the artist is the only real evidence. Album agreement alone
+                // is not enough: the probe mapped the instrumental "Point the Star 2 / G Sounds" to
+                // BiSH's「プロミスザスター」purely because an album name happened to match, and the
+                // overlay then showed that song's Japanese lyrics.
+                if (!artistMatched && !relaxedDuration) continue;
                 ranked.Add((track, 0, artistMatched));
                 continue;
             }
@@ -408,6 +413,9 @@ public sealed class LyricsService
 
         LoadCacheFromDisk();
         string cacheKey = BuildCacheKey(title, artist);
+        // A track the user marked as "the lyrics are wrong" on every source keeps returning nothing,
+        // so a wrong match (an instrumental mapped to an unrelated song) cannot come back.
+        if (IsFullyRejected(cacheKey)) return LyricsLookupResult.NotFound;
         if (forceRefresh)
         {
             // A manual refresh must invalidate memory and disk. Otherwise a failed refresh leaves
@@ -450,7 +458,7 @@ public sealed class LyricsService
             ? Task.FromResult<(string Title, string Artist)?>(alias)
             : ResolveOriginalTitleAsync(title, artist, album, duration, resolveCancellation.Token);
 
-        LyricsLookupResult lookup = await LookupAsync(title, artist, album, duration, wantTranslation, token);
+        LyricsLookupResult lookup = await LookupAsync(title, artist, album, duration, wantTranslation, token, cacheKey);
         // Real lyrics end the catalog probe; a placeholder ("纯音乐，请欣赏") does not: it usually
         // means a provider matched an instrumental edition of a localized title.
         if (lookup.Lyrics is not null && !lookup.Lyrics.Placeholder) resolveCancellation.Cancel();
@@ -468,7 +476,7 @@ public sealed class LyricsService
                     TitleAliases[aliasKey] = resolved;
                 }
                 CrashLog.WriteNote("LyricsTitleResolve", $"{title} | {artist} -> {resolved.Title} | {resolved.Artist}");
-                LyricsLookupResult retried = await LookupAsync(resolved.Title, resolved.Artist, album, duration, wantTranslation, token);
+                LyricsLookupResult retried = await LookupAsync(resolved.Title, resolved.Artist, album, duration, wantTranslation, token, cacheKey);
                 if (retried.Lyrics is not null && !retried.Lyrics.Placeholder) lookup = retried;
                 else if (lookup.Lyrics is null && retried.Lyrics is not null) lookup = retried;
             }
@@ -508,19 +516,32 @@ public sealed class LyricsService
         lyrics.Lines.Any(line => !string.IsNullOrWhiteSpace(line.Translation));
 
     private async Task<LyricsLookupResult> LookupAsync(string title, string artist, string album, TimeSpan duration,
-        bool wantTranslation, CancellationToken token)
+        bool wantTranslation, CancellationToken token, string? trackKey = null)
     {
         var candidates = BuildCandidates(title, artist).ToList();
         if (candidates.Count == 0) return LyricsLookupResult.NotFound;
+
+        // Sources the user marked as wrong for this track are skipped entirely; when every source
+        // has been rejected the track is treated as "no lyrics" instead of asking again.
+        HashSet<string> rejected = GetRejectedSources(trackKey ?? BuildCacheKey(title, artist));
+        if (rejected.Count >= AllProviderNames.Length) return LyricsLookupResult.NotFound;
 
         // Providers run concurrently, but the first acceptable result should cancel the others.
         // This avoids continuing several network searches after the overlay already has its lyrics.
         using var lookupCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
         CancellationToken lookupToken = lookupCancellation.Token;
-        Task<(LrcLibResponse? Data, bool Failed)> lrclibTask = TryLrclibCandidatesAsync(candidates, album, duration, lookupToken);
-        Task<(LrcLibResponse? Data, bool Failed)> neteaseTask = TryNeteaseCandidatesAsync(candidates, duration, wantTranslation, lookupToken);
-        Task<(LrcLibResponse? Data, bool Failed)> kugouTask = TryKugouAsync(title, artist, duration, lookupToken);
-        Task<(LrcLibResponse? Data, bool Failed)> kuwoTask = TryKuwoAsync(candidates, duration, lookupToken);
+        Task<(LrcLibResponse? Data, bool Failed)> lrclibTask = rejected.Contains("lrclib")
+            ? Task.FromResult<(LrcLibResponse? Data, bool Failed)>((null, false))
+            : TryLrclibCandidatesAsync(candidates, album, duration, lookupToken);
+        Task<(LrcLibResponse? Data, bool Failed)> neteaseTask = rejected.Contains("netease")
+            ? Task.FromResult<(LrcLibResponse? Data, bool Failed)>((null, false))
+            : TryNeteaseCandidatesAsync(candidates, duration, wantTranslation, lookupToken);
+        Task<(LrcLibResponse? Data, bool Failed)> kugouTask = rejected.Contains("kugou")
+            ? Task.FromResult<(LrcLibResponse? Data, bool Failed)>((null, false))
+            : TryKugouAsync(title, artist, duration, lookupToken);
+        Task<(LrcLibResponse? Data, bool Failed)> kuwoTask = rejected.Contains("kuwo")
+            ? Task.FromResult<(LrcLibResponse? Data, bool Failed)>((null, false))
+            : TryKuwoAsync(candidates, duration, lookupToken);
         // QQ Music (search answers 500 without a signed request) and the gdstudio aggregator
         // (host unreachable) were verified dead on 2026-10-26, so they are no longer queried:
         // every request they cost was a wasted round trip on each track change.
@@ -555,7 +576,8 @@ public sealed class LyricsService
                     List<LyricLine> translated = ParseLrc(data.TranslationLyrics);
                     if (translated.Count == 0) continue;
                     return LyricsLookupResult.Found(new LyricsResult(result.Lyrics.Title, result.Lyrics.Artist,
-                        AttachTranslations(result.Lyrics.Lines, translated)));
+                        AttachTranslations(result.Lyrics.Lines, translated),
+                        result.Lyrics.Placeholder, result.Lyrics.Source));
                 }
 
                 // Nothing carried a translation: record why, so this can be diagnosed from the log
@@ -612,7 +634,13 @@ public sealed class LyricsService
         LyricsLookupResult Seal(LyricsLookupResult result, string source)
         {
             if (result.Lyrics is not null)
-                CrashLog.WriteNote("LyricsSource", $"{source} | {title} | {artist} | {result.Lyrics.Lines.Count} lines");
+            {
+                CrashLog.WriteNote("LyricsSource",
+                    $"{source} | {title} | {artist} | {result.Lyrics.Lines.Count} lines");
+                // The source travels with the result so the "wrong lyrics" button knows which one
+                // to drop for this track.
+                return result with { Lyrics = result.Lyrics with { Source = source } };
+            }
             return result;
         }
 
@@ -622,17 +650,74 @@ public sealed class LyricsService
             // take): the text is then correct but stops halfway, which drifts the overlay. Such an
             // answer is only used when no complete one shows up.
             LyricsLookupResult? incomplete = null;
+            string incompleteProvider = "unknown";
+            bool collected = false;
+
+            // LRCLIB mirrors the official lyric, so it is the most likely to be the original
+            // language. When another provider answers first, give LRCLIB/NetEase a short extra window
+            // and prefer the higher-ranked source: KuGou occasionally indexes an English version of a
+            // Japanese song, whose text is right but whose timing does not match the original.
+            static int ProviderRank(string name) => name switch
+            {
+                "lrclib" => 0,
+                "netease" => 1,
+                "kugou" => 2,
+                _ => 3
+            };
 
             async Task<LyricsLookupResult?> AcceptAsync(LyricsLookupResult? found, string provider)
             {
                 if (found is null) return null;
-                if (IsCompleteLyrics(found.Lyrics, duration)) return await FinalizeAsync(Seal(found, provider));
+                if (!IsCompleteLyrics(found.Lyrics, duration))
+                {
+                    incomplete ??= found;
+                    if (incomplete == found) incompleteProvider = provider;
+                    TimeSpan last = found.Lyrics!.Lines[^1].Start;
+                    CrashLog.WriteNote("LyricsIncomplete",
+                        $"{provider} | {title} | last={(int)last.TotalSeconds}s / {(int)duration.TotalSeconds}s");
+                    return null;
+                }
 
-                incomplete ??= found;
-                TimeSpan last = found.Lyrics!.Lines[^1].Start;
-                CrashLog.WriteNote("LyricsIncomplete",
-                    $"{provider} | {title} | last={(int)last.TotalSeconds}s / {(int)duration.TotalSeconds}s");
-                return null;
+                if (!collected)
+                {
+                    collected = true;
+                    try
+                    {
+                        using var wait = CancellationTokenSource.CreateLinkedTokenSource(lookupToken);
+                        await Task.WhenAny(Task.WhenAll(providerTasks), Task.Delay(TimeSpan.FromMilliseconds(400), wait.Token));
+                        wait.Cancel();
+                    }
+                    catch (OperationCanceledException) { }
+                }
+
+                LyricsLookupResult? best = found;
+                string bestProvider = provider;
+                int bestKana = ContainsKana(found.Lyrics) ? 0 : 1;
+                int bestRank = ProviderRank(provider);
+                foreach ((Task<(LrcLibResponse? Data, bool Failed)> task, string name) in new[]
+                {
+                    (lrclibTask, "lrclib"), (neteaseTask, "netease"), (kugouTask, "kugou"), (kuwoTask, "kuwo")
+                })
+                {
+                    if (!task.IsCompleted || task.IsFaulted || task.IsCanceled) continue;
+                    LyricsLookupResult? candidate = TryBuild(title, artist, duration, await task);
+                    if (candidate is null || !IsCompleteLyrics(candidate.Lyrics, duration)) continue;
+
+                    // A Japanese original always carries kana; a romanized or English rendition does
+                    // not. Preferring kana picks the original over a translated entry (KuGou indexes
+                    // English versions of Japanese songs), and only then falls back to source order.
+                    int kana = ContainsKana(candidate.Lyrics) ? 0 : 1;
+                    int rank = ProviderRank(name);
+                    if (kana < bestKana || (kana == bestKana && rank < bestRank))
+                    {
+                        best = candidate;
+                        bestProvider = name;
+                        bestKana = kana;
+                        bestRank = rank;
+                    }
+                }
+
+                return await FinalizeAsync(Seal(best, bestProvider));
             }
 
             while (true)
@@ -685,7 +770,7 @@ public sealed class LyricsService
                 if (ovhAccepted is not null) return ovhAccepted;
             }
 
-            if (incomplete is not null) return await FinalizeAsync(Seal(incomplete, "incomplete"));
+            if (incomplete is not null) return await FinalizeAsync(Seal(incomplete, incompleteProvider));
             return anyFailed ? LyricsLookupResult.Unavailable : LyricsLookupResult.NotFound;
         }
         finally
@@ -749,6 +834,14 @@ public sealed class LyricsService
     {
         if (outcome.Data is null) return null;
         LyricsLookupResult built = BuildResult(title, artist, outcome.Data, duration);
+        if (built.Status == LyricsLookupStatus.Found)
+        {
+            // Which catalogue entry supplied the lyric. Without it a reported mistake ("this is a
+            // fan-written cover / the English version") cannot be traced to the row that caused it.
+            CrashLog.WriteNote("LyricsMatch",
+                $"{title} | wanted-artist={artist} | entry={outcome.Data.SourceTitle} / {outcome.Data.SourceArtist}"
+                + $" | {built.Lyrics?.Lines.Count ?? 0} lines");
+        }
         return built.Status == LyricsLookupStatus.Found ? built : null;
     }
 
@@ -773,6 +866,24 @@ public sealed class LyricsService
         // LRC files often open with a "Title - Artist" header line at 00:00; showing it as a lyric
         // adds a phantom first line that shifts the whole timeline by one sentence.
         lines = WithoutHeaderLine(lines, title, artist);
+
+        // One or two rows cannot be the lyrics of a full song: providers return such payloads for
+        // instrumental tracks, karaoke editions and generic credit blocks, and the overlay ended up
+        // showing a single meaningless line for the whole track. Ask the next provider instead.
+        if (lines.Count <= 2 && duration > TimeSpan.FromSeconds(90))
+        {
+            CrashLog.WriteNote("LyricsTooShort", $"{title} | {lines.Count} lines / {(int)duration.TotalSeconds}s");
+            return LyricsLookupResult.NotFound;
+        }
+
+        // A Chinese-only lyric for a track whose title and artist carry no Chinese is a fan
+        // translation ("填词") of a Japanese/English song — typically an instrumental OST theme.
+        // Chinese originals always have Chinese in the title, artist or album.
+        if (!ContainsCjk(title) && !ContainsCjk(artist) && IsChineseOnlyLyric(lines))
+        {
+            CrashLog.WriteNote("LyricsForeignFilled", $"{title} | {artist} | {lines.Count} lines");
+            return LyricsLookupResult.NotFound;
+        }
 
         // NetEase can return a separate timestamped translation lyric (tlyric). Match each
         // translation to the nearest original line; other providers simply leave this empty.
@@ -1064,7 +1175,7 @@ public sealed class LyricsService
         handler.SslOptions.EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;
         var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(12) };
         // LRCLIB asks clients to identify themselves; generic agents are rate limited harder.
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.64 (https://github.com/QPONH/Apple-Music-Hotkeys)");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.69 (https://github.com/QPONH/Apple-Music-Hotkeys)");
         client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
         return client;
     }
@@ -1147,7 +1258,7 @@ public sealed class LyricsService
 
             return (null, failed);
         }
-        catch (Exception ex) when (IsTransient(ex) && !token.IsCancellationRequested)
+        catch (Exception ex) when (!token.IsCancellationRequested)
         {
             CrashLog.Write(ex, "Lyrics:LRCLIB");
             return (null, true);
@@ -1203,6 +1314,38 @@ public sealed class LyricsService
     private static double? ScoreCandidate(string wantedTitle, string wantedArtist, string itemTitle,
         string itemArtist, double? durationDiff) =>
         ScoreCandidate(wantedTitle, itemTitle, MatchesText(itemArtist, wantedArtist), durationDiff);
+
+    /// <summary>
+    /// Edition labels that make an entry a *different recording* from the one playing. When the entry
+    /// carries one and the reported title does not, it is a cover / translation / karaoke take: using
+    /// its lyrics shows a different language over the original audio (the reported case was the
+    /// NetEase entry「Override (English Cover) / 吉田夜世, Will Stetson」for the Japanese original).
+    /// </summary>
+    private static readonly string[] EditionMarkers =
+    {
+        "cover", "englishver", "japanesever", "chineseversion", "koreanver",
+        "翻唱", "翻自", "填词", "填詞", "翻译", "翻譯", "カバー", "歌ってみた", "offvocal", "karaoke", "インスト"
+    };
+
+    /// <summary>
+    /// Same as <see cref="NormalizeForCompare"/> but keeps the text inside brackets, because edition
+    /// labels live there: "Override (English Cover)" must still be recognisable as a cover.
+    /// </summary>
+    private static string NormalizeKeepingBrackets(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+        return Regex.Replace(value.ToLowerInvariant(), @"[^\p{L}\p{N}]+", string.Empty);
+    }
+
+    private static bool HasForeignEdition(string itemTitle, string wantedTitle)
+    {
+        foreach (string marker in EditionMarkers)
+        {
+            if (itemTitle.Contains(marker, StringComparison.Ordinal) && !wantedTitle.Contains(marker, StringComparison.Ordinal))
+                return true;
+        }
+        return false;
+    }
 
     private static double? ScoreCandidate(string wantedTitle, string itemTitle, bool artistMatch, double? durationDiff)
     {
@@ -1330,7 +1473,7 @@ public sealed class LyricsService
             if (failed) _neteaseCooldownUntil = DateTime.UtcNow + ProviderCooldown;
             return (null, failed);
         }
-        catch (Exception ex) when (IsTransient(ex) && !token.IsCancellationRequested)
+        catch (Exception ex) when (!token.IsCancellationRequested)
         {
             CrashLog.Write(ex, "Lyrics:Netease");
             _neteaseCooldownUntil = DateTime.UtcNow + ProviderCooldown;
@@ -1402,7 +1545,11 @@ public sealed class LyricsService
                     TrackName = title,
                     ArtistName = artist,
                     SyncedLyrics = synced,
-                    TranslationLyrics = data?.Tlyric?.Lyric
+                    TranslationLyrics = data?.Tlyric?.Lyric,
+                    SourceTitle = song.Name,
+                    SourceArtist = song.ArtistList is { Count: > 0 }
+                        ? string.Join(", ", song.ArtistList.Select(item => item.Name))
+                        : null
                 };
                 // Several entries can share title/artist/duration. Preference: complete + translated,
                 // complete, translated, anything — an entry for a shorter edit stops halfway.
@@ -1517,6 +1664,9 @@ public sealed class LyricsService
             if (song.Id <= 0) continue;
 
             string itemTitle = NormalizeForCompare(song.Name);
+            // Bracket contents are stripped by NormalizeForCompare, so an edition label such as
+            // "Override (English Cover)" would otherwise look identical to the original title.
+            if (HasForeignEdition(NormalizeKeepingBrackets(song.Name), NormalizeKeepingBrackets(title))) continue;
             bool artistMatch = song.ArtistList?.Any(a => MatchesText(NormalizeForCompare(a.Name), wantedArtist)) == true;
             double? durationDiff = wantedSeconds >= 5 && song.LengthMs is > 0
                 ? Math.Abs(song.LengthMs.Value / 1000d - wantedSeconds) : null;
@@ -1598,14 +1748,21 @@ public sealed class LyricsService
                     string? content = downloadDoc.RootElement.TryGetProperty("content", out JsonElement contentElement) ? contentElement.GetString() : null;
                     string? text = DecodeKugouLyric(content);
                     if (!string.IsNullOrWhiteSpace(text))
-                        return (new LrcLibResponse { TrackName = hit.Song, ArtistName = hit.Singer, SyncedLyrics = text }, false);
+                        return (new LrcLibResponse
+                    {
+                        TrackName = hit.Song,
+                        ArtistName = hit.Singer,
+                        SyncedLyrics = text,
+                        SourceTitle = hit.Song,
+                        SourceArtist = hit.Singer
+                    }, false);
                 }
             }
 
             if (failed) _kugouCooldownUntil = DateTime.UtcNow + ProviderCooldown;
             return (null, failed);
         }
-        catch (Exception ex) when (IsTransient(ex) && !token.IsCancellationRequested)
+        catch (Exception ex) when (!token.IsCancellationRequested)
         {
             CrashLog.Write(ex, "Lyrics:Kugou");
             _kugouCooldownUntil = DateTime.UtcNow + ProviderCooldown;
@@ -1636,7 +1793,7 @@ public sealed class LyricsService
             if (failed) _kuwoCooldownUntil = DateTime.UtcNow + ProviderCooldown;
             return (null, failed);
         }
-        catch (Exception ex) when (IsTransient(ex) && !token.IsCancellationRequested)
+        catch (Exception ex) when (!token.IsCancellationRequested)
         {
             CrashLog.Write(ex, "Lyrics:Kuwo");
             _kuwoCooldownUntil = DateTime.UtcNow + ProviderCooldown;
@@ -1705,6 +1862,7 @@ public sealed class LyricsService
                 NumberStyles.Float, CultureInfo.InvariantCulture, out double parsed) ? parsed : 0;
             if (name.Length == 0 || !rid.StartsWith("MUSIC_", StringComparison.OrdinalIgnoreCase)) continue;
             if (!long.TryParse(rid["MUSIC_".Length..], out long id)) continue;
+            if (HasForeignEdition(NormalizeKeepingBrackets(name), NormalizeKeepingBrackets(title))) continue;
 
             double? difference = wantedSeconds >= 5 && seconds > 0 ? Math.Abs(seconds - wantedSeconds) : null;
             double? score = ScoreCandidate(wantedTitle, wantedArtist, NormalizeForCompare(name),
@@ -1836,7 +1994,7 @@ public sealed class LyricsService
             }
             return (null, failed);
         }
-        catch (Exception ex) when (IsTransient(ex) && !token.IsCancellationRequested)
+        catch (Exception ex) when (!token.IsCancellationRequested)
         {
             CrashLog.Write(ex, "Lyrics:QQMusic");
             return (null, true);
@@ -1953,7 +2111,7 @@ public sealed class LyricsService
             }
             return (null, failed);
         }
-        catch (Exception ex) when (IsTransient(ex) && !token.IsCancellationRequested)
+        catch (Exception ex) when (!token.IsCancellationRequested)
         {
             CrashLog.Write(ex, "Lyrics:Aggregator");
             return (null, true);
@@ -2066,6 +2224,7 @@ public sealed class LyricsService
         foreach (KugouHit hit in hits)
         {
             string itemTitle = NormalizeForCompare(hit.Song);
+            if (HasForeignEdition(NormalizeKeepingBrackets(hit.Song), NormalizeKeepingBrackets(title))) continue;
             string itemArtist = NormalizeForCompare(hit.Singer);
             double? durationDiff = wantedSeconds >= 5 && hit.DurationSeconds > 0
                 ? Math.Abs(hit.DurationSeconds - wantedSeconds) : null;
@@ -2131,8 +2290,10 @@ public sealed class LyricsService
             LyricsOvhResponse? result = await response.Content.ReadFromJsonAsync<LyricsOvhResponse>(token);
             return string.IsNullOrWhiteSpace(result?.Lyrics) ? (null, false) : (new LrcLibResponse { PlainLyrics = result.Lyrics }, false);
         }
-        catch (Exception ex) when (IsTransient(ex) && !token.IsCancellationRequested)
+        catch (Exception ex) when (!token.IsCancellationRequested)
         {
+            // Any failure here must stay local: this provider is an optional fallback and an
+            // unhandled transport error used to propagate out of the lookup entirely.
             CrashLog.Write(ex, "Lyrics:LyricsOvh");
             return (null, true);
         }
@@ -2272,6 +2433,39 @@ public sealed class LyricsService
         return lowered;
     }
 
+    /// <summary>
+    /// True when the lyric is written in Chinese: plenty of Han characters and no kana at all.
+    /// A Japanese lyric always contains kana, so this only catches Chinese text.
+    /// </summary>
+    private static bool IsChineseOnlyLyric(IReadOnlyList<LyricLine> lines)
+    {
+        int han = 0;
+        int kana = 0;
+        foreach (LyricLine line in lines)
+        {
+            foreach (char c in line.Text)
+            {
+                if (c >= '\u3040' && c <= '\u30ff') kana++;
+                else if (c >= '\u4e00' && c <= '\u9fff') han++;
+            }
+        }
+        return han >= 20 && kana == 0;
+    }
+
+    /// <summary>True when the lyric contains kana, i.e. it is the Japanese original rather than a romanized or translated rendition.</summary>
+    private static bool ContainsKana(LyricsResult? lyrics)
+    {
+        if (lyrics is null) return false;
+        foreach (LyricLine line in lyrics.Lines)
+        {
+            foreach (char c in line.Text)
+            {
+                if (c >= '\u3040' && c <= '\u30ff') return true;
+            }
+        }
+        return false;
+    }
+
     private static bool ContainsCjk(string text)
     {
         foreach (char c in text)
@@ -2320,6 +2514,149 @@ public sealed class LyricsService
 
     #region persistent cache
 
+    /// <summary>Every lyric source that can answer a lookup; a track is suppressed once all are rejected.</summary>
+    public static readonly string[] AllProviderNames = { "lrclib", "netease", "kugou", "kuwo", "lyricsovh" };
+
+    /// <summary>Track key → sources the user marked as wrong for that track.</summary>
+    private readonly Dictionary<string, HashSet<string>> _rejectedSources = new(StringComparer.Ordinal);
+    private bool _blockedFileLoaded;
+
+    private static string BlockedFilePath => Path.Combine(AppPaths.SettingsDirectory, "lyrics-blocked.json");
+
+    private HashSet<string> GetRejectedSources(string cacheKey)
+    {
+        LoadBlockedFromDisk();
+        lock (_cacheGate)
+            return _rejectedSources.TryGetValue(cacheKey, out HashSet<string>? sources)
+                ? new HashSet<string>(sources, StringComparer.Ordinal)
+                : new HashSet<string>(StringComparer.Ordinal);
+    }
+
+    /// <summary>True when every source has been rejected for this track, so it should show nothing.</summary>
+    private bool IsFullyRejected(string cacheKey) => GetRejectedSources(cacheKey).Count >= AllProviderNames.Length;
+
+    private void LoadBlockedFromDisk()
+    {
+        if (_blockedFileLoaded) return;
+        _blockedFileLoaded = true;
+        try
+        {
+            if (!File.Exists(BlockedFilePath)) return;
+            string text = File.ReadAllText(BlockedFilePath);
+            if (string.IsNullOrWhiteSpace(text)) return;
+
+            // Older files stored a plain array of track keys, meaning "suppress completely".
+            if (text.TrimStart().StartsWith('['))
+            {
+                string[]? keys = JsonSerializer.Deserialize<string[]>(text);
+                if (keys is null) return;
+                lock (_cacheGate)
+                {
+                    foreach (string key in keys)
+                    {
+                        if (string.IsNullOrWhiteSpace(key)) continue;
+                        _rejectedSources[key] = new HashSet<string>(AllProviderNames, StringComparer.Ordinal);
+                    }
+                }
+                return;
+            }
+
+            Dictionary<string, string[]>? map = JsonSerializer.Deserialize<Dictionary<string, string[]>>(text);
+            if (map is null) return;
+            lock (_cacheGate)
+            {
+                foreach ((string key, string[] sources) in map)
+                {
+                    if (string.IsNullOrWhiteSpace(key)) continue;
+                    _rejectedSources[key] = new HashSet<string>(sources ?? Array.Empty<string>(), StringComparer.Ordinal);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, "Lyrics:BlockedLoad");
+        }
+    }
+
+    /// <summary>
+    /// Marks one source as wrong for a track, so the next lookup uses the following source instead.
+    /// Returns true when that was the last remaining source (the track now shows no lyrics at all).
+    /// </summary>
+    public bool BlockSource(string title, string artist, string? source)
+    {
+        string key = BuildCacheKey(CleanMetadata(title), CleanMetadata(artist));
+        string victim = string.IsNullOrWhiteSpace(source) ? "unknown" : source!;
+        LoadBlockedFromDisk();
+
+        bool exhausted;
+        lock (_cacheGate)
+        {
+            if (!_rejectedSources.TryGetValue(key, out HashSet<string>? sources))
+            {
+                sources = new HashSet<string>(StringComparer.Ordinal);
+                _rejectedSources[key] = sources;
+            }
+            sources.Add(victim);
+            exhausted = sources.Count >= AllProviderNames.Length;
+            // Drop the stored answer so the next lookup really asks the remaining sources.
+            _lyricsCache.Remove(key);
+        }
+
+        SaveBlockedToDisk();
+        SaveCacheToDisk();
+        CrashLog.WriteNote("LyricsBlocked", $"rejected {victim} for {title} | {artist} | exhausted={exhausted}");
+        return exhausted;
+    }
+
+    /// <summary>Tracks that are completely suppressed (every source rejected), for the settings list.</summary>
+    public IReadOnlyList<string> GetSuppressedTracks()
+    {
+        LoadBlockedFromDisk();
+        lock (_cacheGate)
+            return _rejectedSources
+                .Where(pair => pair.Value.Count >= AllProviderNames.Length)
+                .Select(pair => pair.Key)
+                .ToList();
+    }
+
+    /// <summary>All tracked keys with their rejected sources, for the settings list.</summary>
+    public IReadOnlyDictionary<string, IReadOnlyList<string>> GetRejectedMap()
+    {
+        LoadBlockedFromDisk();
+        lock (_cacheGate)
+            return _rejectedSources.ToDictionary(
+                pair => pair.Key,
+                pair => (IReadOnlyList<string>)pair.Value.OrderBy(name => name, StringComparer.Ordinal).ToList(),
+                StringComparer.Ordinal);
+    }
+
+    /// <summary>Restores normal lookups for every marked track.</summary>
+    public void ClearBlocked()
+    {
+        lock (_cacheGate) _rejectedSources.Clear();
+        SaveBlockedToDisk();
+        CrashLog.WriteNote("LyricsBlocked", "cleared");
+    }
+
+    private void SaveBlockedToDisk()
+    {
+        try
+        {
+            Directory.CreateDirectory(AppPaths.SettingsDirectory);
+            Dictionary<string, string[]> snapshot;
+            lock (_cacheGate)
+                snapshot = _rejectedSources.ToDictionary(
+                    pair => pair.Key,
+                    pair => pair.Value.ToArray(),
+                    StringComparer.Ordinal);
+            File.WriteAllText(BlockedFilePath, JsonSerializer.Serialize(snapshot));
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, "Lyrics:BlockedSave");
+        }
+    }
+
     private void LoadCacheFromDisk()
     {
         lock (_cacheGate)
@@ -2336,7 +2673,7 @@ public sealed class LyricsService
                 // Oldest first so the eviction order below matches the original usage order.
                 foreach (CachedLyrics entry in entries.OfType<CachedLyrics>().OrderBy(entry => entry.UsedAt))
                 {
-                    if (entry.Schema < 4) continue;
+                    if (entry.Schema < 5) continue;
                     if (string.IsNullOrWhiteSpace(entry.Key) || entry.Lines is null || entry.Lines.Count == 0) continue;
                     if (_lyricsCache.ContainsKey(entry.Key)) continue;
                     var lines = entry.Lines
@@ -2431,6 +2768,12 @@ public sealed class LyricsService
     }
 
     /// <summary>
+    /// Requests a cache write. The playlist downloader calls this every few tracks so a long run
+    /// does not depend on progress made between the debounced writes.
+    /// </summary>
+    public void FlushCache() => SaveCacheToDisk();
+
+    /// <summary>
     /// Coalesces cache writes, but snapshots only after the debounce interval. This avoids losing
     /// lyrics learned during a quick sequence of track changes and keeps dictionary access safe.
     /// </summary>
@@ -2500,7 +2843,7 @@ public sealed class LyricsService
         /// 4 = titles match by exact/prefix only, and NetEase searches the lead credit of a billing
         ///     artist string (drops the stale "Thriller → Beat It mashup" hits).
         /// </summary>
-        public int Schema { get; set; } = 4;
+        public int Schema { get; set; } = 5;
         public string Key { get; set; } = string.Empty;
         public string Title { get; set; } = string.Empty;
         public string Artist { get; set; } = string.Empty;
@@ -2529,6 +2872,10 @@ public sealed class LyricsService
         [JsonPropertyName("syncedLyrics")] public string? SyncedLyrics { get; set; }
         [JsonPropertyName("plainLyrics")] public string? PlainLyrics { get; set; }
         [JsonIgnore] public string? TranslationLyrics { get; set; }
+        /// <summary>Title of the catalogue entry that produced this lyric, for the result log.</summary>
+        [JsonIgnore] public string? SourceTitle { get; set; }
+        /// <summary>Artist of the catalogue entry that produced this lyric, for the result log.</summary>
+        [JsonIgnore] public string? SourceArtist { get; set; }
         /// <summary>NetEase's word-level lyric (yrc): per-word timings that allow sentence splitting.</summary>
         [JsonIgnore] public string? WordLevelLyrics { get; set; }
     }

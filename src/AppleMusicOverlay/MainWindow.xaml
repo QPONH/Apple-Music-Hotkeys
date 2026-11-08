@@ -1001,8 +1001,10 @@
                                         <StackPanel Orientation="Horizontal" Margin="0,8,0,0">
                                             <Button x:Name="LyricsRetryButton" Content="重新查找歌词" Width="140" Height="36" Style="{StaticResource SecondaryButtonStyle}" Click="LyricsRetry_Click" ToolTip="歌曲有歌词却显示未识别时，可手动重新查找；连接异常会自动重试最多三次，总时限约15秒。"/>
                                             <Button x:Name="LyricsCacheClearButton" Content="清除歌词缓存" Width="140" Height="36" Margin="10,0,0,0" Style="{StaticResource SecondaryButtonStyle}" Click="ClearLyricsCache_Click" ToolTip="删除已保存的歌词缓存（lyrics-cache.json）并重新查找当前歌曲；用于之前匹配错误（例如被当成纯音乐）的曲目。"/>
-                                            <TextBlock Text="歌曲有歌词却未识别时点这里重新查找；连接异常最多自动重试三次，总时限约15秒。" VerticalAlignment="Center" Margin="12,0,0,0" TextWrapping="Wrap" Style="{StaticResource CaptionTextStyle}"/>
+                                            <Button x:Name="LyricsBlockButton" Content="歌词不对" Width="120" Height="36" Margin="10,0,0,0" Style="{StaticResource SecondaryButtonStyle}" Click="BlockWrongLyrics_Click" ToolTip="当前这首歌匹配到的歌词是错的（例如纯音乐配了别人的歌词）时点这里：这首歌以后不再显示歌词。"/>
+                                            <Button x:Name="LyricsBlockClearButton" Content="撤销标记" Width="120" Height="36" Margin="10,0,0,0" Style="{StaticResource SecondaryButtonStyle}" Click="ClearBlockedLyrics_Click" ToolTip="清除所有「歌词不对」的标记，让这些歌恢复正常查找。"/>
                                         </StackPanel>
+                                        <TextBlock x:Name="LyricsBlockStatusText" Text="" Margin="0,8,0,0" TextWrapping="Wrap" Style="{StaticResource CaptionTextStyle}"/>
                                     </StackPanel>
                                 </Border>
                                 <Border Style="{StaticResource CardStyle}">
@@ -1156,6 +1158,13 @@
                                             <Button x:Name="PlaylistPruneButton" Content="清理歌单外缓存" Width="140" Height="36" Margin="10,0,0,0" Style="{StaticResource SecondaryButtonStyle}" Click="PlaylistPrune_Click" ToolTip="删除不在当前清单内的已缓存歌词。" />
                                         </StackPanel>
                                         <TextBlock x:Name="PlaylistStatusText" Text="尚未扫描歌单。" Margin="0,10,0,0" TextWrapping="Wrap" Style="{StaticResource CaptionTextStyle}" />
+                                    </StackPanel>
+                                </Border>
+                                <Border Style="{StaticResource CardStyle}" Margin="0,0,0,14">
+                                    <StackPanel>
+                                        <TextBlock Text="不再显示歌词的歌" Style="{StaticResource SectionTitleStyle}" />
+                                        <TextBlock Text="这些歌已排除全部歌词来源，不会再显示歌词；点歌词页的「撤销标记」可以全部恢复。" Margin="0,5,0,8" TextWrapping="Wrap" Style="{StaticResource BodyTextStyle}" />
+                                        <ListBox x:Name="LyricsBlockList" MaxHeight="180" ScrollViewer.VerticalScrollBarVisibility="Auto" />
                                     </StackPanel>
                                 </Border>
                                 <Border Style="{StaticResource CardStyle}">
