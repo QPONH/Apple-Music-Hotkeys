@@ -683,7 +683,7 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
                 buildTime = System.IO.File.GetLastWriteTime(path).ToString("yyyy-MM-dd HH:mm");
         }
         catch { }
-        VersionText.Text = $"v14.69 · 构建 {buildTime} · {Environment.OSVersion.Version}";
+        VersionText.Text = $"v14.77 · 构建 {buildTime} · {Environment.OSVersion.Version}";
     }
 
     private bool _lowIntegrityWarningShown;
@@ -875,26 +875,36 @@ public partial class MainWindow : Window, IHotkeySnapshotRegistrar, INotifyPrope
         }
     }
 
-    /// <summary>Fills the "no lyrics any more" list from the per-track rejected-source map.</summary>
+    /// <summary>Updates the counter next to the "view list" button; the list itself is its own window.</summary>
     private void RefreshSuppressedList()
     {
         try
         {
-            var rows = new List<string>();
-            foreach ((string key, IReadOnlyList<string> sources) in _lyricsService.GetRejectedMap()
-                .OrderBy(pair => pair.Key, StringComparer.Ordinal))
-            {
-                string label = key.Replace("\n", " — ");
-                rows.Add(sources.Count >= LyricsService.AllProviderNames.Length
-                    ? $"{label}（全部来源已排除）"
-                    : $"{label}（已排除：{string.Join("、", sources)}）");
-            }
-            if (rows.Count == 0) rows.Add("（暂无）");
-            LyricsBlockList.ItemsSource = rows;
+            IReadOnlyDictionary<string, IReadOnlyList<string>> map = _lyricsService.GetRejectedMap();
+            int suppressed = map.Count(pair => pair.Value.Count >= LyricsService.AllProviderNames.Length);
+            SuppressedCountText.Text = map.Count == 0
+                ? "（暂无）"
+                : $"已排除 {map.Count} 首，其中 {suppressed} 首不再显示歌词";
         }
         catch (Exception ex)
         {
             CrashLog.Write(ex, "Lyrics:BlockList");
+        }
+    }
+
+    private void ShowSuppressed_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var window = new Views.SuppressedLyricsWindow(_lyricsService) { Owner = this };
+            window.Changed += RefreshSuppressedList;
+            window.ShowDialog();
+            RefreshSuppressedList();
+        }
+        catch (Exception ex)
+        {
+            CrashLog.Write(ex, "Lyrics:BlockListWindow");
+            LyricsBlockStatusText.Text = "无法打开列表：" + ex.Message;
         }
     }
 

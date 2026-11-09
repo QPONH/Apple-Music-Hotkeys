@@ -60,7 +60,11 @@ public sealed class LyricsWindow : Window
     // provider searches, the NetEase translation wait and the iTunes catalog probe for a
     // localized title. The whole cycle still completes inside 20 s.
     private const int MaxAutomaticRetries = 3;
-    private static readonly TimeSpan LookupAttemptTimeout = TimeSpan.FromMilliseconds(4500);
+    // A lookup can legitimately take longer than the lyric search alone: for a localized title the
+    // storefront probe (up to 4 s) runs first and the translated title is then searched again. With
+    // 4.5 s that second search was cut off and the track showed "no lyrics" while it was found a
+    // moment later, so the attempt budget now covers the probe plus the retry.
+    private static readonly TimeSpan LookupAttemptTimeout = TimeSpan.FromMilliseconds(9000);
     private static readonly TimeSpan RetryWindow = TimeSpan.FromSeconds(20);
     private int _retryAttempt;
     private DateTime _nextRetryUtc = DateTime.MaxValue;
@@ -674,6 +678,46 @@ public sealed class LyricsWindow : Window
     }
 
     /// <summary>
+    /// Index to split a long lyric line at, preferring a real break close to <paramref name="target"/>.
+    /// A full stop outweighs a comma, a comma outweighs an enumeration mark, and a space is the last
+    /// resort, so the cut lands between phrases rather than inside one. The break is placed after the
+    /// punctuation, keeping it with the first half.
+    /// </summary>
+    private static int FindSplitIndex(string text, int target)
+    {
+        static int Weight(char c) => c switch
+        {
+            '。' or '！' or '？' or '!' or '?' or '.' => 4,
+            '，' or '、' or '；' or '：' or ',' or ';' or ':' => 3,
+            '—' or '–' or '-' or '…' => 2,
+            ' ' or '\u3000' or '\t' => 1,
+            _ => 0
+        };
+
+        int bestIndex = -1;
+        double bestScore = double.MinValue;
+        for (int i = 1; i < text.Length - 1; i++)
+        {
+            int weight = Weight(text[i]);
+            if (weight == 0) continue;
+
+            int distance = Math.Abs(i - target);
+            // Ignore marks that are too far from the middle: a break there makes one half tiny.
+            if (distance > text.Length / 3) continue;
+
+            // Weight dominates; distance only orders candidates of the same weight.
+            double score = weight * 100 - distance;
+            if (score > bestScore)
+            {
+                bestScore = score;
+                bestIndex = i + 1;
+            }
+        }
+
+        return bestIndex > 1 && bestIndex < text.Length ? bestIndex : target;
+    }
+
+    /// <summary>
     /// Non-word lyrics (Chinese, Japanese, Korean): the window is split into four equal cells.
     /// The current sentence is centred inside the top-left cell (reads downwards, wrapping into new
     /// columns at the cell height) and the next sentence is centred inside the bottom-right cell.
@@ -690,6 +734,59 @@ public sealed class LyricsWindow : Window
         double cellWidth = Math.Max(1, contentWidth / 2);
         double cellHeight = Math.Max(1, contentHeight / 2);
 
+        // A long sentence in vertical mode spills into extra columns and, together with its
+        // translation and the next sentence, runs off the window. It is split into two halves
+        // shown one above the other: the first half keeps the current slot, the second half takes
+        // the next slot. Each half is fitted into a single column by shrinking its font, so the pair
+        // never needs more than two columns. Both halves belong to the same lyric line, so the
+        // timing and the "current line" bookkeeping are untouched.
+        bool continuation = false;
+        double? continuationFontSize = null;
+        if (vertical && !string.IsNullOrWhiteSpace(current))
+        {
+            double fontSize = Math.Clamp(_settings.LyricsFontSize, 10, 120);
+            int perColumn = Math.Max(4, (int)Math.Floor(cellHeight / Math.Max(1, fontSize * 1.05)));
+            if (current.Length > perColumn)
+            {
+                // Prefer a real sentence break near the middle: a period outranks a comma, a comma
+                // outranks an enumeration mark, and a space is the last resort. Cutting at an
+                // arbitrary character split words and phrases in half.
+                int half = current.Length / 2;
+                int split = FindSplitIndex(current, half);
+                string first = current[..split].TrimEnd();
+                string second = current[split..].TrimStart();
+                string firstTranslation = string.Empty;
+                string secondTranslation = string.Empty;
+                if (!string.IsNullOrWhiteSpace(currentTranslation))
+                {
+                    int cut = Math.Clamp((int)Math.Round(currentTranslation.Length * (double)split / current.Length),
+                        1, currentTranslation.Length - 1);
+                    if (cut > 0 && cut < currentTranslation.Length)
+                    {
+                        firstTranslation = currentTranslation[..cut].TrimEnd();
+                        secondTranslation = currentTranslation[cut..].TrimStart();
+                    }
+                    else
+                    {
+                        firstTranslation = currentTranslation;
+                    }
+                }
+
+                if (second.Length > 0)
+                {
+                    current = first;
+                    currentTranslation = firstTranslation;
+                    next = second;
+                    nextTranslation = secondTranslation;
+                    nextIsTranslation = false;
+                    continuation = true;
+                    // Fit each half into one column instead of letting it wrap into several.
+                    double scale = Math.Max(0.55, Math.Min(1.0, (double)perColumn / Math.Max(1, second.Length)));
+                    continuationFontSize = fontSize * scale;
+                }
+            }
+        }
+
         var canvas = new Canvas
         {
             Width = contentWidth,
@@ -699,17 +796,35 @@ public sealed class LyricsWindow : Window
         };
 
         FrameworkElement currentBlock = vertical
-            ? CreateVerticalLine(current, 1.0, currentBrush, cellHeight)
+            ? CreateVerticalLine(current, 1.0, currentBrush, cellHeight, continuationFontSize is null ? null : continuationFontSize * 1.0)
             : CreateCornerText(current, 1.0, currentBrush, TextAlignment.Left, cellWidth);
+        // The first half may also exceed one column; shrink it the same way so the pair stays at
+        // most two columns wide.
+        if (vertical && continuation && current.Length > 0)
+        {
+            double baseFont = Math.Clamp(_settings.LyricsFontSize, 10, 120);
+            int perColumn = Math.Max(4, (int)Math.Floor(cellHeight / Math.Max(1, baseFont * 1.05)));
+            if (current.Length > perColumn)
+            {
+                double scale = Math.Max(0.55, Math.Min(1.0, (double)perColumn / current.Length));
+                currentBlock = CreateVerticalLine(current, 1.0, currentBrush, cellHeight, baseFont * scale);
+            }
+        }
         Size currentSize = MeasureBlock(currentBlock);
 
         FrameworkElement? nextBlock = null;
         Size nextSize = default;
         if (!string.IsNullOrWhiteSpace(next))
         {
+            // The continuation half is part of the current sentence, so it keeps the current
+            // colour and is shrunk (if needed) to fit one column.
+            double nextOpacity = continuation ? 1.0 : nextIsTranslation ? 0.82 : 0.55;
+            Brush nextLineBrush = continuation ? currentBrush : nextBrush;
             nextBlock = vertical
-                ? CreateVerticalLine(next, nextIsTranslation ? 0.82 : 0.55, nextBrush, cellHeight, nextIsTranslation ? GetTranslationFontSize(1.0) : null)
-                : CreateCornerText(next, nextIsTranslation ? 0.82 : 0.55, nextBrush, TextAlignment.Right, cellWidth, nextIsTranslation ? GetTranslationFontSize(1.0) : null);
+                ? CreateVerticalLine(next, nextOpacity, nextLineBrush, cellHeight,
+                    continuation ? continuationFontSize : nextIsTranslation ? GetTranslationFontSize(1.0) : null)
+                : CreateCornerText(next, nextOpacity, nextLineBrush, TextAlignment.Right, cellWidth,
+                    nextIsTranslation ? GetTranslationFontSize(1.0) : null);
             nextSize = MeasureBlock(nextBlock);
         }
 

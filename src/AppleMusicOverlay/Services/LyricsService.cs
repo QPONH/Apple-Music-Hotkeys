@@ -55,6 +55,10 @@ public sealed class LyricsService
     /// oldest rows were evicted as new ones arrived.
     /// </summary>
     private const int MaxCacheEntries = 5000;
+
+    /// <summary>Assembly version, logged with each lookup so a stale binary is obvious.</summary>
+    private static readonly string LyricsServiceBuild =
+        typeof(LyricsService).Assembly.GetName().Version?.ToString(3) ?? "?";
     private const string BrowserUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 
     /// <summary>
@@ -225,9 +229,17 @@ public sealed class LyricsService
         // Without a usable duration only an album/title match can tie a catalog entry to the track.
         if (wantedSeconds <= 0 && wantedAlbum.Length == 0 && string.IsNullOrWhiteSpace(title)) return null;
 
+        // The storefront is searched by "artist title", so the billing suffix Apple Music appends to
+        // the artist ("yuri — Suki - Single") and the "(feat. …)" decoration must be removed first;
+        // with them the query returns nothing and the localized title is never found.
+        string probeArtist = Regex.Split(artist, @"\s+[—–]\s+|\s+-\s+")[0].Trim();
+        if (probeArtist.Length == 0) probeArtist = artist;
+        string probeTitle = Regex.Replace(title, @"\s*[\(\[（【].*?[\)\]）】]\s*", " ").Trim();
+        if (probeTitle.Length == 0) probeTitle = title;
+
         // Two narrow terms at most, and the storefront requests are counted: the iTunes Search API
         // throttles per IP, and a throttled probe used to fail silently for every track afterwards.
-        var terms = new List<string> { $"{artist} {title}", artist };
+        var terms = new List<string> { $"{probeArtist} {probeTitle}", probeArtist };
         var countries = new[] { "jp", "cn" };
         int requests = 0;
         foreach (string term in terms.Distinct(StringComparer.OrdinalIgnoreCase))
@@ -270,8 +282,9 @@ public sealed class LyricsService
 
         // The storefront may be unreachable or throttled. KuGou indexes the same catalog and is
         // reachable from China, so use it as the second opinion: search the artist and take the
-        // song whose duration matches the playing track.
-        return await ResolveTitleFromKugouAsync(title, artist, duration, token);
+        // song whose duration matches the playing track. The cleaned artist/title are used here as
+        // well, because the billing suffix ("yuri — Suki - Single") matches nothing in KuGou.
+        return await ResolveTitleFromKugouAsync(probeTitle, probeArtist, duration, token);
     }
 
     private static async Task<(string Title, string Artist)?> ResolveTitleFromKugouAsync(
@@ -280,38 +293,52 @@ public sealed class LyricsService
         if (duration <= TimeSpan.Zero) return null;
         try
         {
-            string url = "https://songsearch.kugou.com/song_search_v2?page=1&pagesize=10&userid=-1&platform=WebFilter&filter=2&iscorrection=1&privilege_filter=0&keyword="
-                + Uri.EscapeDataString(artist);
-            using HttpResponseMessage response = await SendAsync(() => BrowserRequest(url), token);
-            if (!response.IsSuccessStatusCode) return null;
-
-            string body = await response.Content.ReadAsStringAsync(token);
-            string wanted = NormalizeForCompare(title);
-            KugouHit? best = null;
-            double bestDifference = double.MaxValue;
-            int nearMatches = 0;
-            foreach (KugouHit hit in ReadKugouHits(body))
+            // "artist title" is far more precise than the bare artist; the bare artist is tried
+            // second because a translated title shares no words with the index.
+            foreach (string keyword in new[] { $"{artist} {title}".Trim(), artist })
             {
-                if (hit.DurationSeconds <= 0 || string.IsNullOrWhiteSpace(hit.Song)) continue;
-                if (string.Equals(NormalizeForCompare(hit.Song), wanted, StringComparison.Ordinal)) continue;
-                double difference = Math.Abs(hit.DurationSeconds - duration.TotalSeconds);
-                if (difference > 1.5) continue;
-                // Only a *unique* duration match identifies the track; otherwise a two-second
-                // catalogue window would pick an equally long sibling song.
-                if (++nearMatches > 1) return null;
-                if (difference >= bestDifference) continue;
-                bestDifference = difference;
-                best = hit;
+                (string Title, string Artist)? hit = await SearchKugouForTitleAsync(keyword, title, artist, duration, token);
+                if (hit is not null) return hit;
             }
-
-            if (best is not { } match) return null;
-            CrashLog.WriteNote("LyricsKugouTitle", $"{artist} -> {match.Song} | {match.Singer}");
-            return (match.Song, string.IsNullOrWhiteSpace(match.Singer) ? artist : match.Singer);
+            return null;
         }
         catch (Exception) when (!token.IsCancellationRequested)
         {
             return null;
         }
+    }
+
+    /// <summary>Searches KuGou for one keyword and returns the entry with a unique near-exact duration.</summary>
+    private static async Task<(string Title, string Artist)?> SearchKugouForTitleAsync(
+        string keyword, string title, string artist, TimeSpan duration, CancellationToken token)
+    {
+        string url = "https://songsearch.kugou.com/song_search_v2?page=1&pagesize=10&userid=-1&platform=WebFilter&filter=2&iscorrection=1&privilege_filter=0&keyword="
+            + Uri.EscapeDataString(keyword);
+        using HttpResponseMessage response = await SendAsync(() => BrowserRequest(url), token);
+        if (!response.IsSuccessStatusCode) return null;
+
+        string body = await response.Content.ReadAsStringAsync(token);
+        string wanted = NormalizeForCompare(title);
+        KugouHit? best = null;
+        double bestDifference = double.MaxValue;
+        int nearMatches = 0;
+        foreach (KugouHit hit in ReadKugouHits(body))
+        {
+            if (hit.DurationSeconds <= 0 || string.IsNullOrWhiteSpace(hit.Song)) continue;
+            if (string.Equals(NormalizeForCompare(hit.Song), wanted, StringComparison.Ordinal)) continue;
+            double difference = Math.Abs(hit.DurationSeconds - duration.TotalSeconds);
+            if (difference > 1.5) continue;
+            // Only a *unique* duration match identifies the track; otherwise a two-second
+            // catalogue window would pick an equally long sibling song.
+            if (++nearMatches > 1) return null;
+            if (difference >= bestDifference) continue;
+            bestDifference = difference;
+            best = hit;
+        }
+
+        if (best is not { } match) return null;
+        CrashLog.WriteNote("LyricsKugouTitle", $"{keyword} -> {match.Song} | {match.Singer}");
+        return (match.Song, string.IsNullOrWhiteSpace(match.Singer) ? artist : match.Singer);
     }
 
     private static (string Title, string Artist)? PickLocalizedTitle(
@@ -413,6 +440,11 @@ public sealed class LyricsService
 
         LoadCacheFromDisk();
         string cacheKey = BuildCacheKey(title, artist);
+        // One line per lookup: it proves which build is actually running and whether the localized
+        // title probe is reached at all — the two things that were impossible to tell apart in the
+        // log while diagnosing a "still not found" report.
+        CrashLog.WriteNote("LyricsLookup",
+            $"{title} | {artist} | {(int)duration.TotalSeconds}s | forced={forceRefresh} | v{LyricsServiceBuild}");
         // A track the user marked as "the lyrics are wrong" on every source keeps returning nothing,
         // so a wrong match (an instrumental mapped to an unrelated song) cannot come back.
         if (IsFullyRejected(cacheKey)) return LyricsLookupResult.NotFound;
@@ -450,15 +482,21 @@ public sealed class LyricsService
         // it is cancelled as soon as a provider returns lyrics.
         string aliasKey = TitleAliasKey(title, artist);
         bool knownAlias = TitleAliases.TryGetValue(aliasKey, out (string Title, string Artist) alias);
+        // A manual refresh (or a forced lookup) must also clear the probe's rate-limit cooldown:
+        // otherwise a track that missed because the storefront was throttled keeps failing for
+        // minutes no matter how often the user retries.
+        if (forceRefresh) _titleProbeBlockedUntilUtc = DateTime.MinValue;
         using var resolveCancellation = CancellationTokenSource.CreateLinkedTokenSource(token);
         // Keep the probe inside a small budget of its own; when it loses the race the placeholder
         // result is kept, which is exactly the previous behaviour.
-        resolveCancellation.CancelAfter(TimeSpan.FromMilliseconds(2800));
+        resolveCancellation.CancelAfter(TimeSpan.FromMilliseconds(4000));
         Task<(string Title, string Artist)?> titleProbe = knownAlias
             ? Task.FromResult<(string Title, string Artist)?>(alias)
             : ResolveOriginalTitleAsync(title, artist, album, duration, resolveCancellation.Token);
 
         LyricsLookupResult lookup = await LookupAsync(title, artist, album, duration, wantTranslation, token, cacheKey);
+        CrashLog.WriteNote("LyricsStage",
+            $"{title} | lookup={lookup.Status} | lyrics={(lookup.Lyrics is null ? "null" : "set")} | probeDone={titleProbe.IsCompleted}");
         // Real lyrics end the catalog probe; a placeholder ("纯音乐，请欣赏") does not: it usually
         // means a provider matched an instrumental edition of a localized title.
         if (lookup.Lyrics is not null && !lookup.Lyrics.Placeholder) resolveCancellation.Cancel();
@@ -468,6 +506,9 @@ public sealed class LyricsService
         if (lookup.Lyrics is null || lookup.Lyrics.Placeholder)
         {
             (string Title, string Artist)? original = await AwaitTitleProbeAsync(titleProbe);
+            CrashLog.WriteNote("LyricsStage",
+                $"{title} | probe={(original is null ? "null" : original.Value.Title + " / " + original.Value.Artist)}"
+                + $" | probeCanceled={resolveCancellation.IsCancellationRequested}");
             if (original is { } resolved)
             {
                 if (!knownAlias)
@@ -480,10 +521,12 @@ public sealed class LyricsService
                 if (retried.Lyrics is not null && !retried.Lyrics.Placeholder) lookup = retried;
                 else if (lookup.Lyrics is null && retried.Lyrics is not null) lookup = retried;
             }
-            else if (lookup.Lyrics is null && lookup.Status == LyricsLookupStatus.NotFound)
+            else if (lookup.Lyrics is null)
             {
+                // Recorded for every miss, not only for "not found": a provider outage used to hide
+                // the fact that the localized-title probe found nothing either.
                 CrashLog.WriteNote("LyricsTitleResolveMiss",
-                    $"{title} | {artist} | album={album} | duration={(int)duration.TotalSeconds}s");
+                    $"{title} | {artist} | album={album} | duration={(int)duration.TotalSeconds}s | status={lookup.Status}");
             }
         }
 
@@ -786,7 +829,8 @@ public sealed class LyricsService
             lookupCancellation.Cancel();
             // Observe every provider task so a late cancellation/fault cannot become an
             // unobserved task exception. Cancellation is expected when another provider wins.
-            try { await Task.WhenAll(providerTasks.Append(grace)).ConfigureAwait(false); }
+            try { await Task.WhenAll(providerTasks.Append(grace)).WaitAsync(TimeSpan.FromMilliseconds(1500)).ConfigureAwait(false); }
+            catch (TimeoutException) { /* a slow provider must not hold the whole lookup */ }
             catch (OperationCanceledException) { }
             catch (Exception ex) { CrashLog.Write(ex, "Lyrics:ProviderCompletion"); }
         }
@@ -1175,7 +1219,7 @@ public sealed class LyricsService
         handler.SslOptions.EnabledSslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13;
         var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(12) };
         // LRCLIB asks clients to identify themselves; generic agents are rate limited harder.
-        client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.69 (https://github.com/QPONH/Apple-Music-Hotkeys)");
+        client.DefaultRequestHeaders.UserAgent.ParseAdd("MusicFloat/14.77 (https://github.com/QPONH/Apple-Music-Hotkeys)");
         client.DefaultRequestHeaders.Accept.ParseAdd("application/json");
         return client;
     }
@@ -1516,6 +1560,7 @@ public sealed class LyricsService
             // anything — because an entry for a shorter edit yields lyrics that stop halfway.
             LrcLibResponse? completeWithoutTranslation = null;
             LrcLibResponse? completeTranslated = null;
+            LrcLibResponse? kanaComplete = null;
             LrcLibResponse? incompleteTranslated = null;
             LrcLibResponse? anyFallback = null;
             foreach (NeteaseSong song in RankNeteaseSongs(results?.Result?.Songs, title, artist, duration))
@@ -1555,6 +1600,9 @@ public sealed class LyricsService
                 // complete, translated, anything — an entry for a shorter edit stops halfway.
                 bool complete = LrcCoversTrack(synced, duration);
                 bool translated = !string.IsNullOrWhiteSpace(response.TranslationLyrics);
+                bool kana = ContainsKanaText(synced);
+                if (complete && kana && (!preferTranslation || translated)) return (response, false);
+                if (complete && kana) kanaComplete ??= response;
                 if (complete && (!preferTranslation || translated)) return (response, false);
                 if (complete && translated) completeTranslated ??= response;
                 if (complete) completeWithoutTranslation ??= response;
@@ -1562,7 +1610,9 @@ public sealed class LyricsService
                 anyFallback ??= response;
             }
 
-            LrcLibResponse? best = completeTranslated ?? completeWithoutTranslation
+            // A translated entry (a Chinese re-lyric of a Japanese song) can rank above the original,
+            // so any complete candidate carrying kana wins first.
+            LrcLibResponse? best = kanaComplete ?? completeTranslated ?? completeWithoutTranslation
                 ?? incompleteTranslated ?? anyFallback;
             if (best is not null) return (best, false);
         }
@@ -2452,6 +2502,16 @@ public sealed class LyricsService
         return han >= 20 && kana == 0;
     }
 
+    /// <summary>True when the kana range appears in the text, i.e. it is a Japanese original.</summary>
+    private static bool ContainsKanaText(string text)
+    {
+        foreach (char c in text)
+        {
+            if (c >= '\u3040' && c <= '\u30ff') return true;
+        }
+        return false;
+    }
+
     /// <summary>True when the lyric contains kana, i.e. it is the Japanese original rather than a romanized or translated rendition.</summary>
     private static bool ContainsKana(LyricsResult? lyrics)
     {
@@ -2628,6 +2688,19 @@ public sealed class LyricsService
                 pair => pair.Key,
                 pair => (IReadOnlyList<string>)pair.Value.OrderBy(name => name, StringComparer.Ordinal).ToList(),
                 StringComparer.Ordinal);
+    }
+
+    /// <summary>Restores normal lookups for one track (key is "title\nartist", as shown in the list).</summary>
+    public void UnblockTrack(string key)
+    {
+        if (string.IsNullOrWhiteSpace(key)) return;
+        LoadBlockedFromDisk();
+        bool removed;
+        lock (_cacheGate) removed = _rejectedSources.Remove(key);
+        if (!removed) return;
+        SaveBlockedToDisk();
+        SaveCacheToDisk();
+        CrashLog.WriteNote("LyricsBlocked", $"restored {key.Replace('\n', '|')}");
     }
 
     /// <summary>Restores normal lookups for every marked track.</summary>
